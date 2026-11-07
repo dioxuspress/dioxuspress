@@ -98,8 +98,8 @@ fn tag_color_class(t: &str) -> &'static str {
   }
 }
 
-fn submit_case_url() -> String {
-  "https://github.com/yuxuetr/rustineverything.app/issues/new?template=add-case.yml".to_string()
+fn submit_case_url() -> Option<&'static str> {
+  app_core::settings::SiteConfig::embedded().submit_case_url_or_none()
 }
 
 #[component]
@@ -134,15 +134,17 @@ pub fn CasesIndexPage() -> Element {
                           "{t(lang, \"case.subtitle\")}"
                       }
                   }
-                  a {
-                      href: "{submit_url}",
-                      target: "_blank",
-                      rel: "noopener noreferrer",
-                      class: "shrink-0 inline-flex items-center gap-2 rounded-xl btn-flow px-5 py-2.5 text-sm font-semibold shadow-lg shadow-slate-500/20 hover:shadow-slate-500/40 transition-all",
-                      svg { class: "w-4 h-4", fill: "none", stroke: "currentColor", view_box: "0 0 24 24",
-                          path { stroke_linecap: "round", stroke_linejoin: "round", stroke_width: "2", d: "M12 4v16m8-8H4" }
+                  if let Some(submit_url) = submit_url {
+                      a {
+                          href: "{submit_url}",
+                          target: "_blank",
+                          rel: "noopener noreferrer",
+                          class: "shrink-0 inline-flex items-center gap-2 rounded-xl btn-flow px-5 py-2.5 text-sm font-semibold shadow-lg shadow-slate-500/20 hover:shadow-slate-500/40 transition-all",
+                          svg { class: "w-4 h-4", fill: "none", stroke: "currentColor", view_box: "0 0 24 24",
+                              path { stroke_linecap: "round", stroke_linejoin: "round", stroke_width: "2", d: "M12 4v16m8-8H4" }
+                          }
+                          "{t(lang, \"case.submit\")}"
                       }
-                      "{t(lang, \"case.submit\")}"
                   }
               }
 

@@ -526,9 +526,32 @@ docker compose logs app | grep 'payment gateway'
 ```jsonc
 {
   "site_name": "你的站点名",
-  "site_description": "副标题",
+  "site_description": "站点副标题（用于 Atom feed 等）",
+  "author": "站点默认作者",
+  "default_language": "zh",                  // "zh" 或 "en"
   "theme": "sunset",                         // 内置主题 id：ocean / sunset / catppuccin
   "active_layout": "classic",                // 或 "minimal"
+  "favicon": "/images/favicon.ico",          // 站点图标（支持 .ico / .svg / .png）
+  "logo": "/images/header.svg",              // 顶栏 Logo（留空则仅显示文字站名）
+  "og_image": "/images/og-default.jpg",      // 默认社交分享图
+  "twitter_handle": "@your_handle",          // 可选：注入 <meta name="twitter:site">
+  "submit_case_url": "",                     // 案例页「提交案例」按钮外链（留空则隐藏）
+  "hero": {
+    "title": "首页主标题",
+    "title_en": "Homepage Hero Title",
+    "subtitle": "首页副标题",
+    "subtitle_en": "Homepage Hero Subtitle"
+  },
+  "footer": {
+    "tagline": "页脚品牌口号",
+    "tagline_en": "Footer brand tagline",
+    "copyright": "2026 你的站点名",
+    "icp": "京ICP备xxxxxxxx号",              // 可选：非空时在页脚展示备案链接
+    "icp_url": "https://beian.miit.gov.cn/",
+    "social": [
+      { "label": "GitHub", "url": "https://github.com/your-org/your-repo" }
+    ]
+  },
   "modules": {
     "forum": { "enabled": true },
     "podcast": { "enabled": false }          // 关闭某模块
@@ -536,6 +559,11 @@ docker compose logs app | grep 'payment gateway'
   "auth": {
     "enabled": true,
     "providers": ["github"]                  // 内置 provider id，按显示顺序
+  },
+  "annotations": {
+    "course": true,
+    "doc": true,
+    "blog": false
   }
 }
 ```

@@ -1,15 +1,31 @@
 {
   "site_name": "Rust in Everything",
   "site_description": "专注 Rust 技术栈的学习与实战",
+  "author": "yuxuetr",
+  "default_language": "zh",
   "theme": "ocean",
   "active_layout": "classic",
-  "default_language": "zh",
-  "author": "yuxuetr",
-  "navigation": [
-    { "key": "nav-blog", "route": "/blog" },
-    { "key": "nav-podcast", "route": "/podcast" },
-    { "key": "nav-forum", "route": "/topics" }
-  ],
+  "favicon": "/images/favicon.ico",
+  "logo": "",
+  "og_image": "/images/og-default.jpg",
+  "twitter_handle": "",
+  "submit_case_url": "https://github.com/yuxuetr/rustineverything.app/issues/new?template=add-case.yml",
+  "hero": {
+    "title": "专注 Rust 技术栈的学习与实战",
+    "title_en": "Learn and Build with the Rust Stack",
+    "subtitle": "文档、博客、课程、案例一站式聚合：AI、后端、前端、跨端、Web3、Wasm、嵌入式、命令行等。",
+    "subtitle_en": "Docs, blog, courses, and showcase in one place — AI, backend, frontend, cross-platform, Web3, Wasm, embedded, CLI, and more."
+  },
+  "footer": {
+    "tagline": "专注 Rust 工业实战与 AI 生态：案例、课程、文档、社区一站式聚合。",
+    "tagline_en": "Production Rust & AI ecosystem — cases, courses, docs, and community in one place.",
+    "copyright": "Rust in Everything",
+    "icp": "",
+    "icp_url": "https://beian.miit.gov.cn/",
+    "social": [
+      { "label": "GitHub", "url": "https://github.com/yuxuetr/DioxusPress" }
+    ]
+  },
   "auth": {
     "enabled": true,
     "providers": ["github", "google", "discord", "twitter"]

@@ -112,7 +112,10 @@ pub fn ClassicShell() -> Element {
                               to: Route::Home {},
                               // 站名不截断（O8）：<sm 时主题 / 语言收进抽屉、登录只留图标，
                               // 右侧按钮组让出的宽度足够放下完整站名。
-                              class: "font-extrabold tracking-tight text-flow whitespace-nowrap inline-block shrink-0",
+                              class: "font-extrabold tracking-tight text-flow whitespace-nowrap inline-flex items-center gap-2 shrink-0",
+                              if let Some(logo_src) = app_core::settings::SiteConfig::embedded().logo_url() {
+                                  img { src: "{logo_src}", alt: "", class: "h-6 w-6 object-contain" }
+                              }
                               "{widgets::site_name()}"
                           }
                           // 双生态为主：Rust 生态▾ / AI 生态▾ mega 菜单 + 4 个内容类型入口。
@@ -283,7 +286,9 @@ pub fn ClassicShell() -> Element {
                   div { class: "py-12 grid grid-cols-2 md:grid-cols-5 gap-8 text-sm",
                       div { class: "col-span-2 md:col-span-2",
                           span { class: "font-extrabold text-flow text-base", "{widgets::site_name()}" }
-                          p { class: "mt-2 max-w-sm text-slate-500 dark:text-slate-400 leading-relaxed", "{t(lang(), \"footer.tagline\")}" }
+                          p { class: "mt-2 max-w-sm text-slate-500 dark:text-slate-400 leading-relaxed",
+                              "{app_core::settings::SiteConfig::embedded().footer_tagline(lang())}"
+                          }
                       }
                       div {
                           p { class: "text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3", "{t(lang(), \"footer.col.content\")}" }
@@ -326,11 +331,30 @@ pub fn ClassicShell() -> Element {
                               if on_about {
                                   Link { to: Route::About {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"footer.about\")}" }
                               }
+                              for item in app_core::settings::SiteConfig::embedded().footer.social.iter().filter(|s| !s.label.trim().is_empty() && !s.url.trim().is_empty()) {
+                                  a {
+                                      key: "{item.label}-{item.url}",
+                                      href: "{item.url}",
+                                      target: "_blank",
+                                      rel: "noopener noreferrer",
+                                      class: "hover:text-[var(--color-primary)] transition-colors",
+                                      "{item.label}"
+                                  }
+                              }
                           }
                       }
                   }
-                  div { class: "py-5 border-t border-slate-100 dark:border-slate-900 text-xs text-slate-400",
-                      "© {widgets::site_name()}"
+                  div { class: "py-5 border-t border-slate-100 dark:border-slate-900 text-xs text-slate-400 flex flex-wrap items-center justify-between gap-2",
+                      span { "© {app_core::settings::SiteConfig::embedded().footer_copyright()}" }
+                      if let Some((icp, icp_url)) = app_core::settings::SiteConfig::embedded().footer_icp() {
+                          a {
+                              href: "{icp_url}",
+                              target: "_blank",
+                              rel: "noopener noreferrer",
+                              class: "hover:text-slate-600 dark:hover:text-slate-300 transition-colors",
+                              "{icp}"
+                          }
+                      }
                   }
               }
           }

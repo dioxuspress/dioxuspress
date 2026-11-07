@@ -290,6 +290,7 @@ pub enum Route {
 #[component]
 pub fn Home() -> Element {
   let lang = use_i18n();
+  let site_cfg = app_core::settings::SiteConfig::embedded();
   // 与 navbar 共用「站点模块开关」。
   let enabled = use_enabled_modules();
   let on = |id: &str| enabled.iter().any(|e| e == id);
@@ -297,8 +298,8 @@ pub fn Home() -> Element {
 
   rsx! {
       widgets::PageMeta {
-          title: t(lang(), "hero.title"),
-          description: t(lang(), "hero.subtitle"),
+          title: site_cfg.hero_title(lang()),
+          description: site_cfg.hero_subtitle(lang()),
           path: "/".to_string(),
           schema: widgets::website_schema(),
       }

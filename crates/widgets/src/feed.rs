@@ -100,6 +100,17 @@ pub fn build_atom_feed(
   site_description: &str,
   base_url: &str,
 ) -> String {
+  build_atom_feed_with_author(entries, site_title, site_description, "", base_url)
+}
+
+/// 构造带站点作者（`<author><name>`）的 Atom feed XML 字符串。
+pub fn build_atom_feed_with_author(
+  entries: &[ContentEntry],
+  site_title: &str,
+  site_description: &str,
+  site_author: &str,
+  base_url: &str,
+) -> String {
   let mut out = String::with_capacity(512 + 256 * entries.len());
   out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
   out.push_str("<feed xmlns=\"http://www.w3.org/2005/Atom\">\n");
@@ -107,6 +118,9 @@ pub fn build_atom_feed(
   out.push_str(&format!("  <title>{}</title>\n", xml_escape(site_title)));
   if !site_description.is_empty() {
     out.push_str(&format!("  <subtitle>{}</subtitle>\n", xml_escape(site_description)));
+  }
+  if !site_author.trim().is_empty() {
+    out.push_str(&format!("  <author><name>{}</name></author>\n", xml_escape(site_author.trim())));
   }
   out.push_str(&format!("  <link href=\"{}\"/>\n", xml_escape(base_url.trim_end_matches('/'))));
   out.push_str(&format!(
@@ -262,6 +276,19 @@ mod tests {
     assert!(!xml.contains("<subtitle>"));
     // 全空时 feed 级 updated 走 1970 兜底
     assert!(xml.contains("<updated>1970-01-01T00:00:00Z</updated>"));
+  }
+
+  #[test]
+  fn atom_feed_includes_author_when_provided() {
+    let entries = vec![entry("/blog/a", "Post A", "2026-02-15")];
+    let xml = build_atom_feed_with_author(
+      &entries,
+      "Rust in Everything",
+      "Rust ecosystem",
+      "yuxuetr",
+      "https://example.com/",
+    );
+    assert!(xml.contains("<author><name>yuxuetr</name></author>"));
   }
 
   #[test]
