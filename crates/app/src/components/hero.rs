@@ -8,16 +8,17 @@ use crate::routes::Route;
 #[component]
 pub fn Hero(enabled: Vec<String>) -> Element {
   let lang = use_i18n();
+  let site_cfg = app_core::settings::SiteConfig::embedded();
   let on = |id: &str| enabled.iter().any(|e| e == id);
   rsx! {
       section { class: "w-full py-16 sm:py-20 bg-gradient-to-b from-slate-950 to-slate-900",
           div { class: "max-w-6xl mx-auto px-4 sm:px-6 lg:px-8",
               div { class: "max-w-3xl",
                   h1 { class: "text-4xl md:text-5xl font-extrabold tracking-tight text-flow-light",
-                      "{t(lang(), \"hero.title\")}"
+                      "{site_cfg.hero_title(lang())}"
                   }
                   p { class: "mt-5 text-lg md:text-xl text-slate-300",
-                      "{t(lang(), \"hero.subtitle\")}"
+                      "{site_cfg.hero_subtitle(lang())}"
                   }
 
                   div { class: "mt-8 flex flex-col sm:flex-row gap-3",

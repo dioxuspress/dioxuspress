@@ -20,7 +20,8 @@ fn initial_language() -> Language {
   #[cfg(feature = "server")]
   {
     use dioxus::fullstack::FullstackContext;
-    let Some(ctx) = FullstackContext::current() else { return Language::Zh };
+    let default_lang = app_core::settings::SiteConfig::embedded().default_language_enum();
+    let Some(ctx) = FullstackContext::current() else { return default_lang };
     let parts = ctx.parts_mut();
     let query = parts
       .uri
@@ -46,14 +47,26 @@ fn initial_language() -> Language {
   }
 }
 
-/// `?lang=` 优先，其次 cookie；只认 `en` / `zh`，其它值忽略。
+/// `?lang=` 优先，其次 cookie，最后回退到 `site.json::default_language`；只认 `en` / `zh`。
 pub fn pick_language(query: Option<&str>, cookie: Option<&str>) -> Language {
+  pick_language_with_default(
+    query,
+    cookie,
+    app_core::settings::SiteConfig::embedded().default_language_enum(),
+  )
+}
+
+pub fn pick_language_with_default(
+  query: Option<&str>,
+  cookie: Option<&str>,
+  default_lang: Language,
+) -> Language {
   let parse = |v: Option<&str>| match v {
     Some("en") => Some(Language::En),
     Some("zh") => Some(Language::Zh),
     _ => None,
   };
-  parse(query).or(parse(cookie)).unwrap_or(Language::Zh)
+  parse(query).or(parse(cookie)).unwrap_or(default_lang)
 }
 
 /// 同步翻译。委托给 `app_core::i18n::t`（字典来自 `assets/i18n/{zh,en}.ftl`，
@@ -64,7 +77,7 @@ pub fn t(lang: Language, key: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-  use super::{pick_language, Language};
+  use super::{pick_language, pick_language_with_default, Language};
 
   #[test]
   fn query_beats_cookie_and_unknown_values_are_ignored() {
@@ -73,5 +86,6 @@ mod tests {
     assert_eq!(pick_language(None, Some("en")), Language::En);
     assert_eq!(pick_language(Some("fr"), Some("en")), Language::En);
     assert_eq!(pick_language(None, None), Language::Zh);
+    assert_eq!(pick_language_with_default(None, None, Language::En), Language::En);
   }
 }

@@ -147,7 +147,7 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
 }
 
 async fn feed_handler(base: String) -> axum::response::Response {
-  use widgets::build_atom_feed;
+  use widgets::build_atom_feed_with_author;
 
   // Phase 3.4：blog 关闭时输出空 feed，但保留站点元信息。
   let module_engine = app_core::engines::module::default_module_engine();
@@ -165,7 +165,13 @@ async fn feed_handler(base: String) -> axum::response::Response {
     app_core::utils::get_asset_root().join("site.json").to_str().unwrap_or_default(),
   )
   .unwrap_or_default();
-  let xml = build_atom_feed(&entries, &cfg.site_name, &cfg.site_description, &base);
+  let xml = build_atom_feed_with_author(
+    &entries,
+    cfg.site_name_or_default(),
+    &cfg.site_description,
+    &cfg.author,
+    &base,
+  );
   // Phase 8.5：同 sitemap，feed 1 小时 Cache-Control 缓解 RSS reader 轮询压力。
   xml_response("application/atom+xml; charset=utf-8", "public, max-age=3600", xml)
 }

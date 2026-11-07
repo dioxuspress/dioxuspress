@@ -2717,26 +2717,16 @@ fn normalize_visibility(v: Option<&str>) -> String {
   }
 }
 
-/// 读 site.json 中 annotations 开关
+/// 读 site.json 中 annotations 开关（统一走 `SiteConfig::load_cached`）
 #[cfg(feature = "server")]
 fn read_annotations_switch(kind: &str) -> bool {
-  use std::path::PathBuf;
-  let mut p = PathBuf::from("assets/site.json");
-  if !p.exists() {
-    p = PathBuf::from("../../assets/site.json");
+  let site_path = app_core::utils::get_asset_root().join("site.json");
+  if let Ok(cfg) =
+    app_core::settings::SiteConfig::load_cached(site_path.to_str().unwrap_or_default())
+  {
+    return cfg.annotations.is_enabled(kind);
   }
-  let raw = match fs::read_to_string(&p) {
-    Ok(s) => s,
-    Err(_) => return default_annotation_enabled(kind),
-  };
-  let v: serde_json::Value = match serde_json::from_str(&raw) {
-    Ok(v) => v,
-    Err(_) => return default_annotation_enabled(kind),
-  };
-  v.get("annotations")
-    .and_then(|a| a.get(kind))
-    .and_then(|x| x.as_bool())
-    .unwrap_or_else(|| default_annotation_enabled(kind))
+  default_annotation_enabled(kind)
 }
 
 #[cfg(feature = "server")]

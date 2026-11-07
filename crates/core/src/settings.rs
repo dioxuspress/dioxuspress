@@ -2,21 +2,58 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::engines::module::ModuleSettings;
+use crate::i18n::Language;
 
+/// 默认站点名（未配置或为空时的回退）。
+pub const DEFAULT_SITE_NAME: &str = "DioxusPress";
 /// 默认布局名（Phase 3.3）。
 pub const DEFAULT_LAYOUT: &str = "classic";
+/// 默认主题 id。
+pub const DEFAULT_THEME: &str = "ocean";
+/// 默认站点图标路径（对应 `assets/images/favicon.ico`）。
+pub const DEFAULT_FAVICON: &str = "/images/favicon.ico";
+/// 默认社交分享图路径（对应 `assets/images/og-default.jpg`）。
+pub const DEFAULT_OG_IMAGE: &str = "/images/og-default.jpg";
+/// 默认工信部备案查询链接。
+pub const DEFAULT_ICP_URL: &str = "https://beian.miit.gov.cn/";
+
+fn default_site_name() -> String {
+  DEFAULT_SITE_NAME.to_string()
+}
 
 fn default_layout() -> String {
   DEFAULT_LAYOUT.to_string()
 }
 
 fn default_theme() -> String {
-  "ocean".to_string()
+  DEFAULT_THEME.to_string()
+}
+
+fn default_language() -> String {
+  "zh".to_string()
+}
+
+fn default_favicon() -> String {
+  DEFAULT_FAVICON.to_string()
+}
+
+fn default_og_image() -> String {
+  DEFAULT_OG_IMAGE.to_string()
+}
+
+fn default_true() -> bool {
+  true
+}
+
+fn non_empty_str(opt: Option<&str>) -> Option<&str> {
+  opt.map(str::trim).filter(|s| !s.is_empty())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SiteConfig {
+  #[serde(default = "default_site_name")]
   pub site_name: String,
+  #[serde(default)]
   pub site_description: String,
   /// 默认主题 id（见 [`crate::engines::theme::THEMES`]）；访客可用 cookie 覆盖。
   #[serde(default = "default_theme")]
@@ -24,8 +61,36 @@ pub struct SiteConfig {
   /// 当前生效布局（Phase 3.3）：`"classic"`（默认）或 `"minimal"`；其它值回退到 classic。
   #[serde(default = "default_layout")]
   pub active_layout: String,
+  /// 默认界面语言：`"zh"`（默认）或 `"en"`。无 `?lang=` 与 `site_lang` cookie 时生效。
+  #[serde(default = "default_language")]
   pub default_language: String,
+  #[serde(default)]
   pub author: String,
+  /// 站点图标路径（如 `"/images/favicon.ico"` 或 `"/images/favicon.svg"`）。
+  #[serde(default = "default_favicon")]
+  pub favicon: String,
+  /// 顶栏 Logo 图片路径（可选，如 `"/images/header.svg"`；留空则仅显示文字站名）。
+  #[serde(default)]
+  pub logo: Option<String>,
+  /// 默认 Open Graph / Twitter 分享图路径（默认 `"/images/og-default.jpg"`）。
+  #[serde(default = "default_og_image")]
+  pub og_image: String,
+  /// 可选 X / Twitter 账号（如 `"@yuxuetr"`），非空时注入 `<meta name="twitter:site">`。
+  #[serde(default)]
+  pub twitter_handle: Option<String>,
+  /// 案例页「提交案例」按钮外链（留空则隐藏提交按钮）。
+  #[serde(default)]
+  pub submit_case_url: Option<String>,
+  /// 首页 Hero 区域自定义文案（留空时回退到 `assets/i18n/{zh,en}.ftl` 的 `hero.*`）。
+  #[serde(default)]
+  pub hero: HeroSettings,
+  /// 页脚口号、版权、ICP 备案号与外部社交链接。
+  #[serde(default)]
+  pub footer: FooterSettings,
+  /// 段落标注（Annotation）按资源类型的启用开关。
+  #[serde(default)]
+  pub annotations: AnnotationsSettings,
+  #[serde(default)]
   pub navigation: Vec<NavItem>,
   #[serde(default)]
   pub auth: AuthSettings,
@@ -40,6 +105,78 @@ pub struct SiteConfig {
   /// 读取并装载。
   #[serde(default)]
   pub moderation: ModerationSettings,
+}
+
+/// 首页 Hero 区域自定义文案（留空时回退到 `i18n` 的 `hero.title` / `hero.subtitle`）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct HeroSettings {
+  #[serde(default)]
+  pub title: Option<String>,
+  #[serde(default)]
+  pub title_en: Option<String>,
+  #[serde(default)]
+  pub subtitle: Option<String>,
+  #[serde(default)]
+  pub subtitle_en: Option<String>,
+}
+
+/// 页脚自定义信息（口号、版权、备案号、社交链接）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FooterSettings {
+  /// 页脚口号（中文）；未配置时回退到 `i18n` 的 `footer.tagline`。
+  #[serde(default)]
+  pub tagline: Option<String>,
+  /// 页脚口号（英文）；未配置时回退到 `i18n` 的 `footer.tagline`。
+  #[serde(default)]
+  pub tagline_en: Option<String>,
+  /// 版权声明文本（如 `"2024–2026 Rust in Everything"`）；未配置时回退到 `site_name`。
+  #[serde(default)]
+  pub copyright: Option<String>,
+  /// ICP 备案号（如 `"京ICP备xxxxxxxx号"`）；为空时不渲染备案链接。
+  #[serde(default)]
+  pub icp: Option<String>,
+  /// 备案跳转链接（默认 `"https://beian.miit.gov.cn/"`）。
+  #[serde(default)]
+  pub icp_url: Option<String>,
+  /// 页脚「社区」栏展示的外部社交链接（GitHub / X / Discord 等）。
+  #[serde(default)]
+  pub social: Vec<SocialLink>,
+}
+
+/// 页脚外部社交或社区链接。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SocialLink {
+  pub label: String,
+  pub url: String,
+}
+
+/// 段落标注（Annotation）按资源类型的启用开关。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnnotationsSettings {
+  #[serde(default = "default_true")]
+  pub course: bool,
+  #[serde(default = "default_true")]
+  pub doc: bool,
+  #[serde(default)]
+  pub blog: bool,
+}
+
+impl Default for AnnotationsSettings {
+  fn default() -> Self {
+    Self { course: true, doc: true, blog: false }
+  }
+}
+
+impl AnnotationsSettings {
+  /// 判断指定资源类型是否启用段落标注。
+  pub fn is_enabled(&self, kind: &str) -> bool {
+    match kind {
+      "course" => self.course,
+      "doc" => self.doc,
+      "blog" => self.blog,
+      _ => false,
+    }
+  }
 }
 
 /// 审核功能在 site.json 中的配置块。**默认 disabled**，意味着评论 / 话题 /
@@ -156,6 +293,95 @@ impl SiteConfig {
     Ok(cfg)
   }
 
+  /// 编译期内嵌的 `assets/site.json` 配置（SSR 与 WASM 双端一致、零 IO）。
+  /// 解析失败时回退到 [`SiteConfig::default`]。
+  pub fn embedded() -> &'static Self {
+    use std::sync::OnceLock;
+    static EMBEDDED: OnceLock<SiteConfig> = OnceLock::new();
+    EMBEDDED.get_or_init(|| {
+      serde_json::from_str::<SiteConfig>(include_str!("../../../assets/site.json"))
+        .unwrap_or_default()
+    })
+  }
+
+  /// 站点名称（为空或全空白时回退到 [`DEFAULT_SITE_NAME`]）。
+  pub fn site_name_or_default(&self) -> &str {
+    non_empty_str(Some(self.site_name.as_str())).unwrap_or(DEFAULT_SITE_NAME)
+  }
+
+  /// 默认界面语言枚举（仅 `"en"` 识别为英文，其余回退中文）。
+  pub fn default_language_enum(&self) -> Language {
+    if self.default_language.trim().eq_ignore_ascii_case("en") {
+      Language::En
+    } else {
+      Language::Zh
+    }
+  }
+
+  /// 站点图标路径（为空时回退到 [`DEFAULT_FAVICON`]）。
+  pub fn favicon_or_default(&self) -> &str {
+    non_empty_str(Some(self.favicon.as_str())).unwrap_or(DEFAULT_FAVICON)
+  }
+
+  /// 顶栏 Logo 路径（未配置或为空字符串时返回 `None`）。
+  pub fn logo_url(&self) -> Option<&str> {
+    non_empty_str(self.logo.as_deref())
+  }
+
+  /// 默认社交分享图路径（为空时回退到 [`DEFAULT_OG_IMAGE`]）。
+  pub fn og_image_or_default(&self) -> &str {
+    non_empty_str(Some(self.og_image.as_str())).unwrap_or(DEFAULT_OG_IMAGE)
+  }
+
+  /// 可选 Twitter / X 账号（未配置或为空字符串时返回 `None`）。
+  pub fn twitter_handle_or_none(&self) -> Option<&str> {
+    non_empty_str(self.twitter_handle.as_deref())
+  }
+
+  /// 案例页「提交案例」按钮链接（未配置或为空字符串时返回 `None`）。
+  pub fn submit_case_url_or_none(&self) -> Option<&str> {
+    non_empty_str(self.submit_case_url.as_deref())
+  }
+
+  /// 首页 Hero 主标题：优先取 `site.json::hero` 对应语言字段，留空回退 `i18n` 的 `hero.title`。
+  pub fn hero_title(&self, lang: Language) -> String {
+    let custom = match lang {
+      Language::En => non_empty_str(self.hero.title_en.as_deref()),
+      Language::Zh => non_empty_str(self.hero.title.as_deref()),
+    };
+    custom.map(str::to_string).unwrap_or_else(|| crate::i18n::t(lang, "hero.title"))
+  }
+
+  /// 首页 Hero 副标题：优先取 `site.json::hero` 对应语言字段，留空回退 `i18n` 的 `hero.subtitle`。
+  pub fn hero_subtitle(&self, lang: Language) -> String {
+    let custom = match lang {
+      Language::En => non_empty_str(self.hero.subtitle_en.as_deref()),
+      Language::Zh => non_empty_str(self.hero.subtitle.as_deref()),
+    };
+    custom.map(str::to_string).unwrap_or_else(|| crate::i18n::t(lang, "hero.subtitle"))
+  }
+
+  /// 页脚口号：优先取 `site.json::footer` 对应语言字段，留空回退 `i18n` 的 `footer.tagline`。
+  pub fn footer_tagline(&self, lang: Language) -> String {
+    let custom = match lang {
+      Language::En => non_empty_str(self.footer.tagline_en.as_deref()),
+      Language::Zh => non_empty_str(self.footer.tagline.as_deref()),
+    };
+    custom.map(str::to_string).unwrap_or_else(|| crate::i18n::t(lang, "footer.tagline"))
+  }
+
+  /// 页脚版权主体（未配置 `footer.copyright` 时回退到站名）。
+  pub fn footer_copyright(&self) -> &str {
+    non_empty_str(self.footer.copyright.as_deref()).unwrap_or_else(|| self.site_name_or_default())
+  }
+
+  /// 页脚 ICP 备案号及跳转链接（`footer.icp` 非空时返回 `Some((icp, url))`）。
+  pub fn footer_icp(&self) -> Option<(&str, &str)> {
+    let icp = non_empty_str(self.footer.icp.as_deref())?;
+    let url = non_empty_str(self.footer.icp_url.as_deref()).unwrap_or(DEFAULT_ICP_URL);
+    Some((icp, url))
+  }
+
   /// 当前布局名（空字符串回退到 `"classic"`）。
   pub fn active_layout_or_default(&self) -> &str {
     if self.active_layout.is_empty() {
@@ -169,12 +395,20 @@ impl SiteConfig {
 impl Default for SiteConfig {
   fn default() -> Self {
     Self {
-      site_name: "DioxusPress".to_string(),
-      site_description: "".to_string(),
+      site_name: DEFAULT_SITE_NAME.to_string(),
+      site_description: String::new(),
       theme: default_theme(),
       active_layout: DEFAULT_LAYOUT.to_string(),
-      default_language: "zh".to_string(),
-      author: "".to_string(),
+      default_language: default_language(),
+      author: String::new(),
+      favicon: default_favicon(),
+      logo: None,
+      og_image: default_og_image(),
+      twitter_handle: None,
+      submit_case_url: None,
+      hero: HeroSettings::default(),
+      footer: FooterSettings::default(),
+      annotations: AnnotationsSettings::default(),
       navigation: vec![],
       auth: AuthSettings::default(),
       modules: HashMap::new(),
@@ -340,5 +574,75 @@ mod tests {
       serde_json::from_str(r#"{"on_llm_failure": "reject"}"#).expect("parse");
     assert_eq!(m.on_llm_failure, LlmFailureAction::Reject);
     assert!(serde_json::from_str::<ModerationSettings>(r#"{"on_llm_failure": "allow"}"#).is_err());
+  }
+
+  #[test]
+  fn branding_hero_footer_and_annotations_helpers() {
+    let json = r#"{
+      "site_name": "MySite",
+      "default_language": "en",
+      "favicon": "/images/custom.svg",
+      "logo": " /images/logo.svg ",
+      "og_image": "/images/custom-og.png",
+      "twitter_handle": "@mysite",
+      "submit_case_url": "https://github.com/example/repo/issues/new",
+      "hero": {
+        "title": "自定义标题",
+        "title_en": "Custom Title",
+        "subtitle": "自定义副标题",
+        "subtitle_en": "Custom Subtitle"
+      },
+      "footer": {
+        "tagline": "自定义页脚口号",
+        "tagline_en": "Custom Footer Tagline",
+        "copyright": "2026 MySite",
+        "icp": "京ICP备12345678号",
+        "social": [{ "label": "GitHub", "url": "https://github.com/example" }]
+      },
+      "annotations": {
+        "course": true,
+        "doc": false,
+        "blog": true
+      }
+    }"#;
+    let cfg: SiteConfig = serde_json::from_str(json).expect("parse full branding");
+    assert_eq!(cfg.site_name_or_default(), "MySite");
+    assert_eq!(cfg.default_language_enum(), Language::En);
+    assert_eq!(cfg.favicon_or_default(), "/images/custom.svg");
+    assert_eq!(cfg.logo_url(), Some("/images/logo.svg"));
+    assert_eq!(cfg.og_image_or_default(), "/images/custom-og.png");
+    assert_eq!(cfg.twitter_handle_or_none(), Some("@mysite"));
+    assert_eq!(cfg.submit_case_url_or_none(), Some("https://github.com/example/repo/issues/new"));
+    assert_eq!(cfg.hero_title(Language::Zh), "自定义标题");
+    assert_eq!(cfg.hero_title(Language::En), "Custom Title");
+    assert_eq!(cfg.hero_subtitle(Language::Zh), "自定义副标题");
+    assert_eq!(cfg.hero_subtitle(Language::En), "Custom Subtitle");
+    assert_eq!(cfg.footer_tagline(Language::Zh), "自定义页脚口号");
+    assert_eq!(cfg.footer_tagline(Language::En), "Custom Footer Tagline");
+    assert_eq!(cfg.footer_copyright(), "2026 MySite");
+    assert_eq!(cfg.footer_icp(), Some(("京ICP备12345678号", DEFAULT_ICP_URL)));
+    assert_eq!(cfg.footer.social.len(), 1);
+    assert!(cfg.annotations.is_enabled("course"));
+    assert!(!cfg.annotations.is_enabled("doc"));
+    assert!(cfg.annotations.is_enabled("blog"));
+    assert!(!cfg.annotations.is_enabled("other"));
+  }
+
+  #[test]
+  fn empty_optional_branding_falls_back_cleanly() {
+    let cfg: SiteConfig = serde_json::from_str("{}").expect("empty object uses defaults");
+    assert_eq!(cfg.site_name_or_default(), DEFAULT_SITE_NAME);
+    assert_eq!(cfg.default_language_enum(), Language::Zh);
+    assert_eq!(cfg.favicon_or_default(), DEFAULT_FAVICON);
+    assert_eq!(cfg.logo_url(), None);
+    assert_eq!(cfg.og_image_or_default(), DEFAULT_OG_IMAGE);
+    assert_eq!(cfg.twitter_handle_or_none(), None);
+    assert_eq!(cfg.submit_case_url_or_none(), None);
+    assert_eq!(cfg.footer_copyright(), DEFAULT_SITE_NAME);
+    assert_eq!(cfg.footer_icp(), None);
+    assert!(cfg.annotations.is_enabled("course"));
+    assert!(cfg.annotations.is_enabled("doc"));
+    assert!(!cfg.annotations.is_enabled("blog"));
+    assert!(!SiteConfig::embedded().site_name_or_default().is_empty());
   }
 }

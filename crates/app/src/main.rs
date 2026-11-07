@@ -180,11 +180,20 @@ const GLOBAL_REHIGHLIGHT_BOOT_SCRIPT: &str = r#"
 })();
 "#;
 
-/// 见 HeadAssets：`?lang=` 优先、其次 `site_lang` cookie，英文时把 `<html lang>` 改成 `en`。
-const LANG_BOOT_SCRIPT: &str =
-  "(function(){try{var q=new URLSearchParams(location.search).get('lang');\
+/// 见 HeadAssets：`?lang=` 优先、其次 `site_lang` cookie、最后 `site.json::default_language`，
+/// 英文时把 `<html lang>` 改成 `en`。
+fn lang_boot_script() -> String {
+  let default_lang = match app_core::settings::SiteConfig::embedded().default_language_enum() {
+    app_core::i18n::Language::En => "en",
+    app_core::i18n::Language::Zh => "zh",
+  };
+  format!(
+    "(function(){{try{{var d='{default_lang}';var q=new URLSearchParams(location.search).get('lang');\
 var c=(document.cookie.match(/(?:^|; )site_lang=([^;]*)/)||[])[1];\
-var l=(q==='en'||q==='zh')?q:c;if(l==='en')document.documentElement.lang='en';}catch(e){}})();";
+var l=(q==='en'||q==='zh')?q:((c==='en'||c==='zh')?c:d);\
+document.documentElement.lang=(l==='en')?'en':'zh-CN';}}catch(e){{}}}})();"
+  )
+}
 
 /// 当前主题的 CSS。以前用 `use_resource` 在 hydration 之后才拉，SSR 的 HTML 里没有
 /// 主题变量，每次打开页面都先按默认色绘制、再跳成主题色（背景灰 → 白、主色变色）。
@@ -540,15 +549,22 @@ pub fn use_session_user() -> Signal<Option<SessionUser>> {
 fn HeadAssets() -> Element {
   // asset 路径只含 [A-Za-z0-9./_-]，可直接放进单引号字符串
   let prism_src = PRISM_JS.to_string();
+  let lang_script = lang_boot_script();
+  let cfg_favicon = app_core::settings::SiteConfig::embedded().favicon_or_default();
+  let favicon_href = if cfg_favicon == app_core::settings::DEFAULT_FAVICON {
+    FAVICON.to_string()
+  } else {
+    cfg_favicon.to_string()
+  };
   rsx! {
       // <html lang> 跟首屏语言走（index.html 写死 zh-CN）；规则同 i18n::pick_language
-      document::Script { {LANG_BOOT_SCRIPT} }
+      document::Script { {lang_script} }
       // 暗色偏好在首次绘制前就加到 <html> 上（同步内联脚本，规则同
       // widgets::browser::dark_mode_preference）。以前只在 wasm 加载后的 use_effect 里设，
       // 暗色用户每次打开页面先看到一屏白。
       document::Script { {DARK_MODE_BOOT_SCRIPT} }
-      // Head links
-      document::Link { rel: "icon", href: FAVICON }
+      // Head links：默认走 Dioxus 带哈希的 FAVICON 资产，site.json 自定义时走自定义路径
+      document::Link { rel: "icon", href: "{favicon_href}" }
       // feed 自动发现（O4）：/feed.xml 是 Atom。
       document::Link { rel: "alternate", r#type: "application/atom+xml", title: widgets::site_name(), href: "/feed.xml" }
       document::Link { rel: "stylesheet", href: MAIN_CSS }

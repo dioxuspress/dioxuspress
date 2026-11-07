@@ -59,7 +59,7 @@ pub fn inject_seo(meta: &PostMetadata, path: &str, base_url: &str) -> Element {
   let json_ld = build_json_ld(meta, &canonical, base_url);
   // 文章没配图时用站点默认分享图，分享卡片不至于空白
   let image = absolute_url(
-    meta.image.as_deref().filter(|s| !s.is_empty()).unwrap_or(DEFAULT_OG_IMAGE),
+    meta.image.as_deref().filter(|s| !s.is_empty()).unwrap_or_else(|| default_og_image()),
     base_url,
   );
 
@@ -90,6 +90,9 @@ pub fn inject_seo(meta: &PostMetadata, path: &str, base_url: &str) -> Element {
 
       // ── Twitter Card ──
       document::Meta { name: "twitter:card", content: "summary_large_image" }
+      if let Some(site_handle) = twitter_site() {
+          document::Meta { name: "twitter:site", content: "{site_handle}" }
+      }
       document::Meta { name: "twitter:title", content: "{meta.title}" }
       if let Some(desc) = meta.description.as_ref() {
           if !desc.is_empty() {
@@ -108,26 +111,58 @@ pub fn inject_seo(meta: &PostMetadata, path: &str, base_url: &str) -> Element {
   }
 }
 
-/// 从 `assets/site.json` 读取站名（作为顶栏、页脚、Atom feed、schema.org 与所有页面
-/// `<title>` 的后缀）；未配置或为空时回退到开源引擎名 `"DioxusPress"`。
-pub fn site_name() -> &'static str {
+struct SiteSeoMeta {
+  site_name: String,
+  og_image: String,
+  twitter_handle: Option<String>,
+  in_language: &'static str,
+}
+
+fn site_seo_meta() -> &'static SiteSeoMeta {
   use std::sync::OnceLock;
-  static NAME: OnceLock<String> = OnceLock::new();
-  NAME.get_or_init(|| {
-    #[derive(serde::Deserialize)]
+  static META: OnceLock<SiteSeoMeta> = OnceLock::new();
+  META.get_or_init(|| {
+    #[derive(serde::Deserialize, Default)]
     struct PartialSite {
       site_name: Option<String>,
+      og_image: Option<String>,
+      twitter_handle: Option<String>,
+      default_language: Option<String>,
     }
-    serde_json::from_str::<PartialSite>(include_str!("../../../assets/site.json"))
-      .ok()
-      .and_then(|s| s.site_name)
-      .map(|s| s.trim().to_string())
-      .filter(|s| !s.is_empty())
-      .unwrap_or_else(|| "DioxusPress".to_string())
+    let parsed = serde_json::from_str::<PartialSite>(include_str!("../../../assets/site.json"))
+      .unwrap_or_default();
+    let trim_non_empty =
+      |opt: Option<String>| opt.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let in_language = match parsed.default_language.as_deref().map(str::trim) {
+      Some(lang) if lang.eq_ignore_ascii_case("en") => "en-US",
+      _ => "zh-CN",
+    };
+    SiteSeoMeta {
+      site_name: trim_non_empty(parsed.site_name).unwrap_or_else(|| "DioxusPress".to_string()),
+      og_image: trim_non_empty(parsed.og_image).unwrap_or_else(|| DEFAULT_OG_IMAGE.to_string()),
+      twitter_handle: trim_non_empty(parsed.twitter_handle),
+      in_language,
+    }
   })
 }
 
-/// 页面没有自己的图时的分享图（1200×630，`assets/images/og-default.jpg`）。
+/// 从 `assets/site.json` 读取站名（作为顶栏、页脚、Atom feed、schema.org 与所有页面
+/// `<title>` 的后缀）；未配置或为空时回退到开源引擎名 `"DioxusPress"`。
+pub fn site_name() -> &'static str {
+  &site_seo_meta().site_name
+}
+
+/// 从 `assets/site.json` 读取默认分享图路径；未配置时回退到 [`DEFAULT_OG_IMAGE`]。
+pub fn default_og_image() -> &'static str {
+  &site_seo_meta().og_image
+}
+
+/// 从 `assets/site.json` 读取可选 `twitter_handle`（用于 `twitter:site`）。
+pub fn twitter_site() -> Option<&'static str> {
+  site_seo_meta().twitter_handle.as_deref()
+}
+
+/// 页面没有自己的图时的分享图默认值（1200×630，`assets/images/og-default.jpg`）。
 pub const DEFAULT_OG_IMAGE: &str = "/images/og-default.jpg";
 
 /// 列表 / 落地页的元信息：`<title>`（`{title} - 站名`）、description、
@@ -184,8 +219,10 @@ pub fn PageMetaTags(
   });
   let full_title = page_title(&title);
   let json_ld = schema.as_ref().and_then(|v| page_json_ld(v, &canonical));
-  let image =
-    absolute_url(image.as_deref().filter(|s| !s.is_empty()).unwrap_or(DEFAULT_OG_IMAGE), &base_url);
+  let image = absolute_url(
+    image.as_deref().filter(|s| !s.is_empty()).unwrap_or_else(|| default_og_image()),
+    &base_url,
+  );
   rsx! {
       crate::browser::PageTitle { title: full_title.clone() }
       if !description.is_empty() {
@@ -199,6 +236,9 @@ pub fn PageMetaTags(
       document::Meta { property: "og:site_name", content: site_name() }
       document::Meta { property: "og:image", content: "{image}" }
       document::Meta { name: "twitter:card", content: "summary_large_image" }
+      if let Some(site_handle) = twitter_site() {
+          document::Meta { name: "twitter:site", content: "{site_handle}" }
+      }
       document::Meta { name: "twitter:title", content: "{full_title}" }
       document::Meta { name: "twitter:image", content: "{image}" }
       document::Link { rel: "canonical", href: "{canonical}" }
@@ -226,7 +266,11 @@ pub fn lang_path(path: &str, en: bool) -> String {
 
 /// 首页的 schema.org `WebSite`（G8）。
 pub fn website_schema() -> serde_json::Value {
-  serde_json::json!({ "@type": "WebSite", "name": site_name(), "inLanguage": "zh-CN" })
+  serde_json::json!({
+    "@type": "WebSite",
+    "name": site_name(),
+    "inLanguage": site_seo_meta().in_language
+  })
 }
 
 /// PageMeta 的 JSON-LD：补 `@context` 与 `url`，序列化后转义 `<`。只接受对象。

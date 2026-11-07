@@ -43,7 +43,10 @@ pub fn MinimalShell() -> Element {
                   div { class: "h-12 flex items-center justify-between gap-4",
                       Link {
                           to: Route::Home {},
-                          class: "font-extrabold tracking-tight text-flow text-sm",
+                          class: "font-extrabold tracking-tight text-flow text-sm inline-flex items-center gap-2",
+                          if let Some(logo_src) = app_core::settings::SiteConfig::embedded().logo_url() {
+                              img { src: "{logo_src}", alt: "", class: "h-5 w-5 object-contain" }
+                          }
                           "{widgets::site_name()}"
                       }
                       div { class: "flex items-center gap-2",
