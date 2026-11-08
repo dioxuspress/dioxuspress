@@ -60,6 +60,37 @@ fn App() -> Element {
 }
 ```
 
+还可以使用 `:::code-tabs` 将多份示例代码放在同一个标签组内对比（例如对比 **Typst**、**LaTeX** 与 **Markdown** 的语法）：
+
+:::code-tabs
+```typst [Typst]
+#set page(paper: "a4", margin: 2cm)
+#set heading(numbering: "1.1")
+
+= 现代排版引擎 <intro>
+在 @intro 中，我们直接写 *粗体*、_斜体_ 与高斯积分：
+$ integral_0^oo e^(-x^2) dif x = sqrt(pi) / 2 $
+```
+
+```latex [LaTeX]
+\documentclass[a4paper]{article}
+\usepackage[margin=2cm]{geometry}
+\begin{document}
+\section{现代排版引擎}\label{sec:intro}
+在 Section~\ref{sec:intro} 中，我们写 \textbf{粗体}、\emph{斜体} 与高斯积分：
+\[ \int_0^\infty e^{-x^2}\,\mathrm{d}x = \frac{\sqrt{\pi}}{2} \]
+\end{document}
+```
+
+```markdown [Markdown]
+# 现代排版引擎
+
+在正文中，我们写 **粗体**、*斜体* 与高斯积分：
+
+$$\int_0^\infty e^{-x^2}\,\mathrm{d}x = \frac{\sqrt{\pi}}{2}$$
+```
+:::
+
 ### 4. 表格 (Tables)
 
 | 特性 | 描述 | 状态 |

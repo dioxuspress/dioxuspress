@@ -433,6 +433,9 @@ pub fn lang_from_ext(name: &str) -> String {
     "cpp" | "hpp" | "cc" | "hh" => "cpp",
     "html" => "html",
     "css" => "css",
+    "typ" | "typst" => "typst",
+    "tex" | "latex" => "latex",
+    "md" | "mdx" | "markdown" => "markdown",
     _ => "text",
   }
   .to_string()
