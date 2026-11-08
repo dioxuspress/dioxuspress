@@ -7,6 +7,7 @@
 //!    保持与原版一致，welcome 示例和现有快照仍可像素级回归。
 
 use dioxus::prelude::*;
+use dioxus_shadcn::{CodeTabs, CodeTabsContent, CodeTabsList, CodeTabsTrigger};
 use pulldown_cmark::{
   Alignment, BlockQuoteKind, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag,
   TagEnd,
@@ -453,6 +454,14 @@ fn render_stream<'a>(
                     }
                 }
                 let id = mint_block_id(top, block_idx);
+                if lang == "__code_tabs__" && !untrusted {
+                    if let Ok(tabs) = serde_json::from_str::<Vec<CodeTabItem>>(&code_text) {
+                        if !tabs.is_empty() {
+                            nodes.push(render_code_tabs_block(tabs, id));
+                            continue;
+                        }
+                    }
+                }
                 if renders_as_diagram(&lang, untrusted) {
                     nodes.push(render_mermaid_block(code_text, id));
                 } else {
@@ -854,10 +863,12 @@ fn code_fence(trimmed: &str) -> Option<(char, usize)> {
   (len >= 3).then_some((ch, len))
 }
 
-/// 将 :::type 语法转换为 GFM alert 语法
+/// 将 :::type 语法转换为 GFM alert 语法，并将 :::code-tabs 转换为多标签代码对比块
 fn convert_admonitions(body: &str) -> String {
   let mut result = String::with_capacity(body.len());
   let mut in_block = false;
+  let mut in_code_tabs = false;
+  let mut code_tabs_lines: Vec<&str> = Vec::new();
   // 围栏代码块里的 `:::`（比如 rustc 报错里的 `  ::: src/x.rs:1:1`）原样保留
   let mut fence: Option<(char, usize)> = None;
 
@@ -871,10 +882,15 @@ fn convert_admonitions(body: &str) -> String {
       }
     } else if let Some(open) = code_fence(trimmed) {
       fence = Some(open);
-    } else if !in_block {
-      if let Some(kind) = trimmed.strip_prefix(":::").and_then(|rest| {
-        let word = rest.split_whitespace().next().unwrap_or("");
-        match word.to_lowercase().as_str() {
+    } else if !in_block && !in_code_tabs {
+      if let Some(rest) = trimmed.strip_prefix(":::") {
+        let word = rest.split_whitespace().next().unwrap_or("").to_lowercase();
+        if matches!(word.as_str(), "code-tabs" | "codetabs" | "tabs") {
+          in_code_tabs = true;
+          code_tabs_lines.clear();
+          continue;
+        }
+        let kind = match word.as_str() {
           "note" | "info" => Some("NOTE"),
           "tip" | "success" => Some("TIP"),
           "important" => Some("IMPORTANT"),
@@ -882,15 +898,31 @@ fn convert_admonitions(body: &str) -> String {
           "caution" | "danger" | "error" => Some("CAUTION"),
           _ if !word.is_empty() => Some("NOTE"), // 未知类型默认为 NOTE
           _ => None,
+        };
+        if let Some(kind) = kind {
+          result.push_str(&format!("> [!{}]\n", kind));
+          in_block = true;
+          continue;
         }
-      }) {
-        result.push_str(&format!("> [!{}]\n", kind));
-        in_block = true;
-        continue;
       }
-    } else if trimmed == ":::" {
+    } else if in_code_tabs && trimmed == ":::" {
+      in_code_tabs = false;
+      let tabs = parse_code_tabs_lines(&code_tabs_lines);
+      if let Ok(json) = serde_json::to_string(&tabs) {
+        result.push_str("``````__code_tabs__\n");
+        result.push_str(&json);
+        result.push_str("\n``````\n\n");
+      }
+      code_tabs_lines.clear();
+      continue;
+    } else if in_block && trimmed == ":::" {
       in_block = false;
       result.push('\n');
+      continue;
+    }
+
+    if in_code_tabs {
+      code_tabs_lines.push(line);
       continue;
     }
 
@@ -903,6 +935,92 @@ fn convert_admonitions(body: &str) -> String {
     result.push('\n');
   }
   result
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct CodeTabItem {
+  pub value: String,
+  pub label: String,
+  pub lang: String,
+  pub code: String,
+}
+
+fn default_code_tab_label(lang: &str) -> String {
+  match lang.to_ascii_lowercase().as_str() {
+    "typ" | "typst" => "Typst".to_string(),
+    "tex" | "latex" => "LaTeX".to_string(),
+    "md" | "mdx" | "markdown" => "Markdown".to_string(),
+    "rs" | "rust" => "Rust".to_string(),
+    "py" | "python" => "Python".to_string(),
+    "js" | "javascript" => "JavaScript".to_string(),
+    "ts" | "typescript" => "TypeScript".to_string(),
+    "sh" | "bash" | "zsh" => "Bash".to_string(),
+    "toml" => "TOML".to_string(),
+    "json" => "JSON".to_string(),
+    "yaml" | "yml" => "YAML".to_string(),
+    other if !other.is_empty() => other.to_string(),
+    _ => "Code".to_string(),
+  }
+}
+
+fn parse_code_fence_info(info: &str) -> (String, String) {
+  let trimmed = info.trim();
+  let lang_raw = trimmed
+    .split(|c: char| c == ',' || c == '{' || c == '[' || c.is_whitespace())
+    .next()
+    .filter(|s| !s.is_empty())
+    .unwrap_or("text");
+  let lang = match lang_raw.to_ascii_lowercase().as_str() {
+    "typ" => "typst".to_string(),
+    "tex" => "latex".to_string(),
+    "md" => "markdown".to_string(),
+    other => other.to_string(),
+  };
+  let label = if let Some(start) = trimmed.find('[') {
+    let rest = &trimmed[start + 1..];
+    rest.find(']').map(|end| rest[..end].trim().to_string()).filter(|s| !s.is_empty())
+  } else if let Some(start) = trimmed.find("title=\"") {
+    let rest = &trimmed[start + 7..];
+    rest.find('"').map(|end| rest[..end].trim().to_string()).filter(|s| !s.is_empty())
+  } else {
+    None
+  }
+  .unwrap_or_else(|| default_code_tab_label(lang_raw));
+  (lang, label)
+}
+
+fn parse_code_tabs_lines(lines: &[&str]) -> Vec<CodeTabItem> {
+  let mut items = Vec::new();
+  let mut current_fence: Option<(char, usize, String, String)> = None;
+  let mut current_code = String::new();
+
+  for line in lines {
+    let trimmed = line.trim();
+    if let Some((ch, len, ref lang, ref label)) = current_fence {
+      let closes = code_fence(trimmed)
+        .is_some_and(|(c, n)| c == ch && n >= len && trimmed.chars().all(|x| x == ch));
+      if closes {
+        let idx = items.len();
+        items.push(CodeTabItem {
+          value: format!("tab-{idx}"),
+          label: label.clone(),
+          lang: lang.clone(),
+          code: current_code.trim_end_matches('\n').to_string(),
+        });
+        current_code.clear();
+        current_fence = None;
+      } else {
+        current_code.push_str(line);
+        current_code.push('\n');
+      }
+    } else if let Some((ch, len)) = code_fence(trimmed) {
+      let info = &trimmed[len..];
+      let (lang, label) = parse_code_fence_info(info);
+      current_fence = Some((ch, len, lang, label));
+      current_code.clear();
+    }
+  }
+  items
 }
 
 fn render_blockquote(
@@ -1007,6 +1125,77 @@ fn render_mermaid_block(code_text: String, block_id: Option<String>) -> Element 
 
 fn render_code_block(lang: String, code_text: String, block_id: Option<String>) -> Element {
   rsx! { CodeBlock { lang, code_text, block_id } }
+}
+
+fn render_code_tabs_block(tabs: Vec<CodeTabItem>, block_id: Option<String>) -> Element {
+  rsx! { CodeTabsBlock { tabs, block_id } }
+}
+
+#[component]
+fn CodeTabsBlock(tabs: Vec<CodeTabItem>, block_id: Option<String>) -> Element {
+  let mut copied_tab = use_signal(|| None::<String>);
+  let bid = block_id.unwrap_or_default();
+  let has_bid = !bid.is_empty();
+  let default_val = tabs.first().map(|t| t.value.clone()).unwrap_or_default();
+
+  rsx! {
+      div {
+          id: if has_bid { "{bid}" },
+          "data-block-id": if has_bid { "{bid}" },
+          class: "not-prose my-6",
+          CodeTabs { default_value: "{default_val}",
+              CodeTabsList { "aria-label": "代码对比",
+                  for tab in &tabs {
+                      CodeTabsTrigger {
+                          key: "{tab.value}",
+                          value: "{tab.value}",
+                          "{tab.label}"
+                      }
+                  }
+              }
+              for tab in &tabs {
+                  {
+                      let val = tab.value.clone();
+                      let code_for_copy = tab.code.clone();
+                      let is_copied = copied_tab().as_deref() == Some(val.as_str());
+                      rsx! {
+                          CodeTabsContent {
+                              key: "{tab.value}",
+                              value: "{tab.value}",
+                              class: "relative p-0 bg-slate-900 shadow-inner",
+                              div {
+                                  class: "relative",
+                                  style: "position:relative",
+                                  button {
+                                      class: "absolute z-10 px-2.5 py-1 text-xs font-medium text-slate-400 bg-slate-800/80 border border-slate-700 rounded-md hover:text-white hover:bg-slate-700 transition-all cursor-pointer",
+                                      style: "position:absolute;right:0.75rem;top:0.75rem",
+                                      onclick: move |_| {
+                                          let text = code_for_copy.clone();
+                                          let v = val.clone();
+                                          spawn(async move {
+                                              if crate::browser::copy_text(&text).await {
+                                                  copied_tab.set(Some(v));
+                                                  crate::browser::sleep_ms(1500).await;
+                                                  copied_tab.set(None);
+                                              }
+                                          });
+                                      },
+                                      if is_copied { "Copied!" } else { "Copy" }
+                                  }
+                                  pre { class: "rounded-xl p-4 bg-slate-900 overflow-x-auto",
+                                      code {
+                                          class: "language-{tab.lang} text-sm text-slate-200",
+                                          dangerous_inner_html: escape_markup(&tab.code),
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+      }
+  }
 }
 
 #[component]
@@ -1694,5 +1883,17 @@ mod tests {
       push_mathml(&mut expected, LatexParser::new(latex, &storage), config).unwrap();
       assert_eq!(latex_to_mathml_string(latex, false), expected, "{latex}");
     }
+  }
+
+  #[test]
+  fn code_tabs_block_renders_three_tabs_and_active_panel() {
+    let md = ":::code-tabs\n```typst [Typst]\n= Heading\n```\n\n```latex [LaTeX]\n\\section{Heading}\n```\n\n```markdown [Markdown]\n# Heading\n```\n:::\n";
+    let html = render_markdown(md, false);
+    assert!(html.contains(r#"role="tablist""#), "{html}");
+    assert!(html.contains(">Typst</button>"), "{html}");
+    assert!(html.contains(">LaTeX</button>"), "{html}");
+    assert!(html.contains(">Markdown</button>"), "{html}");
+    assert!(html.contains(r#"class="language-typst text-sm text-slate-200""#), "{html}");
+    assert!(html.contains("= Heading"), "{html}");
   }
 }

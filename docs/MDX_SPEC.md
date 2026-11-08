@@ -76,6 +76,8 @@ tags: [rust, welcome]
 - `:::note / :::tip / :::important / :::warning / :::caution / :::info /
   :::warn / :::danger / :::error / :::success`
   → 转换为对应的 GFM alert 块
+- `:::code-tabs ... :::`（或 `:::tabs ... :::`）
+  → 将块内的多个围栏代码块（如 ```` ```typst [Typst] ````、```` ```latex [LaTeX] ````、```` ```markdown [Markdown] ````）渲染为 `dioxus_shadcn::CodeTabs` 交互式多标签代码对比组件（带底部指示线切换、Copy 按钮与 PrismJS 高亮）
 
 代码块支持：
 
