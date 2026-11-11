@@ -1,5 +1,7 @@
 //! S7（风险 R8）：静态资源目录服务。从 `main.rs` 拆出，行为不变。
 
+use std::path::{Path, PathBuf};
+
 use axum::http::{header, HeaderValue};
 use axum::middleware;
 use axum::response::Response;
@@ -10,10 +12,25 @@ use tower_http::services::ServeDir;
 
 /// 挂载静态资源目录。`assets_root` 为资产根目录（启动期解析）。
 pub fn mount(router: Router, assets_root: &str) -> Router {
+  let content_root = std::env::var_os("CONTENT_DIR").filter(|v| !v.is_empty()).map(PathBuf::from);
+  mount_with_content(router, assets_root, content_root.as_deref())
+}
+
+fn mount_with_content(router: Router, assets_root: &str, content_root: Option<&Path>) -> Router {
+  // `/images` 支持双仓叠加：设了 `CONTENT_DIR` 时优先命中 `$CONTENT_DIR/images`（站点私有品牌视觉），
+  // 未命中再回退到框架自带的 `assets/images`，从而让公开框架与私有站点品牌彻底解耦且支持热更新。
+  let asset_images = ServeDir::new(format!("{}/images", assets_root));
+  let images_router = match content_root {
+    Some(root) => Router::new()
+      .fallback_service(ServeDir::new(root.join("images")).fallback(asset_images))
+      .layer(middleware::map_response(cache_control(DAY))),
+    None => cached(asset_images, DAY),
+  };
+
   // 文件名不带哈希：浏览器缓存一段时间，过期后靠 Last-Modified 复验（304）。
   // 文章图片 / 音频改动很少，一天；上传文件可能被审核撤下，一小时；字体基本不变，30 天。
   let router = router
-    .nest("/images", cached(ServeDir::new(format!("{}/images", assets_root)), DAY))
+    .nest("/images", images_router)
     .nest("/posts", cached(ServeDir::new(app_core::utils::content_dir("posts")), DAY))
     // 文档卷里的图（卷首页的架构图等）。`/docs` 本身是页面路由，文件走单独的前缀。
     .nest("/docs-files", cached(ServeDir::new(app_core::utils::content_dir("docs")), DAY))
@@ -115,6 +132,49 @@ mod tests {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(cache_control(&res), Some("public, max-age=86400"));
     assert!(res.headers().contains_key(header::LAST_MODIFIED));
+  }
+
+  /// `$CONTENT_DIR/images` 存在同名文件时优先覆盖 `assets/images`，仅框架存在的文件继续回退命中。
+  #[tokio::test]
+  async fn content_images_override_assets_with_fallback() {
+    let assets = tempfile::TempDir::new().unwrap();
+    let content = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(assets.path().join("images")).unwrap();
+    std::fs::create_dir_all(content.path().join("images")).unwrap();
+    std::fs::write(assets.path().join("images/logo.png"), "framework-logo").unwrap();
+    std::fs::write(assets.path().join("images/fallback.png"), "framework-only").unwrap();
+    std::fs::write(content.path().join("images/logo.png"), "content-logo").unwrap();
+
+    let app = super::mount_with_content(
+      axum::Router::new(),
+      assets.path().to_str().unwrap(),
+      Some(content.path()),
+    );
+
+    let res_override = app
+      .clone()
+      .oneshot(Request::builder().uri("/images/logo.png").body(Body::empty()).unwrap())
+      .await
+      .unwrap();
+    assert_eq!(res_override.status(), StatusCode::OK);
+    assert_eq!(cache_control(&res_override), Some("public, max-age=86400"));
+    let body_override = axum::body::to_bytes(res_override.into_body(), 1024).await.unwrap();
+    assert_eq!(&body_override[..], b"content-logo");
+
+    let res_fallback = app
+      .clone()
+      .oneshot(Request::builder().uri("/images/fallback.png").body(Body::empty()).unwrap())
+      .await
+      .unwrap();
+    assert_eq!(res_fallback.status(), StatusCode::OK);
+    let body_fallback = axum::body::to_bytes(res_fallback.into_body(), 1024).await.unwrap();
+    assert_eq!(&body_fallback[..], b"framework-only");
+
+    let res_missing = app
+      .oneshot(Request::builder().uri("/images/missing.png").body(Body::empty()).unwrap())
+      .await
+      .unwrap();
+    assert_eq!(res_missing.status(), StatusCode::NOT_FOUND);
   }
 
   /// 课时文件按用户鉴权，共享缓存（CDN / 反代）不得存，否则会把付费内容发给未购用户。

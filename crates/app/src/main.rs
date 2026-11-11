@@ -19,7 +19,6 @@ use module_search::search::{use_search_open_provider, SearchModal};
 
 /// Static assets used by the application.
 // Dioxus 0.7 默认在 crate root 的 assets 目录下寻找
-const FAVICON: Asset = asset!("/assets/images/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/css/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 const MATH_CSS: Asset = asset!("/assets/css/math.css");
@@ -551,12 +550,7 @@ fn HeadAssets() -> Element {
   let prism_src = PRISM_JS.to_string();
   let lang_script = lang_boot_script();
   let site_cfg = app_core::settings::SiteConfig::embedded();
-  let cfg_favicon = site_cfg.favicon_or_default();
-  let favicon_href = if cfg_favicon == app_core::settings::DEFAULT_FAVICON {
-    FAVICON.to_string()
-  } else {
-    cfg_favicon.to_string()
-  };
+  let favicon_href = site_cfg.favicon_or_default();
   let favicon_32_href = site_cfg.favicon_32_url();
   let favicon_16_href = site_cfg.favicon_16_url();
   let apple_touch_href = site_cfg.apple_touch_icon_url();
@@ -568,7 +562,7 @@ fn HeadAssets() -> Element {
       // widgets::browser::dark_mode_preference）。以前只在 wasm 加载后的 use_effect 里设，
       // 暗色用户每次打开页面先看到一屏白。
       document::Script { {DARK_MODE_BOOT_SCRIPT} }
-      // Head links：默认走 Dioxus 带哈希的 FAVICON 资产，site.json 自定义时走自定义路径
+      // Head links：统一走 `/images/*`（支持 `$CONTENT_DIR/images` 私有品牌覆盖与 `Last-Modified` 复验）
       document::Link { rel: "icon", href: "{favicon_href}" }
       if let Some(href) = favicon_32_href {
           document::Link { rel: "icon", r#type: "image/png", sizes: "32x32", href: "{href}" }

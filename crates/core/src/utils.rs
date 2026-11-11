@@ -19,7 +19,7 @@ pub fn get_asset_root() -> PathBuf {
   path
 }
 
-/// 站点内容目录：`kind` 为 `posts`（文章）或 `courses`（课程）。
+/// 站点内容目录：`kind` 为 `posts`（文章）、`docs`（文档卷）、`courses`（课程）或 `images`（品牌与配图）。
 ///
 /// 设了 `CONTENT_DIR` 就读 `$CONTENT_DIR/<kind>`——站点自己的内容放在框架仓库之外
 /// （私有内容仓库）；没设则用资产根下随框架发布的示例内容。
