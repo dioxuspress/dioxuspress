@@ -69,9 +69,30 @@ pub struct SiteConfig {
   /// 站点图标路径（如 `"/images/favicon.ico"` 或 `"/images/favicon.svg"`）。
   #[serde(default = "default_favicon")]
   pub favicon: String,
-  /// 顶栏 Logo 图片路径（可选，如 `"/images/header.svg"`；留空则仅显示文字站名）。
+  /// 16×16 PNG 浏览器图标路径（可选，如 `"/images/favicon-16.png"`）。
+  #[serde(default)]
+  pub favicon_16: Option<String>,
+  /// 32×32 PNG 浏览器图标路径（可选，如 `"/images/favicon-32.png"`）。
+  #[serde(default)]
+  pub favicon_32: Option<String>,
+  /// iOS 主屏图标路径（可选，如 `"/images/apple-touch-icon.png"`）。
+  #[serde(default)]
+  pub apple_touch_icon: Option<String>,
+  /// Web App Manifest 路径（可选，如 `"/images/site.webmanifest"`）。
+  #[serde(default)]
+  pub manifest: Option<String>,
+  /// 顶栏浅色/默认 Logo 图片路径（可选，如 `"/images/logo-light.png"`；留空则仅显示文字站名）。
   #[serde(default)]
   pub logo: Option<String>,
+  /// 顶栏深色模式 Logo 图片路径（可选，如 `"/images/logo-dark.png"`；未配置时复用 `logo`）。
+  #[serde(default)]
+  pub logo_dark: Option<String>,
+  /// 紧凑顶栏 / 窄屏独立品牌图标路径（可选，如 `"/images/logo-mobile.png"`）。
+  #[serde(default)]
+  pub logo_mobile: Option<String>,
+  /// `logo` / `logo_dark` 是否已内含站名文字（为 `true` 时横版 Logo 旁不再重复渲染文字站名）。
+  #[serde(default)]
+  pub logo_wordmark: bool,
   /// 默认 Open Graph / Twitter 分享图路径（默认 `"/images/og-default.jpg"`）。
   #[serde(default = "default_og_image")]
   pub og_image: String,
@@ -323,9 +344,39 @@ impl SiteConfig {
     non_empty_str(Some(self.favicon.as_str())).unwrap_or(DEFAULT_FAVICON)
   }
 
-  /// 顶栏 Logo 路径（未配置或为空字符串时返回 `None`）。
+  /// 16×16 PNG 图标路径（未配置或为空字符串时返回 `None`）。
+  pub fn favicon_16_url(&self) -> Option<&str> {
+    non_empty_str(self.favicon_16.as_deref())
+  }
+
+  /// 32×32 PNG 图标路径（未配置或为空字符串时返回 `None`）。
+  pub fn favicon_32_url(&self) -> Option<&str> {
+    non_empty_str(self.favicon_32.as_deref())
+  }
+
+  /// Apple Touch Icon 路径（未配置或为空字符串时返回 `None`）。
+  pub fn apple_touch_icon_url(&self) -> Option<&str> {
+    non_empty_str(self.apple_touch_icon.as_deref())
+  }
+
+  /// Web App Manifest 路径（未配置或为空字符串时返回 `None`）。
+  pub fn manifest_url(&self) -> Option<&str> {
+    non_empty_str(self.manifest.as_deref())
+  }
+
+  /// 顶栏浅色/默认 Logo 路径（未配置或为空字符串时返回 `None`）。
   pub fn logo_url(&self) -> Option<&str> {
     non_empty_str(self.logo.as_deref())
+  }
+
+  /// 顶栏深色模式 Logo 路径（未配置或为空字符串时返回 `None`）。
+  pub fn logo_dark_url(&self) -> Option<&str> {
+    non_empty_str(self.logo_dark.as_deref())
+  }
+
+  /// 紧凑顶栏 / 窄屏独立品牌图标路径（未配置或为空字符串时返回 `None`）。
+  pub fn logo_mobile_url(&self) -> Option<&str> {
+    non_empty_str(self.logo_mobile.as_deref())
   }
 
   /// 默认社交分享图路径（为空时回退到 [`DEFAULT_OG_IMAGE`]）。
@@ -402,7 +453,14 @@ impl Default for SiteConfig {
       default_language: default_language(),
       author: String::new(),
       favicon: default_favicon(),
+      favicon_16: None,
+      favicon_32: None,
+      apple_touch_icon: None,
+      manifest: None,
       logo: None,
+      logo_dark: None,
+      logo_mobile: None,
+      logo_wordmark: false,
       og_image: default_og_image(),
       twitter_handle: None,
       submit_case_url: None,
@@ -582,7 +640,14 @@ mod tests {
       "site_name": "MySite",
       "default_language": "en",
       "favicon": "/images/custom.svg",
+      "favicon_16": " /images/favicon-16.png ",
+      "favicon_32": "/images/favicon-32.png",
+      "apple_touch_icon": "/images/apple-touch-icon.png",
+      "manifest": "/images/site.webmanifest",
       "logo": " /images/logo.svg ",
+      "logo_dark": " /images/logo-dark.svg ",
+      "logo_mobile": "/images/logo-mobile.png",
+      "logo_wordmark": true,
       "og_image": "/images/custom-og.png",
       "twitter_handle": "@mysite",
       "submit_case_url": "https://github.com/example/repo/issues/new",
@@ -609,7 +674,14 @@ mod tests {
     assert_eq!(cfg.site_name_or_default(), "MySite");
     assert_eq!(cfg.default_language_enum(), Language::En);
     assert_eq!(cfg.favicon_or_default(), "/images/custom.svg");
+    assert_eq!(cfg.favicon_16_url(), Some("/images/favicon-16.png"));
+    assert_eq!(cfg.favicon_32_url(), Some("/images/favicon-32.png"));
+    assert_eq!(cfg.apple_touch_icon_url(), Some("/images/apple-touch-icon.png"));
+    assert_eq!(cfg.manifest_url(), Some("/images/site.webmanifest"));
     assert_eq!(cfg.logo_url(), Some("/images/logo.svg"));
+    assert_eq!(cfg.logo_dark_url(), Some("/images/logo-dark.svg"));
+    assert_eq!(cfg.logo_mobile_url(), Some("/images/logo-mobile.png"));
+    assert!(cfg.logo_wordmark);
     assert_eq!(cfg.og_image_or_default(), "/images/custom-og.png");
     assert_eq!(cfg.twitter_handle_or_none(), Some("@mysite"));
     assert_eq!(cfg.submit_case_url_or_none(), Some("https://github.com/example/repo/issues/new"));
@@ -634,7 +706,14 @@ mod tests {
     assert_eq!(cfg.site_name_or_default(), DEFAULT_SITE_NAME);
     assert_eq!(cfg.default_language_enum(), Language::Zh);
     assert_eq!(cfg.favicon_or_default(), DEFAULT_FAVICON);
+    assert_eq!(cfg.favicon_16_url(), None);
+    assert_eq!(cfg.favicon_32_url(), None);
+    assert_eq!(cfg.apple_touch_icon_url(), None);
+    assert_eq!(cfg.manifest_url(), None);
     assert_eq!(cfg.logo_url(), None);
+    assert_eq!(cfg.logo_dark_url(), None);
+    assert_eq!(cfg.logo_mobile_url(), None);
+    assert!(!cfg.logo_wordmark);
     assert_eq!(cfg.og_image_or_default(), DEFAULT_OG_IMAGE);
     assert_eq!(cfg.twitter_handle_or_none(), None);
     assert_eq!(cfg.submit_case_url_or_none(), None);

@@ -7,4 +7,9 @@ ignore = [
   # rsa 0.9.10 Marvin 时序侧信道，上游没有修复版。module-payment 只用私钥做 PKCS#1 v1.5 签名、
   # 不做解密，签名内容由服务端生成。重看：rsa 0.10 正式版发布时升级。
   "RUSTSEC-2023-0071",
+  # libsqlite3-sys 0.30.1：只出现在 Cargo.lock（sqlx -> sqlx-sqlite 0.8.6 的未启用可选依赖，
+  # 且上游锁在 ^0.30 无法 semver 升到 0.39），本项目仅使用 Postgres，任何 feature / target
+  # 组合的构建图里都没有（`cargo tree -i libsqlite3-sys --target all -e all --all-features` 为空）。
+  # 重看：它出现在 cargo tree 里时，或上游 sqlx 发布包含 libsqlite3-sys >= 0.39 的版本时移除。
+  "RUSTSEC-2026-0459",
 ]

@@ -19,7 +19,6 @@ use module_search::search::{use_search_open_provider, SearchModal};
 
 /// Static assets used by the application.
 // Dioxus 0.7 默认在 crate root 的 assets 目录下寻找
-const FAVICON: Asset = asset!("/assets/images/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/css/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 const MATH_CSS: Asset = asset!("/assets/css/math.css");
@@ -550,12 +549,12 @@ fn HeadAssets() -> Element {
   // asset 路径只含 [A-Za-z0-9./_-]，可直接放进单引号字符串
   let prism_src = PRISM_JS.to_string();
   let lang_script = lang_boot_script();
-  let cfg_favicon = app_core::settings::SiteConfig::embedded().favicon_or_default();
-  let favicon_href = if cfg_favicon == app_core::settings::DEFAULT_FAVICON {
-    FAVICON.to_string()
-  } else {
-    cfg_favicon.to_string()
-  };
+  let site_cfg = app_core::settings::SiteConfig::embedded();
+  let favicon_href = site_cfg.favicon_or_default();
+  let favicon_32_href = site_cfg.favicon_32_url();
+  let favicon_16_href = site_cfg.favicon_16_url();
+  let apple_touch_href = site_cfg.apple_touch_icon_url();
+  let manifest_href = site_cfg.manifest_url();
   rsx! {
       // <html lang> 跟首屏语言走（index.html 写死 zh-CN）；规则同 i18n::pick_language
       document::Script { {lang_script} }
@@ -563,8 +562,20 @@ fn HeadAssets() -> Element {
       // widgets::browser::dark_mode_preference）。以前只在 wasm 加载后的 use_effect 里设，
       // 暗色用户每次打开页面先看到一屏白。
       document::Script { {DARK_MODE_BOOT_SCRIPT} }
-      // Head links：默认走 Dioxus 带哈希的 FAVICON 资产，site.json 自定义时走自定义路径
+      // Head links：统一走 `/images/*`（支持 `$CONTENT_DIR/images` 私有品牌覆盖与 `Last-Modified` 复验）
       document::Link { rel: "icon", href: "{favicon_href}" }
+      if let Some(href) = favicon_32_href {
+          document::Link { rel: "icon", r#type: "image/png", sizes: "32x32", href: "{href}" }
+      }
+      if let Some(href) = favicon_16_href {
+          document::Link { rel: "icon", r#type: "image/png", sizes: "16x16", href: "{href}" }
+      }
+      if let Some(href) = apple_touch_href {
+          document::Link { rel: "apple-touch-icon", sizes: "180x180", href: "{href}" }
+      }
+      if let Some(href) = manifest_href {
+          document::Link { rel: "manifest", href: "{href}" }
+      }
       // feed 自动发现（O4）：/feed.xml 是 Atom。
       document::Link { rel: "alternate", r#type: "application/atom+xml", title: widgets::site_name(), href: "/feed.xml" }
       document::Link { rel: "stylesheet", href: MAIN_CSS }
