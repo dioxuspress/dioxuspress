@@ -44,10 +44,7 @@ pub fn MinimalShell() -> Element {
                       Link {
                           to: Route::Home {},
                           class: "font-extrabold tracking-tight text-flow text-sm inline-flex items-center gap-2",
-                          if let Some(logo_src) = app_core::settings::SiteConfig::embedded().logo_url() {
-                              img { src: "{logo_src}", alt: "", class: "h-5 w-5 object-contain" }
-                          }
-                          "{widgets::site_name()}"
+                          super::BrandMark { compact: true }
                       }
                       div { class: "flex items-center gap-2",
                           SearchButton {}

@@ -113,10 +113,7 @@ pub fn ClassicShell() -> Element {
                               // 站名不截断（O8）：<sm 时主题 / 语言收进抽屉、登录只留图标，
                               // 右侧按钮组让出的宽度足够放下完整站名。
                               class: "font-extrabold tracking-tight text-flow whitespace-nowrap inline-flex items-center gap-2 shrink-0",
-                              if let Some(logo_src) = app_core::settings::SiteConfig::embedded().logo_url() {
-                                  img { src: "{logo_src}", alt: "", class: "h-6 w-6 object-contain" }
-                              }
-                              "{widgets::site_name()}"
+                              super::BrandMark {}
                           }
                           // 双生态为主：Rust 生态▾ / AI 生态▾ mega 菜单 + 4 个内容类型入口。
                           // 领域（嵌入式/Web3/… · 大模型/推理/…）收进 mega，不再平铺顶层。
@@ -285,7 +282,11 @@ pub fn ClassicShell() -> Element {
                   // 加厚 footer：品牌简介 + 内容栏 + 社区栏
                   div { class: "py-12 grid grid-cols-2 md:grid-cols-5 gap-8 text-sm",
                       div { class: "col-span-2 md:col-span-2",
-                          span { class: "font-extrabold text-flow text-base", "{widgets::site_name()}" }
+                          Link {
+                              to: Route::Home {},
+                              class: "font-extrabold text-flow text-base inline-flex items-center gap-2",
+                              super::BrandMark {}
+                          }
                           p { class: "mt-2 max-w-sm text-slate-500 dark:text-slate-400 leading-relaxed",
                               "{app_core::settings::SiteConfig::embedded().footer_tagline(lang())}"
                           }

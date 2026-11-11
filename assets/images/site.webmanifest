@@ -1,0 +1,22 @@
+{
+  "name": "Rust in Everything",
+  "short_name": "Rust in Everything",
+  "description": "专注 Rust 技术栈的学习与实战",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#05102c",
+  "icons": [
+    {
+      "src": "/images/android-chrome-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/images/android-chrome-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
