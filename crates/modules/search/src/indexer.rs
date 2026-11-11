@@ -36,7 +36,7 @@ pub struct VersionedDoc {
 /// - `dyn_uids`：动态来源（cases / topics 等）uid 集合，仅用于检测删除：
 ///   动态来源每次都全量 upsert（没有可靠的 version key），但靠 manifest
 ///   记录上次见过的 uid 集合，本次缺失的 → delete。
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexManifest {
   #[serde(default = "default_manifest_version")]
   pub version: u32,
@@ -50,19 +50,36 @@ fn default_manifest_version() -> u32 {
   1
 }
 
+impl Default for IndexManifest {
+  fn default() -> Self {
+    Self { version: Self::CURRENT_VERSION, files: BTreeMap::new(), dyn_uids: BTreeSet::new() }
+  }
+}
+
 impl IndexManifest {
   pub const FILE_NAME: &'static str = "manifest.json";
+  /// 索引字段生成规则变更时递增版本号，触发存量索引在下次刷新时重跑一次文件 upsert。
+  pub const CURRENT_VERSION: u32 = 2;
 
-  /// 加载磁盘上的清单；不存在或解析失败时返回默认空清单（视作首次构建）。
+  /// 加载磁盘上的清单；不存在、解析失败或版本过期时返回默认空清单（触发全量刷新）。
   pub fn load(dir: &Path) -> Self {
     let path = dir.join(Self::FILE_NAME);
     let Ok(raw) = std::fs::read_to_string(&path) else {
       return Self::default();
     };
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
+    let parsed: Self = serde_json::from_str(&raw).unwrap_or_else(|e| {
       tracing::warn!(path = %path.display(), error = %e, "search: manifest parse failed, treating as empty");
       Self::default()
-    })
+    });
+    if parsed.version != Self::CURRENT_VERSION {
+      tracing::info!(
+        old_version = parsed.version,
+        new_version = Self::CURRENT_VERSION,
+        "search: manifest schema bumped, scheduling full file re-upsert"
+      );
+      return Self::default();
+    }
+    parsed
   }
 
   /// 原子写入：先写 `.tmp`，再 `rename` 替换正式文件。
@@ -136,7 +153,11 @@ pub fn diff_for_reindex(
   ReindexDiff {
     upserts,
     deletes,
-    next: IndexManifest { version: 1, files: next_files, dyn_uids: next_dyn },
+    next: IndexManifest {
+      version: IndexManifest::CURRENT_VERSION,
+      files: next_files,
+      dyn_uids: next_dyn,
+    },
   }
 }
 
@@ -307,7 +328,50 @@ fn collect_docs_versioned() -> Vec<VersionedDoc> {
   out
 }
 
+fn doc_volume_label(vol_dir: &Path, fallback_slug: &str) -> String {
+  for name in ["index.mdx", "index.md"] {
+    let file = vol_dir.join(name);
+    if let Ok(raw) = std::fs::read_to_string(&file) {
+      let fm = parse_frontmatter_kv(&raw);
+      if let Some(sl) = fm.get("sidebar_label").filter(|s| !s.is_empty()) {
+        return sl.clone();
+      }
+      if let Some(t) = fm.get("title").filter(|s| !s.is_empty()) {
+        return t.clone();
+      }
+      for line in raw.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix("# ") {
+          let h = rest.trim();
+          if !h.is_empty() {
+            return h.to_string();
+          }
+        }
+      }
+    }
+  }
+  fallback_slug.to_string()
+}
+
+fn qualify_search_doc_title(title: String, rel_path: &str, vol_label: Option<&str>) -> String {
+  let Some((vol_slug, _)) = rel_path.split_once('/') else {
+    return title;
+  };
+  let label = vol_label.filter(|s| !s.is_empty()).unwrap_or(vol_slug);
+  if title.is_empty() || label.is_empty() {
+    return title;
+  }
+  let low = title.to_lowercase();
+  if low.contains(&label.to_lowercase()) || low.contains(&vol_slug.to_lowercase()) {
+    return title;
+  }
+  format!("{title} · {label}")
+}
+
 fn walk_docs(base: &Path, dir: &Path, out: &mut Vec<VersionedDoc>) {
+  walk_docs_inner(base, dir, None, out);
+}
+
+fn walk_docs_inner(base: &Path, dir: &Path, vol_label: Option<&str>, out: &mut Vec<VersionedDoc>) {
   let entries = match std::fs::read_dir(dir) {
     Ok(e) => e,
     Err(_) => return,
@@ -321,6 +385,11 @@ fn walk_docs(base: &Path, dir: &Path, out: &mut Vec<VersionedDoc>) {
     if name.starts_with('_') || name.starts_with('.') {
       continue;
     }
+    let next_vol_label = match vol_label {
+      Some(v) => Some(v.to_string()),
+      None if dir == base => Some(doc_volume_label(&path, name)),
+      None => None,
+    };
     // 当前目录的 index.{md,mdx}
     let mdx = path.join("index.mdx");
     let md = path.join("index.md");
@@ -335,6 +404,7 @@ fn walk_docs(base: &Path, dir: &Path, out: &mut Vec<VersionedDoc>) {
       if let Some((title, body, date)) = read_md_file(&file) {
         let rel = path.strip_prefix(base).unwrap_or(&path);
         let rel_str = rel.to_string_lossy().replace('\\', "/");
+        let title = qualify_search_doc_title(title, &rel_str, next_vol_label.as_deref());
         let mtime = file_mtime_secs(&file);
         out.push(VersionedDoc {
           doc: IndexedDocument {
@@ -350,7 +420,7 @@ fn walk_docs(base: &Path, dir: &Path, out: &mut Vec<VersionedDoc>) {
       }
     }
     // 递归
-    walk_docs(base, &path, out);
+    walk_docs_inner(base, &path, next_vol_label.as_deref(), out);
   }
 }
 
@@ -550,9 +620,12 @@ mod tests {
     let ids: Vec<&str> = out.iter().map(|v| v.doc.ref_id.as_str()).collect();
     assert!(ids.contains(&"axum"));
     assert!(ids.contains(&"axum/basic"));
-    // url 拼接正确
+    // url 与子章节标题后缀拼接正确
     let basic = out.iter().find(|v| v.doc.ref_id == "axum/basic").expect("found");
     assert_eq!(basic.doc.url, "/docs/axum/basic");
+    assert_eq!(basic.doc.title, "basic · axum");
+    let root = out.iter().find(|v| v.doc.ref_id == "axum").expect("root found");
+    assert_eq!(root.doc.title, "axum");
     // mtime 已读取（tempdir 刚写入，应 > 0）
     assert!(basic.mtime_secs > 0);
   }
@@ -639,7 +712,7 @@ mod tests {
 
   fn manifest(files: &[(&str, u64)], dyn_uids: &[&str]) -> IndexManifest {
     IndexManifest {
-      version: 1,
+      version: IndexManifest::CURRENT_VERSION,
       files: files.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
       dyn_uids: dyn_uids.iter().map(|s| s.to_string()).collect(),
     }
@@ -653,10 +726,22 @@ mod tests {
     files.insert("doc:b/c".to_string(), 200u64);
     let mut dyn_uids = BTreeSet::new();
     dyn_uids.insert("case:demo".to_string());
-    let m = IndexManifest { version: 1, files, dyn_uids };
+    let m = IndexManifest { version: IndexManifest::CURRENT_VERSION, files, dyn_uids };
     m.save(tmp.path()).expect("save");
     let loaded = IndexManifest::load(tmp.path());
     assert_eq!(loaded, m);
+  }
+
+  #[test]
+  fn manifest_load_outdated_version_returns_default() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join(IndexManifest::FILE_NAME),
+      r#"{"version":1,"files":{"doc:axum/10-pitfalls":123},"dyn_uids":[]}"#,
+    )
+    .unwrap();
+    let loaded = IndexManifest::load(tmp.path());
+    assert_eq!(loaded, IndexManifest::default());
   }
 
   #[test]
