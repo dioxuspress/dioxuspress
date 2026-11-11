@@ -403,6 +403,28 @@ fn collect_pages<'a>(node: &'a DocTreeNode, out: &mut Vec<&'a DocTreeNode>) {
   }
 }
 
+/// 为文档子章节补齐所属卷名后缀（SEO `<title>` / `og:title` / `TechArticle.headline`）。
+///
+/// 章节 frontmatter 常写简短目录名（如 `常见坑`、`路由`、`设计取舍`），直接用作页面 `<title>`
+/// 会导致全站大量重复且丢失库名相关性。仅在 `path` 为子路径（含 `/`）且 `title` 未包含
+/// `volume_slug` 或 `volume_label`（忽略大小写）时追加 ` · {volume_label}`。
+#[cfg(feature = "server")]
+pub(crate) fn qualify_doc_title(title: &str, path: &str, volume_label: Option<&str>) -> String {
+  let trimmed = path.trim_matches('/');
+  let Some((vol_slug, _)) = trimmed.split_once('/') else {
+    return title.to_string();
+  };
+  let label = volume_label.filter(|s| !s.is_empty()).unwrap_or(vol_slug);
+  if title.is_empty() || label.is_empty() {
+    return title.to_string();
+  }
+  let low = title.to_lowercase();
+  if low.contains(&label.to_lowercase()) || low.contains(&vol_slug.to_lowercase()) {
+    return title.to_string();
+  }
+  format!("{title} · {label}")
+}
+
 /// 文档正文与 frontmatter；`Ok(None)` 表示没有这篇文档（页面据此回 404）。
 #[post("/api/docs/content")]
 pub async fn get_doc_content(path: String) -> Result<Option<DocContentResponse>, ServerFnError> {
@@ -416,7 +438,11 @@ pub async fn get_doc_content(path: String) -> Result<Option<DocContentResponse>,
       fs::read_to_string(&filepath).map_err(|e| ServerFnError::new(format!("读取失败: {}", e)))?;
     let (mut meta, content) = parse_doc_frontmatter(&raw, &filepath);
     fill_missing_meta(&mut meta, &content);
-    let (prev, next) = doc_neighbors(&cached_tree(), &path);
+    let tree = cached_tree();
+    let vol_slug = path.trim_matches('/').split('/').next().unwrap_or_default();
+    let vol_label = tree.iter().find(|n| n.path == vol_slug).map(|n| n.title.as_str());
+    meta.title = qualify_doc_title(&meta.title, &path, vol_label);
+    let (prev, next) = doc_neighbors(&tree, &path);
     Ok(Some(DocContentResponse { content, meta, prev, next }))
   }
   #[cfg(not(feature = "server"))]
@@ -457,6 +483,27 @@ mod tests {
     let mut meta = DocMeta { title: "T".into(), description: "D".into(), ..Default::default() };
     fill_missing_meta(&mut meta, body);
     assert_eq!((meta.title.as_str(), meta.description.as_str()), ("T", "D"));
+  }
+
+  #[test]
+  fn qualify_doc_title_appends_volume_only_for_unqualified_subpages() {
+    // 卷首页不追加后缀
+    assert_eq!(qualify_doc_title("axum 源码解析", "axum", Some("axum")), "axum 源码解析");
+    // 子章节未包含卷名时自动补齐 ` · <volume_label>`
+    assert_eq!(qualify_doc_title("常见坑", "axum/10-pitfalls", Some("axum")), "常见坑 · axum");
+    assert_eq!(
+      qualify_doc_title("张量", "pytorch-to-burn/02-tensor", Some("从 PyTorch 到 burn")),
+      "张量 · 从 PyTorch 到 burn"
+    );
+    // 已包含卷 label 或目录 slug（忽略大小写）时不重复追加
+    assert_eq!(
+      qualify_doc_title("一个请求穿过 axum", "axum/01-overview/req", Some("axum")),
+      "一个请求穿过 axum"
+    );
+    assert_eq!(
+      qualify_doc_title("Typst 脚本基础", "typst/03-scripting", Some("Typst 教程")),
+      "Typst 脚本基础"
+    );
   }
 
   /// 辅助：提取一棵子树的 slug 列表（保留顺序）
