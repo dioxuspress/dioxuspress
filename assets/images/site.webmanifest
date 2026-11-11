@@ -1,0 +1,26 @@
+{
+  "name": "DioxusPress",
+  "short_name": "DioxusPress",
+  "description": "Fullstack Rust Content, Docs & Community Engine powered by Dioxus 0.7",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#0891b2",
+  "icons": [
+    {
+      "src": "/images/favicon-32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/images/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/images/logo-mobile.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    }
+  ]
+}
