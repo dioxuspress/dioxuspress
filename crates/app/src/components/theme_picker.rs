@@ -33,6 +33,22 @@ pub fn use_theme_version() -> Signal<u32> {
   use_context::<ThemeVersion>().0
 }
 
+/// 切换访客主题（服务端 Set-Cookie + 浏览器 `document.cookie` 双写 + 触发全局 `ThemeVersion` 刷新）。
+/// 传入空字符串表示清除偏好、回退到 `site.json` 默认主题。
+pub fn apply_user_theme(id: String, mut version: Signal<u32>) {
+  spawn(async move {
+    if let Err(e) = set_user_theme(id.clone()).await {
+      tracing::error!(error = %e, "theme picker: set_user_theme failed");
+    }
+
+    let trimmed = id.trim();
+    let max_age = if trimmed.is_empty() { 0 } else { 31_536_000 };
+    widgets::browser::set_cookie(THEME_COOKIE_NAME, trimmed, max_age);
+
+    version.with_mut(|v| *v += 1);
+  });
+}
+
 /// 主题下拉。展示当前激活主题，点击展开列表，点击列表项写 cookie + bump version。
 #[component]
 pub fn ThemePicker() -> Element {
@@ -45,7 +61,7 @@ pub fn ThemePicker() -> Element {
 
 #[component]
 fn ThemePickerInner() -> Element {
-  let mut version = use_theme_version();
+  let version = use_theme_version();
   let lang = use_i18n();
 
   let first =
@@ -73,64 +89,54 @@ fn ThemePickerInner() -> Element {
     return rsx! {};
   }
 
-  // 切换主题：写 cookie 后 bump version 以迫使上层重拼 CSS。
-  // 该闭包被后续多个 button.onclick 共享使用，所以需要 Copy + impl Fn。
-  //
-  // 持久化采用「双写」策略，修复「切不动 + 刷新回退」：
-  // 1. `set_user_theme`：服务端校验主题 id 并下发 Set-Cookie（桌面端走 reqwest
-  //    cookie jar，跨平台兜底）。
-  // 2. `document.cookie`：Web 端直接写入非 HttpOnly cookie，写入后再
-  //    bump version，确保紧接着的聚合 CSS 重新请求一定携带新 cookie；刷新后 SSR
-  //    也能读到，主题保持不变。
   let switch = use_callback(move |id: String| {
-    spawn(async move {
-      // 1) 服务端校验 + Set-Cookie（best-effort，失败仅记日志，不阻断切换）。
-      if let Err(e) = set_user_theme(id.clone()).await {
-        tracing::error!(error = %e, "theme picker: set_user_theme failed");
-      }
-
-      // 2) 客户端兜底写 cookie（同步完成）；空 id 即清除。
-      let trimmed = id.trim();
-      let max_age = if trimmed.is_empty() { 0 } else { 31_536_000 };
-      widgets::browser::set_cookie(THEME_COOKIE_NAME, trimmed, max_age);
-
-      // 3) cookie 就绪后再触发上层重新拉取聚合 CSS。
-      version.with_mut(|v| *v += 1);
-    });
+    apply_user_theme(id, version);
   });
 
   rsx! {
-      Dropdown {
-          DropdownTrigger {
-              class: "flex items-center gap-1 px-2 py-1 rounded-md hover:bg-accent text-muted-foreground transition-colors text-xs font-semibold",
-              title: "{t(lang(), \"theme.toggle\")}",
-              svg {
-                  class: "w-4 h-4",
-                  fill: "none",
-                  stroke: "currentColor",
-                  view_box: "0 0 24 24",
-                  "aria-hidden": "true",
-                  path {
-                      stroke_linecap: "round",
-                      stroke_linejoin: "round",
-                      stroke_width: "2",
-                      d: "M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"
-                  }
-              }
-              span { class: "hidden sm:inline whitespace-nowrap", "{active_label}" }
-          }
-          DropdownContent { class: "w-48",
-              DropdownLabel { class: "text-[10px] uppercase tracking-wider", "{t(lang(), \"theme.heading\")}" }
-              DropdownRadioGroup { value: active_id, on_value_change: move |id: String| switch.call(id),
-                  for t in themes.iter() {
-                      DropdownRadioItem { key: "{t.id}", value: t.id.clone(), "{t.label}" }
-                  }
-              }
-              DropdownSeparator {}
-              DropdownItem { class: "text-xs text-muted-foreground", onclick: move |_| switch.call(String::new()),
-                  "{t(lang(), \"theme.reset\")}"
-              }
-          }
+    Dropdown {
+      DropdownTrigger {
+        class: "flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-accent text-muted-foreground transition-colors text-xs font-semibold",
+        title: "{t(lang(), \"theme.toggle\")}",
+        span {
+          class: "inline-block w-2.5 h-2.5 rounded-full bg-primary ring-1 ring-border shrink-0",
+          "aria-hidden": "true",
+        }
+        span { class: "hidden sm:inline whitespace-nowrap", "{active_label}" }
       }
+      DropdownContent { class: "w-52",
+        DropdownLabel { class: "text-[10px] uppercase tracking-wider", "{t(lang(), \"theme.heading\")}" }
+        div { class: "max-h-72 overflow-y-auto",
+          DropdownRadioGroup { value: active_id, on_value_change: move |id: String| switch.call(id),
+            for item in themes.iter() {
+              DropdownRadioItem {
+                key: "{item.id}",
+                value: item.id.clone(),
+                class: "flex items-center justify-between gap-2 w-full",
+                span { class: "truncate", "{item.label}" }
+                span {
+                  class: "flex items-center gap-1 shrink-0",
+                  "aria-hidden": "true",
+                  span {
+                    class: "inline-block w-3 h-3 rounded-full border border-border/80",
+                    style: "background-color: {item.light_primary};",
+                    title: "Light {item.light_primary}",
+                  }
+                  span {
+                    class: "inline-block w-3 h-3 rounded-full border border-border/80",
+                    style: "background-color: {item.dark_primary};",
+                    title: "Dark {item.dark_primary}",
+                  }
+                }
+              }
+            }
+          }
+        }
+        DropdownSeparator {}
+        DropdownItem { class: "text-xs text-muted-foreground", onclick: move |_| switch.call(String::new()),
+          "{t(lang(), \"theme.reset\")}"
+        }
+      }
+    }
   }
 }

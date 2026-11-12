@@ -60,12 +60,24 @@ pub const THEME_COOKIE_NAME: &str = "site_theme";
 
 // ========== 主题 ==========
 
-/// 主题切换菜单的一项。前端 ThemePicker 用。
+/// 主题切换菜单及预览卡片的一项。前端 `ThemePicker` 与 `ThemeShowcase` 复用。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ThemeInfo {
   /// 内置主题 id，也是 cookie 存储的值。
   pub id: String,
   pub label: String,
+  /// 风格简述（中文）。
+  pub description: String,
+  /// 风格简述（英文）。
+  pub description_en: String,
+  /// 亮色底色色值。
+  pub light_bg: String,
+  /// 亮色主色色值。
+  pub light_primary: String,
+  /// 暗色底色色值。
+  pub dark_bg: String,
+  /// 暗色主色色值。
+  pub dark_primary: String,
   /// 是否是本次请求生效的主题。
   pub is_active: bool,
 }
@@ -74,14 +86,18 @@ pub struct ThemeInfo {
 pub async fn get_aggregated_theme_css() -> Result<String, ServerFnError> {
   #[cfg(feature = "server")]
   {
-    use app_core::engines::theme::resolve_theme;
+    use app_core::engines::theme::resolve_theme_for_site;
 
     // S10：热路径（每次页面渲染拉主题 CSS）——mtime 缓存读取。
     let config =
       SiteConfig::load_cached(get_asset_root().join("site.json").to_str().unwrap_or_default())
         .unwrap_or_default();
     let cookie = read_request_cookie(THEME_COOKIE_NAME);
-    Ok(resolve_theme(&config.theme, cookie.as_deref()).css.to_string())
+    Ok(
+      resolve_theme_for_site(&config.theme, &config.available_themes, cookie.as_deref())
+        .css
+        .to_string(),
+    )
   }
   #[cfg(not(feature = "server"))]
   {
@@ -89,24 +105,32 @@ pub async fn get_aggregated_theme_css() -> Result<String, ServerFnError> {
   }
 }
 
-/// 主题切换菜单的选项：全部内置主题，标出当前生效的那个（cookie 覆盖优先）。
+/// 主题切换菜单的选项：按 `site.json::available_themes` 过滤（留空返回全部内置主题），标出当前生效项。
 #[post("/api/theme/list")]
 pub async fn list_available_themes() -> Result<Vec<ThemeInfo>, ServerFnError> {
   #[cfg(feature = "server")]
   {
-    use app_core::engines::theme::{resolve_theme, THEMES};
+    use app_core::engines::theme::{resolve_available_themes, resolve_theme_for_site};
 
     let config =
       SiteConfig::load_cached(get_asset_root().join("site.json").to_str().unwrap_or_default())
         .unwrap_or_default();
     let cookie = read_request_cookie(THEME_COOKIE_NAME);
-    let active = resolve_theme(&config.theme, cookie.as_deref()).id;
+    let active =
+      resolve_theme_for_site(&config.theme, &config.available_themes, cookie.as_deref()).id;
+    let allowed = resolve_available_themes(&config.theme, &config.available_themes);
     Ok(
-      THEMES
-        .iter()
+      allowed
+        .into_iter()
         .map(|t| ThemeInfo {
           id: t.id.to_string(),
           label: t.label.to_string(),
+          description: t.description.to_string(),
+          description_en: t.description_en.to_string(),
+          light_bg: t.light_bg.to_string(),
+          light_primary: t.light_primary.to_string(),
+          dark_bg: t.dark_bg.to_string(),
+          dark_primary: t.dark_primary.to_string(),
           is_active: t.id == active,
         })
         .collect(),
@@ -120,22 +144,27 @@ pub async fn list_available_themes() -> Result<Vec<ThemeInfo>, ServerFnError> {
 
 /// 设置访客主题 cookie（覆盖 site.json 的默认主题）。
 ///
-/// 传入空字符串表示“重置”（删除 cookie）；其他值必须是内置主题 id（SEC-11，读取侧
-/// [`app_core::engines::theme::resolve_theme`] 同样只认表内 id）。
+/// 传入空字符串表示“重置”（删除 cookie）；其他值必须是当前站点开放的内置主题 id（SEC-11）。
 /// 写 `Set-Cookie: site_theme=...; Path=/; Max-Age=31536000; SameSite=Lax`。
 /// 生产环境（`BASE_URL` 以 https 开头）额外附加 `Secure`。
 #[post("/api/theme/set")]
 pub async fn set_user_theme(id: String) -> Result<(), ServerFnError> {
   #[cfg(feature = "server")]
   {
+    use app_core::engines::theme::resolve_available_themes;
     use dioxus::fullstack::FullstackContext;
+
+    let config =
+      SiteConfig::load_cached(get_asset_root().join("site.json").to_str().unwrap_or_default())
+        .unwrap_or_default();
+    let allowed = resolve_available_themes(&config.theme, &config.available_themes);
 
     let trimmed = id.trim();
     let cookie_value = match trimmed {
       "" => "",
-      _ => app_core::engines::theme::find_theme(trimmed)
-        .map(|t| t.id)
-        .ok_or_else(|| ServerFnError::new(format!("没有这个主题: {}", trimmed.escape_debug())))?,
+      _ => allowed.into_iter().find(|t| t.id == trimmed).map(|t| t.id).ok_or_else(|| {
+        ServerFnError::new(format!("主题不存在或未开放: {}", trimmed.escape_debug()))
+      })?,
     };
 
     let secure_flag = std::env::var("BASE_URL")

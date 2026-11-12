@@ -40,7 +40,7 @@ UPDATE_SCHEMA=1 cargo test --features server -p app-core site_schema_json_is_up_
 为了防止手写 JSON 时因字段名拼写错误（例如误将 `active_layout` 写成 `layout`，或将 `hero.title` 写成 `hero.titel`）被默认值静默吞没，服务端启动时会自动运行 `diagnose_site_json` 体检并以 `WARN` 日志提示，同时不阻塞正常启动：
 
 - **未知字段检测**：递归检查根对象及 `announcement`、`hero`、`features[*]`、`footer`、`annotations`、`auth`、`modules.*`、`moderation` 等全部嵌套块；
-- **枚举合法性检查**：校验 `active_layout`、`default_language`、`theme` 与 `auth.providers`；
+- **枚举合法性检查**：校验 `active_layout`、`default_language`、`theme`、`available_themes` 与 `auth.providers`；
 - **静态资源存在性校验**：检查 `logo`、`favicon`、`og_image` 等 `/images/*` 引用在 `assets/images` 或 `$CONTENT_DIR/images` 下是否真实存在。
 
 ---
@@ -55,7 +55,8 @@ UPDATE_SCHEMA=1 cargo test --features server -p app-core site_schema_json_is_up_
 | `author` | `string` | `""` | 默认站点作者署名 |
 | `default_language` | `"zh" \| "en"` | `"zh"` | 默认界面语言；优先级低于 URL `?lang=` 参数与访客 `site_lang` Cookie |
 | `active_layout` | `"classic" \| "docs" \| "minimal"` | `"classic"` | 全局壳层布局：<br>• `"docs"`：类 Docusaurus 文档站（公告条 + 开源项目首页 + 多列页脚）<br>• `"classic"`：综合知识门户（多板块聚合首页）<br>• `"minimal"`：极简沉浸阅读条（隐藏页脚，适合个人博客） |
-| `theme` | `string` | `"ocean"` | 站点默认内置配色 ID（当前内置 `"ocean"`、`"sunset"`、`"catppuccin"`）；访客可在顶栏切换并以 `site_theme` Cookie 记住偏好 |
+| `theme` | `string` | `"ocean"` | 站点默认内置双模配色 ID（内置 10 套：`"ocean"`、`"emerald"`、`"nord"`、`"corporate"`、`"winter"`、`"dracula"`、`"sunset"`、`"coffee"`、`"catppuccin"`、`"silk"`）；详见 [布局与主题定制](/docs/guide/layouts-and-themes) |
+| `available_themes` | `string[]` | `[]` | 顶栏主题菜单开放的主题 ID 白名单（留空 `[]` 默认开放全部 10 套；按数组顺序展示；仅配单个主题如 `["ocean"]` 时自动锁定并隐藏主题切换菜单） |
 
 ---
 

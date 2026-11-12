@@ -253,8 +253,9 @@ fn main() {
   // 在 server 和 client 两边都调用，用于 SSR + hydration 双边 registry 一致。
   // 1) widgets 内置 9 个默认组件 (YouTube / Bilibili / 5 色 / Underline / Strikethrough)
   widgets::register_default_components();
-  // 2) 各业务模块注册自身提供的组件 (PodcastCard ...)
+  // 2) 各业务模块与宿主应用注册自身提供的 MDX 组件 (PodcastCard / ThemeShowcase ...)
   module_podcast::register_components();
+  components::theme_showcase::register_components();
 
   // 3) A3 解耦：把 cases 注册为搜索索引的外部文档来源（IoC）。
   //    使 module-search 不再编译期依赖 module-cases —— 数据由组合根 app 在此注入。

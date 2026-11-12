@@ -65,6 +65,9 @@ pub struct SiteConfig {
   /// 默认主题 id（见 [`crate::engines::theme::THEMES`]）；访客可用 cookie 覆盖。
   #[serde(default = "default_theme")]
   pub theme: String,
+  /// 顶栏主题切换器允许开放的主题 id 白名单（留空默认展示全部内置主题；仅配单个主题如 `["ocean"]` 时自动隐藏切换器）。
+  #[serde(default)]
+  pub available_themes: Vec<String>,
   /// 当前生效布局：`"classic"`（默认门户）、`"docs"`（类 Docusaurus 文档站）或 `"minimal"`（极简阅读条）。
   #[serde(default = "default_layout")]
   pub active_layout: String,
@@ -718,6 +721,7 @@ const KNOWN_ROOT_KEYS: &[&str] = &[
   "site_name",
   "site_description",
   "theme",
+  "available_themes",
   "active_layout",
   "default_language",
   "author",
@@ -937,6 +941,16 @@ pub fn diagnose_site_json(
     });
   }
 
+  for item in &cfg.available_themes {
+    let trimmed = item.trim();
+    if trimmed.is_empty() || crate::engines::theme::find_theme(trimmed).is_none() {
+      diags.push(ConfigDiagnostic {
+        field: "available_themes".to_string(),
+        message: format!("unknown builtin theme {trimmed:?} in available_themes (ignored)"),
+      });
+    }
+  }
+
   for provider in &cfg.auth.providers {
     let trimmed = provider.trim();
     if crate::auth::Provider::from_id(trimmed).is_none() {
@@ -1025,6 +1039,7 @@ impl Default for SiteConfig {
       site_name: DEFAULT_SITE_NAME.to_string(),
       site_description: String::new(),
       theme: default_theme(),
+      available_themes: Vec::new(),
       active_layout: DEFAULT_LAYOUT.to_string(),
       default_language: default_language(),
       author: String::new(),
@@ -1389,9 +1404,16 @@ mod tests {
       if let Some(lang_prop) = props.get_mut("default_language").and_then(|v| v.as_object_mut()) {
         lang_prop.insert("enum".to_string(), serde_json::json!(["zh", "en"]));
       }
+      let theme_ids: Vec<&str> = crate::engines::theme::THEMES.iter().map(|t| t.id).collect();
       if let Some(theme_prop) = props.get_mut("theme").and_then(|v| v.as_object_mut()) {
-        let theme_ids: Vec<&str> = crate::engines::theme::THEMES.iter().map(|t| t.id).collect();
         theme_prop.insert("enum".to_string(), serde_json::json!(theme_ids));
+      }
+      if let Some(avail_items) = props
+        .get_mut("available_themes")
+        .and_then(|v| v.get_mut("items"))
+        .and_then(|i| i.as_object_mut())
+      {
+        avail_items.insert("enum".to_string(), serde_json::json!(theme_ids));
       }
     }
 
@@ -1480,6 +1502,7 @@ mod tests {
       "active_layout": "docusaurus",
       "default_language": "fr",
       "theme": "neon",
+      "available_themes": ["ocean", "cyberpunk"],
       "favicon": "/images/favicon.ico",
       "logo": "/images/override-logo.png",
       "og_image": "/images/missing-og.jpg",
@@ -1496,6 +1519,7 @@ mod tests {
     assert!(fields.contains(&"active_layout"), "{diags:#?}");
     assert!(fields.contains(&"default_language"), "{diags:#?}");
     assert!(fields.contains(&"theme"), "{diags:#?}");
+    assert!(fields.contains(&"available_themes"), "{diags:#?}");
     assert!(fields.contains(&"auth.providers"), "{diags:#?}");
     assert!(fields.contains(&"og_image"), "{diags:#?}");
     // favicon 在 assets/images 命中、logo 在 content/images 命中，均不应报警

@@ -538,6 +538,26 @@
       "description": "站点默认作者署名（如 `\"yuxuetr\"`）。",
       "type": "string"
     },
+    "available_themes": {
+      "default": [],
+      "description": "顶栏主题切换器允许开放的主题 id 白名单（留空默认展示全部内置主题；仅配单个主题如 `[\"ocean\"]` 时自动隐藏切换器）。",
+      "items": {
+        "enum": [
+          "ocean",
+          "emerald",
+          "nord",
+          "corporate",
+          "winter",
+          "dracula",
+          "sunset",
+          "coffee",
+          "catppuccin",
+          "silk"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
     "default_language": {
       "default": "zh",
       "description": "默认界面语言：`\"zh\"`（默认）或 `\"en\"`。无 `?lang=` 与 `site_lang` cookie 时生效。",
@@ -708,8 +728,15 @@
       "description": "默认主题 id（见 [`crate::engines::theme::THEMES`]）；访客可用 cookie 覆盖。",
       "enum": [
         "ocean",
+        "emerald",
+        "nord",
+        "corporate",
+        "winter",
+        "dracula",
         "sunset",
-        "catppuccin"
+        "coffee",
+        "catppuccin",
+        "silk"
       ],
       "type": "string"
     },
