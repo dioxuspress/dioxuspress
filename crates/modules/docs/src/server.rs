@@ -60,6 +60,12 @@ pub struct DocContentResponse {
   /// 同一个一级分类里按侧栏顺序的上一篇 / 下一篇（S2）
   pub prev: Option<DocLink>,
   pub next: Option<DocLink>,
+  /// 从一级分类到当前页的面包屑链路（无正文分组节点的 `path` 为空字符串，仅作文本展示）。
+  #[serde(default)]
+  pub breadcrumbs: Vec<DocLink>,
+  /// 相对于 `docs/` 根目录的源文件路径（如 `"guide/intro/index.md"`），用于拼接「编辑此页」外链。
+  #[serde(default)]
+  pub source_file: String,
 }
 
 /// 指向另一篇文档的链接
@@ -403,6 +409,32 @@ fn collect_pages<'a>(node: &'a DocTreeNode, out: &mut Vec<&'a DocTreeNode>) {
   }
 }
 
+/// 在目录树中查找从顶层卷到 `target_path` 的面包屑节点链。
+/// 无独立正文（`!has_content`）的纯分组节点将 `DocLink::path` 置空，避免渲染死链。
+#[cfg(feature = "server")]
+pub(crate) fn doc_breadcrumbs(tree: &[DocTreeNode], target_path: &str) -> Vec<DocLink> {
+  fn find_chain(nodes: &[DocTreeNode], target: &str, out: &mut Vec<DocLink>) -> bool {
+    for n in nodes {
+      if target == n.path || target.starts_with(&format!("{}/", n.path)) {
+        out.push(DocLink {
+          path: if n.has_content { n.path.clone() } else { String::new() },
+          title: n.title.clone(),
+        });
+        if target == n.path || find_chain(&n.children, target, out) {
+          return true;
+        }
+        out.pop();
+      }
+    }
+    false
+  }
+
+  let trimmed = target_path.trim_matches('/');
+  let mut chain = Vec::new();
+  find_chain(tree, trimmed, &mut chain);
+  chain
+}
+
 /// 为文档子章节补齐所属卷名后缀（SEO `<title>` / `og:title` / `TechArticle.headline`）。
 ///
 /// 章节 frontmatter 常写简短目录名（如 `常见坑`、`路由`、`设计取舍`），直接用作页面 `<title>`
@@ -443,7 +475,17 @@ pub async fn get_doc_content(path: String) -> Result<Option<DocContentResponse>,
     let vol_label = tree.iter().find(|n| n.path == vol_slug).map(|n| n.title.as_str());
     meta.title = qualify_doc_title(&meta.title, &path, vol_label);
     let (prev, next) = doc_neighbors(&tree, &path);
-    Ok(Some(DocContentResponse { content, meta, prev, next }))
+    let breadcrumbs = doc_breadcrumbs(&tree, &path);
+    let source_file = docs_root
+      .canonicalize()
+      .ok()
+      .and_then(|canon_root| filepath.strip_prefix(canon_root).ok())
+      .or_else(|| filepath.strip_prefix(&docs_root).ok())
+      .map(|rel| {
+        rel.components().filter_map(|c| c.as_os_str().to_str()).collect::<Vec<_>>().join("/")
+      })
+      .unwrap_or_default();
+    Ok(Some(DocContentResponse { content, meta, prev, next, breadcrumbs, source_file }))
   }
   #[cfg(not(feature = "server"))]
   {
@@ -853,5 +895,26 @@ mod tests {
     ] {
       assert_eq!(resolve_doc_file(&docs, bad), None, "{bad}");
     }
+  }
+
+  #[test]
+  fn doc_breadcrumbs_handles_group_and_content_nodes() {
+    let tmp = TempDir::new().unwrap();
+    let docs = tmp.path();
+
+    // guide 有 index.md；guide/advanced 仅作分组目录无 index.md；guide/advanced/ssr 有 index.md
+    write_index(&docs.join("guide"), Some("title: 快速上手"), "# Guide");
+    write_index(&docs.join("guide/advanced/ssr"), Some("title: SSR 水合"), "# SSR");
+
+    let tree = scan_doc_dir(docs, "", 1);
+    let crumbs = doc_breadcrumbs(&tree, "guide/advanced/ssr");
+    assert_eq!(
+      crumbs,
+      vec![
+        DocLink { path: "guide".to_string(), title: "快速上手".to_string() },
+        DocLink { path: String::new(), title: "advanced".to_string() },
+        DocLink { path: "guide/advanced/ssr".to_string(), title: "SSR 水合".to_string() },
+      ]
+    );
   }
 }

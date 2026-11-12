@@ -13,9 +13,11 @@
 use dioxus::prelude::*;
 
 pub mod classic;
+pub mod docs;
 pub mod minimal;
 
 pub use classic::ClassicShell;
+pub use docs::DocsShell;
 pub use minimal::MinimalShell;
 
 /// 站点品牌标识：根据 `site.json` 渲染横版明暗双态 Logo、独立紧凑图标或纯文字站名。

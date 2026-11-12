@@ -6,6 +6,7 @@ use dioxus_shadcn::{
 
 #[cfg(feature = "accounts")]
 use crate::components::comment::CommentBox;
+use crate::components::docs_home::DocsLanding;
 use crate::components::hero::Hero;
 #[cfg(feature = "course")]
 use crate::components::home_sections::CourseShowcase;
@@ -293,6 +294,7 @@ pub fn Home() -> Element {
   let site_cfg = app_core::settings::SiteConfig::embedded();
   // 与 navbar 共用「站点模块开关」。
   let enabled = use_enabled_modules();
+  let is_docs_layout = site_cfg.active_layout_or_default() == "docs";
   let on = |id: &str| enabled.iter().any(|e| e == id);
   let (on_blog, on_forum) = (on("blog"), on("forum"));
 
@@ -303,22 +305,26 @@ pub fn Home() -> Element {
           path: "/".to_string(),
           schema: widgets::website_schema(),
       }
-      Hero { enabled: enabled.clone() }
+      if is_docs_layout {
+          DocsLanding { enabled: enabled.clone() }
+      } else {
+          Hero { enabled: enabled.clone() }
 
-      // 两大生态支柱：直接体现「Rust 生态 + AI 生态」定位
-      EcosystemPillars { enabled: enabled.clone() }
+          // 两大生态支柱：直接体现「Rust 生态 + AI 生态」定位
+          EcosystemPillars { enabled: enabled.clone() }
 
-      // 精选案例（旗舰）+ 课程（变现）
-      if on("cases") {
-          FeaturedCases {}
-      }
-      if on("course") {
-          {course_showcase()}
-      }
+          // 精选案例（旗舰）+ 课程（变现）
+          if on("cases") {
+              FeaturedCases {}
+          }
+          if on("course") {
+              {course_showcase()}
+          }
 
-      // 社区动态：最新博客 + 论坛热帖
-      if on_blog || on_forum {
-          CommunityFeed { blog: on_blog, forum: on_forum }
+          // 社区动态：最新博客 + 论坛热帖
+          if on_blog || on_forum {
+              CommunityFeed { blog: on_blog, forum: on_forum }
+          }
       }
   }
 }
