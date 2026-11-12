@@ -308,6 +308,34 @@ fn DocPageInner(path: Vec<String>, footer: Element) -> Element {
                       if !resp.meta.keywords.is_empty() {
                           document::Meta { name: "keywords", content: "{resp.meta.keywords.join(\", \")}" }
                       }
+                      if !resp.breadcrumbs.is_empty() {
+                          nav {
+                              "aria-label": "{t(lang, \"docs.breadcrumb_label\")}",
+                              class: "mb-5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400",
+                              Link {
+                                  to: "/docs",
+                                  class: "hover:text-primary transition-colors inline-flex items-center gap-1",
+                                  svg { class: "w-3.5 h-3.5", fill: "none", stroke: "currentColor", view_box: "0 0 24 24",
+                                      path { stroke_linecap: "round", stroke_linejoin: "round", stroke_width: "2", d: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" }
+                                  }
+                                  span { "{t(lang, \"docs.title\")}" }
+                              }
+                              for (idx, crumb) in resp.breadcrumbs.iter().enumerate() {
+                                  span { class: "text-slate-300 dark:text-slate-600 select-none", "/" }
+                                  if idx + 1 == resp.breadcrumbs.len() {
+                                      span { class: "font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full", "{crumb.title}" }
+                                  } else if !crumb.path.is_empty() {
+                                      Link {
+                                          to: doc_href(&crumb.path),
+                                          class: "hover:text-primary transition-colors",
+                                          "{crumb.title}"
+                                      }
+                                  } else {
+                                      span { "{crumb.title}" }
+                                  }
+                              }
+                          }
+                      }
                       if let Some(ref src) = resp.meta.source {
                           a {
                               href: "https://docs.rs/{src.krate}/{src.version}",
@@ -319,6 +347,20 @@ fn DocPageInner(path: Vec<String>, footer: Element) -> Element {
                       }
                       div { class: "text-slate-700 dark:text-slate-200",
                           Markdown { content: resp.content.clone(), blog_id: anno_blog_id.clone() }
+                      }
+                      if let Some(edit_url) = app_core::settings::SiteConfig::embedded().docs_edit_url(&resp.source_file) {
+                          div { class: "mt-8 flex items-center",
+                              a {
+                                  href: "{edit_url}",
+                                  target: "_blank",
+                                  rel: "noopener noreferrer",
+                                  class: "inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline",
+                                  svg { class: "w-4 h-4", fill: "none", stroke: "currentColor", view_box: "0 0 24 24",
+                                      path { stroke_linecap: "round", stroke_linejoin: "round", stroke_width: "2", d: "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" }
+                                  }
+                                  "{t(lang, \"docs.edit_page\")}"
+                              }
+                          }
                       }
                       if resp.prev.is_some() || resp.next.is_some() {
                           nav { class: "mt-12 pt-6 border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-4",

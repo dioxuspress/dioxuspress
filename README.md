@@ -1,8 +1,15 @@
 # DioxusPress
 
-基于 Dioxus 0.7 的全栈 Rust 内容与社区引擎：博客、文档、课程、案例、播客、论文资讯与论坛社区一站式聚合。
+<p align="center">
+  <img src="assets/images/logo-light.png" alt="DioxusPress" height="64" />
+</p>
 
-> **官方线上站点**：[Rust in Everything (`rustineverything.app`)](https://rustineverything.app) —— 通过 [`assets/site.json`](assets/site.json) 配置运行。其他开发者只需修改 `assets/site.json` 中的 `site_name`、`site_description`、`theme` 等字段，即可快速定制并部署自己的全栈内容社区站。
+基于 Dioxus 0.7 的纯 Rust 全栈文档、内容与社区引擎：既能以**零数据库 `basic` 档位**充当 Docusaurus / VitePress 的高性能替代方案，也能按需开启登录、论坛、划线标注、付费课程与在线支付。
+
+- **官方文档与类 Docusaurus 模板演示站**：[`dioxuspress.rustineverything.app`](https://dioxuspress.rustineverything.app)（`active_layout = "docs"`，零数据库单容器运行）
+- **旗舰全栈社区实例**：[Rust in Everything (`rustineverything.app`)](https://rustineverything.app)（`active_layout = "classic"`，承载 38 卷 2,100+ 篇文档、实战课程与社区）
+
+开发者只需修改 [`assets/site.json`](assets/site.json) 中的 `site_name`、`active_layout`（`docs` / `classic` / `minimal`）、`theme` 与 `features` 等字段，即可快速定制并部署自己的文档站或全栈社区。
 
 ## 技术栈
 

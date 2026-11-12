@@ -9,25 +9,27 @@
 
 use dioxus::prelude::*;
 
-use crate::components::layouts::{ClassicShell, MinimalShell};
+use crate::components::layouts::{ClassicShell, DocsShell, MinimalShell};
 use crate::server::get_active_layout;
 
 /// Routable layout 入口：内部根据 `get_active_layout` 选择 shell。
 ///
-/// 等待 server fn 返回前先按 `classic` 渲染，避免布局闪烁。
+/// SSR 与水合首帧优先使用编译期内嵌的 `SiteConfig::embedded().active_layout_or_default()`，
+/// 彻底消除 `docs` / `minimal` 布局在首屏水合时闪回 `classic` 的问题。
 #[component]
 pub fn Navbar() -> Element {
-  let layout_res =
-    use_resource(
-      || async move { get_active_layout().await.unwrap_or_else(|_| "classic".to_string()) },
-    );
-  let layout: String = layout_res.read().as_ref().cloned().unwrap_or_else(|| "classic".to_string());
+  let default_layout = app_core::settings::SiteConfig::embedded().active_layout_or_default();
+  let layout_res = use_resource(move || async move {
+    get_active_layout().await.unwrap_or_else(|_| default_layout.to_string())
+  });
+  let layout: String =
+    layout_res.read().as_ref().cloned().unwrap_or_else(|| default_layout.to_string());
 
   rsx! {
-      if layout == "minimal" {
-          MinimalShell {}
-      } else {
-          ClassicShell {}
-      }
+    match layout.as_str() {
+      "docs" => rsx! { DocsShell {} },
+      "minimal" => rsx! { MinimalShell {} },
+      _ => rsx! { ClassicShell {} },
+    }
   }
 }

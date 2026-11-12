@@ -19,6 +19,7 @@
 //!   gateway 原先也按 IP 限流，但把静态资源算在内：一次冷加载约 57 个请求，
 //!   读配额 60/min 刷新一次就会 429，`/api/auth/me` 还被算进 10/min 的写配额
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -50,7 +51,83 @@ fn cap_keepalive(session: &mut Session) {
   }
 }
 
-struct AppGateway;
+struct AppGateway {
+  default_upstream: String,
+  host_upstreams: HashMap<String, String>,
+}
+
+impl AppGateway {
+  fn from_env() -> Self {
+    let default_upstream = std::env::var("UPSTREAM_ADDR")
+      .ok()
+      .map(|s| s.trim().to_string())
+      .filter(|s| !s.is_empty())
+      .unwrap_or_else(|| UPSTREAM_ADDR.to_string());
+    let host_upstreams =
+      std::env::var("HOST_UPSTREAMS").ok().map(|s| parse_host_upstreams(&s)).unwrap_or_default();
+    Self { default_upstream, host_upstreams }
+  }
+
+  fn select_upstream(&self, req: &RequestHeader) -> &str {
+    if !self.host_upstreams.is_empty() {
+      if let Some(host) = extract_request_host(req) {
+        if let Some(addr) = self.host_upstreams.get(&host) {
+          return addr.as_str();
+        }
+      }
+    }
+    &self.default_upstream
+  }
+}
+
+/// 解析 `HOST_UPSTREAMS` 环境变量（格式：`host1=127.0.0.1:8081,host2=127.0.0.1:8082`）。
+fn parse_host_upstreams(raw: &str) -> HashMap<String, String> {
+  let mut map = HashMap::new();
+  for pair in raw.split(',') {
+    let Some((host, addr)) = pair.trim().split_once('=') else {
+      continue;
+    };
+    let Some(host) = normalize_host(host) else {
+      continue;
+    };
+    let addr = addr.trim();
+    if !addr.is_empty() {
+      map.insert(host, addr.to_string());
+    }
+  }
+  map
+}
+
+/// 归一化域名：去端口、去末尾 `.`、转小写 ASCII。
+fn normalize_host(raw: &str) -> Option<String> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+  let host_only = if trimmed.starts_with('[') {
+    let end = trimmed.find(']')?;
+    &trimmed[..=end]
+  } else {
+    trimmed.split(':').next().unwrap_or("")
+  };
+  let normalized = host_only.trim().trim_end_matches('.').to_ascii_lowercase();
+  if normalized.is_empty() {
+    None
+  } else {
+    Some(normalized)
+  }
+}
+
+/// 提取请求域名：优先读 HTTP/2 `:authority`（`req.uri.host()`），回退 HTTP/1.1 `Host` 头。
+fn extract_request_host(req: &RequestHeader) -> Option<String> {
+  if let Some(uri_host) = req.uri.host() {
+    if let Some(h) = normalize_host(uri_host) {
+      return Some(h);
+    }
+  }
+  let header_host = req.headers.get("host").and_then(|v| v.to_str().ok())?;
+  normalize_host(header_host)
+}
 
 #[async_trait]
 impl ProxyHttp for AppGateway {
@@ -62,9 +139,10 @@ impl ProxyHttp for AppGateway {
     Ok(())
   }
 
-  /// 选定上游：恒为 app 容器（单 upstream，不做 LB）。
-  async fn upstream_peer(&self, _session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>> {
-    Ok(Box::new(HttpPeer::new(UPSTREAM_ADDR, false, UPSTREAM_SNI.into())))
+  /// 选定上游：优先匹配 `HOST_UPSTREAMS` 子域名路由，否则走默认 `default_upstream`。
+  async fn upstream_peer(&self, session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>> {
+    let addr = self.select_upstream(session.req_header());
+    Ok(Box::new(HttpPeer::new(addr, false, UPSTREAM_SNI.into())))
   }
 
   /// 上游请求改写：补 X-Forwarded-* 让 app 端 cookie/日志看到真实客户端 + scheme。
@@ -80,6 +158,11 @@ impl ProxyHttp for AppGateway {
     _ctx: &mut (),
   ) -> Result<()> {
     req.insert_header("X-Forwarded-Proto", "https").ok();
+    if !req.headers.contains_key("host") {
+      if let Some(authority) = req.uri.authority().map(|a| a.as_str().to_string()) {
+        req.insert_header("Host", authority).ok();
+      }
+    }
     // 清掉可能的伪造 Forwarded（RFC 7239 变体）
     req.remove_header("Forwarded");
 
@@ -199,8 +282,11 @@ fn main() {
   let mut server = Server::new_with_opt_and_conf(None::<Opt>, conf);
   server.bootstrap();
 
-  // 443: TLS 终止 + 反代到 app
-  let mut proxy = http_proxy_service(&server.configuration, AppGateway);
+  // 443: TLS 终止 + 反代到 app（支持 HOST_UPSTREAMS 按域名路由）
+  let gateway = AppGateway::from_env();
+  let default_upstream_log = gateway.default_upstream.clone();
+  let host_routes_log = gateway.host_upstreams.len();
+  let mut proxy = http_proxy_service(&server.configuration, gateway);
   let cert = std::env::var("TLS_CERT_PATH").expect("TLS_CERT_PATH 未配置：指向 fullchain.pem 路径");
   let key = std::env::var("TLS_KEY_PATH").expect("TLS_KEY_PATH 未配置：指向 privkey.pem 路径");
   let mut tls = pingora_core::listeners::tls::TlsSettings::intermediate(&cert, &key)
@@ -221,11 +307,12 @@ fn main() {
   server.add_service(redirect);
 
   log::info!(
-    "rie-gateway: HTTPS={} (TLS={}), HTTP={} → 301 https; upstream={}",
+    "rie-gateway: HTTPS={} (TLS={}), HTTP={} → 301 https; default_upstream={}, host_routes={}",
     HTTPS_BIND,
     cert,
     HTTP_BIND,
-    UPSTREAM_ADDR
+    default_upstream_log,
+    host_routes_log
   );
   server.run_forever();
 }
@@ -292,5 +379,31 @@ mod tests {
       req.headers.get("cookie").and_then(|v| v.to_str().ok()),
       Some("site_lang=zh; theme=ocean; session=jwt_token")
     );
+  }
+
+  #[test]
+  fn host_upstreams_routes_h1_host_and_h2_authority_and_falls_back() {
+    let gw = AppGateway {
+      default_upstream: "127.0.0.1:8080".to_string(),
+      host_upstreams: parse_host_upstreams(
+        " dioxuspress.rustineverything.app = 127.0.0.1:8081 , docs.example.com.=127.0.0.1:8082 , malformed ",
+      ),
+    };
+    assert_eq!(gw.host_upstreams.len(), 2);
+
+    // HTTP/1.1 Host header with port & uppercase
+    let mut h1 = RequestHeader::build("GET", b"/docs/guide/intro", None).unwrap();
+    h1.insert_header("Host", "DioxusPress.RustInEverything.app:443").unwrap();
+    assert_eq!(gw.select_upstream(&h1), "127.0.0.1:8081");
+
+    // HTTP/2 :authority stored in req.uri without Host header
+    let mut h2 = RequestHeader::build("GET", b"/docs", None).unwrap();
+    h2.set_uri("https://DOCS.example.com:443/docs".parse().unwrap());
+    assert_eq!(gw.select_upstream(&h2), "127.0.0.1:8082");
+
+    // Unmatched host falls back to default_upstream
+    let mut main_req = RequestHeader::build("GET", b"/", None).unwrap();
+    main_req.insert_header("Host", "rustineverything.app").unwrap();
+    assert_eq!(gw.select_upstream(&main_req), "127.0.0.1:8080");
   }
 }

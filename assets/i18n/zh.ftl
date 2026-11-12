@@ -417,3 +417,15 @@ podcast.loading = 加载中…
 podcast.featured = 推荐播客
 podcast.no_audio = 本期音频暂未上线
 podcast.no_results = 没有匹配该标签的节目
+
+# docs layout & breadcrumbs
+nav.docs = 文档
+nav.github = GitHub 仓库
+nav.dismiss_announcement = 关闭公告
+hero.copy_cmd = 复制命令
+hero.copied = 已复制
+home.docs_volumes.title = 文档分卷速览
+home.docs_volumes.subtitle = 从快速上手到生产运维，按主题查阅完整指南
+home.docs_volumes.all = 查看全部文档
+docs.breadcrumb_label = 面包屑导航
+docs.edit_page = 在 GitHub 上编辑此页

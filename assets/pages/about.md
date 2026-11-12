@@ -1,25 +1,19 @@
 ---
-title: 关于
-description: Rust in Everything 是专注 Rust 工业实战与 AI 生态的内容站。
+title: 关于 DioxusPress
+description: 基于 Dioxus 0.7 与 Axum 构建的开源全栈 Rust 文档、内容与社区引擎。
 ---
 
-# 关于 Rust in Everything
+# 关于 DioxusPress
 
-Rust in Everything 专注 Rust 技术栈的学习与实战，把分散在各处的内容按两个生态组织起来：
+**DioxusPress** 是一个开源的纯 Rust 全栈知识出版与社区引擎，基于 [Dioxus 0.7](https://dioxuslabs.com)（服务端渲染 SSR + 客户端 WebAssembly 水合）与 [`dioxus-shadcn`](https://github.com/yuxuetr/dioxus-ui) 组件库构建。
 
-- **Rust 生态**：嵌入式、Web3、WebAssembly、命令行工具与后端系统。
-- **AI 生态**：大模型、推理部署、Agent 与 Rust AI。
+## 我们的设计理念
 
-## 这里有什么
+1. **一套代码，弹性伸缩**：需要轻量技术文档站时，以 `--no-default-features`（`basic` 档位）编译即可获得零数据库依赖、内置 Tantivy 全文检索的类 Docusaurus 极速站点；需要用户体系与商业化闭环时，开启默认特性即可拥有 OAuth2 登录、论坛、评论、段落划线标注、LLM 内容审核与付费课程系统。
+2. **文件即内容，Git 即工作流**：所有文档、博客、课程与案例均以标准 Markdown / MDX 存储在版本库中，支持外部私有内容仓库只读挂载热更新。
+3. **默认工程安全与 SEO 友好**：严格无 `'unsafe-eval'` CSP 策略、SSR 首屏完整 Open Graph / JSON-LD 结构化数据输出、子章节标题自动卷名限定以及动态 Sitemap。
 
-- **文档**：按主题编排的系统性资料。
-- **博客**：实践记录与技术文章。
-- **播客**：围绕 Rust 与 AI 的访谈和讨论。
-- **案例**：用 Rust 构建的真实项目，附源码链接与说明。
-- **专题**：各领域的文章合集。
+## 线上标杆案例
 
-## 关于本站
-
-本站本身也是用 Rust 写的：Dioxus 全栈（服务端渲染 + WebAssembly 水合）与 Axum，内容来自仓库里的 Markdown 文件。
-
-> 这是默认的 About 页（`assets/pages/about.md`），站点作者可直接编辑；不需要时在 `site.json` 里设置 `"modules": { "about": { "enabled": false } }`。
+- **[Rust in Everything (`rustineverything.app`)](https://rustineverything.app)**：承载 38 卷 2,100+ 篇 Rust 生态源码解析文档、体系化 AI 实战课程、论文速递与技术社区，完全由 DioxusPress 驱动运行。
+- **源码仓库**：[github.com/yuxuetr/DioxusPress](https://github.com/yuxuetr/DioxusPress)（MIT 开源协议）。

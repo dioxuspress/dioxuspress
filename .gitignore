@@ -37,10 +37,10 @@ crates/app/tailwind-sources.css
 !/assets/courses/rust-basics/
 /assets/docs/*
 !/assets/docs/index.md
-!/assets/docs/axum/
-!/assets/docs/burn/
-!/assets/docs/dioxus/
-!/assets/docs/weekly/
+!/assets/docs/guide/
+!/assets/docs/content/
+!/assets/docs/community/
+!/assets/docs/operations/
 
 # 规划文件只放本地（框架仓库公开）
 Todos.md

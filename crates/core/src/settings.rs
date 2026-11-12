@@ -58,7 +58,7 @@ pub struct SiteConfig {
   /// 默认主题 id（见 [`crate::engines::theme::THEMES`]）；访客可用 cookie 覆盖。
   #[serde(default = "default_theme")]
   pub theme: String,
-  /// 当前生效布局（Phase 3.3）：`"classic"`（默认）或 `"minimal"`；其它值回退到 classic。
+  /// 当前生效布局：`"classic"`（默认门户）、`"docs"`（类 Docusaurus 文档站）或 `"minimal"`（极简阅读条）。
   #[serde(default = "default_layout")]
   pub active_layout: String,
   /// 默认界面语言：`"zh"`（默认）或 `"en"`。无 `?lang=` 与 `site_lang` cookie 时生效。
@@ -102,9 +102,18 @@ pub struct SiteConfig {
   /// 案例页「提交案例」按钮外链（留空则隐藏提交按钮）。
   #[serde(default)]
   pub submit_case_url: Option<String>,
+  /// 文档页底部「在 GitHub 上编辑此页」链接前缀（如 `"https://github.com/org/repo/edit/main/assets/docs"`）。
+  #[serde(default)]
+  pub docs_edit_url_base: Option<String>,
+  /// 顶部可关闭公告条配置（留空时不展示）。
+  #[serde(default)]
+  pub announcement: Option<AnnouncementSettings>,
   /// 首页 Hero 区域自定义文案（留空时回退到 `assets/i18n/{zh,en}.ftl` 的 `hero.*`）。
   #[serde(default)]
   pub hero: HeroSettings,
+  /// 开源项目首页（`active_layout = "docs"`）特性展示卡片列表。
+  #[serde(default)]
+  pub features: Vec<FeatureItem>,
   /// 页脚口号、版权、ICP 备案号与外部社交链接。
   #[serde(default)]
   pub footer: FooterSettings,
@@ -128,9 +137,50 @@ pub struct SiteConfig {
   pub moderation: ModerationSettings,
 }
 
+/// 顶部可关闭公告条配置（常用于版本发布或活动提示）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct AnnouncementSettings {
+  /// 公告唯一标识（访客关闭后以 `dp_ann_{id}` 写入 `localStorage`；变更 `id` 会重新展示）。
+  #[serde(default)]
+  pub id: String,
+  #[serde(default)]
+  pub text: String,
+  #[serde(default)]
+  pub text_en: Option<String>,
+  #[serde(default)]
+  pub href: Option<String>,
+}
+
+impl AnnouncementSettings {
+  /// 按语言取非空公告文案（英文未配置时回退中文）。
+  pub fn text_for(&self, lang: Language) -> Option<&str> {
+    match lang {
+      Language::En => {
+        non_empty_str(self.text_en.as_deref()).or_else(|| non_empty_str(Some(&self.text)))
+      }
+      Language::Zh => non_empty_str(Some(&self.text)),
+    }
+  }
+
+  /// 可选跳转链接。
+  pub fn href_or_none(&self) -> Option<&str> {
+    non_empty_str(self.href.as_deref())
+  }
+
+  /// `localStorage` 持久化键名。
+  pub fn storage_key(&self) -> String {
+    let suffix = non_empty_str(Some(&self.id)).unwrap_or("default");
+    format!("dp_ann_{suffix}")
+  }
+}
+
 /// 首页 Hero 区域自定义文案（留空时回退到 `i18n` 的 `hero.title` / `hero.subtitle`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct HeroSettings {
+  #[serde(default)]
+  pub badge: Option<String>,
+  #[serde(default)]
+  pub badge_en: Option<String>,
   #[serde(default)]
   pub title: Option<String>,
   #[serde(default)]
@@ -139,9 +189,61 @@ pub struct HeroSettings {
   pub subtitle: Option<String>,
   #[serde(default)]
   pub subtitle_en: Option<String>,
+  /// 开源项目首页一键复制终端命令（如 `"git clone ..."` 或 `"cargo add ..."`）。
+  #[serde(default)]
+  pub install_command: Option<String>,
+  #[serde(default)]
+  pub primary_cta_text: Option<String>,
+  #[serde(default)]
+  pub primary_cta_text_en: Option<String>,
+  #[serde(default)]
+  pub primary_cta_href: Option<String>,
+  #[serde(default)]
+  pub secondary_cta_text: Option<String>,
+  #[serde(default)]
+  pub secondary_cta_text_en: Option<String>,
+  #[serde(default)]
+  pub secondary_cta_href: Option<String>,
 }
 
-/// 页脚自定义信息（口号、版权、备案号、社交链接）。
+/// 开源项目首页特性卡片（`active_layout = "docs"` 时渲染为 3 列栅格）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FeatureItem {
+  /// 图标标识（支持内置 `"bolt"` / `"book"` / `"layers"` / `"search"` / `"shield"` / `"palette"` 或短字符）。
+  #[serde(default)]
+  pub icon: String,
+  pub title: String,
+  #[serde(default)]
+  pub title_en: Option<String>,
+  #[serde(default)]
+  pub description: String,
+  #[serde(default)]
+  pub description_en: Option<String>,
+  #[serde(default)]
+  pub href: Option<String>,
+}
+
+impl FeatureItem {
+  pub fn title_for(&self, lang: Language) -> &str {
+    match lang {
+      Language::En => non_empty_str(self.title_en.as_deref()).unwrap_or(&self.title),
+      Language::Zh => &self.title,
+    }
+  }
+
+  pub fn description_for(&self, lang: Language) -> &str {
+    match lang {
+      Language::En => non_empty_str(self.description_en.as_deref()).unwrap_or(&self.description),
+      Language::Zh => &self.description,
+    }
+  }
+
+  pub fn href_or_none(&self) -> Option<&str> {
+    non_empty_str(self.href.as_deref())
+  }
+}
+
+/// 页脚自定义信息（口号、版权、备案号、社交链接、多列分组）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct FooterSettings {
   /// 页脚口号（中文）；未配置时回退到 `i18n` 的 `footer.tagline`。
@@ -162,6 +264,46 @@ pub struct FooterSettings {
   /// 页脚「社区」栏展示的外部社交链接（GitHub / X / Discord 等）。
   #[serde(default)]
   pub social: Vec<SocialLink>,
+  /// 类 Docusaurus 多列页脚链接分组（非空时在 `DocsShell` 中优先渲染）。
+  #[serde(default)]
+  pub columns: Vec<FooterColumn>,
+}
+
+/// 多列结构化页脚单列配置。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FooterColumn {
+  pub title: String,
+  #[serde(default)]
+  pub title_en: Option<String>,
+  #[serde(default)]
+  pub links: Vec<FooterLink>,
+}
+
+impl FooterColumn {
+  pub fn title_for(&self, lang: Language) -> &str {
+    match lang {
+      Language::En => non_empty_str(self.title_en.as_deref()).unwrap_or(&self.title),
+      Language::Zh => &self.title,
+    }
+  }
+}
+
+/// 多列页脚中的单条内外链。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FooterLink {
+  pub label: String,
+  #[serde(default)]
+  pub label_en: Option<String>,
+  pub href: String,
+}
+
+impl FooterLink {
+  pub fn label_for(&self, lang: Language) -> &str {
+    match lang {
+      Language::En => non_empty_str(self.label_en.as_deref()).unwrap_or(&self.label),
+      Language::Zh => &self.label,
+    }
+  }
 }
 
 /// 页脚外部社交或社区链接。
@@ -433,6 +575,63 @@ impl SiteConfig {
     Some((icp, url))
   }
 
+  /// 首页 Hero 顶部胶囊标：优先取对应语言，英文未配时回退中文。
+  pub fn hero_badge(&self, lang: Language) -> Option<&str> {
+    match lang {
+      Language::En => non_empty_str(self.hero.badge_en.as_deref())
+        .or_else(|| non_empty_str(self.hero.badge.as_deref())),
+      Language::Zh => non_empty_str(self.hero.badge.as_deref()),
+    }
+  }
+
+  /// 首页一键复制终端命令。
+  pub fn hero_install_command(&self) -> Option<&str> {
+    non_empty_str(self.hero.install_command.as_deref())
+  }
+
+  /// 首页主行动按钮 `(文案, 链接)`；链接为空时不展示。
+  pub fn hero_primary_cta(&self, lang: Language) -> Option<(&str, &str)> {
+    let href = non_empty_str(self.hero.primary_cta_href.as_deref())?;
+    let text = match lang {
+      Language::En => non_empty_str(self.hero.primary_cta_text_en.as_deref())
+        .or_else(|| non_empty_str(self.hero.primary_cta_text.as_deref()))?,
+      Language::Zh => non_empty_str(self.hero.primary_cta_text.as_deref())?,
+    };
+    Some((text, href))
+  }
+
+  /// 首页次行动按钮 `(文案, 链接)`；链接为空时不展示。
+  pub fn hero_secondary_cta(&self, lang: Language) -> Option<(&str, &str)> {
+    let href = non_empty_str(self.hero.secondary_cta_href.as_deref())?;
+    let text = match lang {
+      Language::En => non_empty_str(self.hero.secondary_cta_text_en.as_deref())
+        .or_else(|| non_empty_str(self.hero.secondary_cta_text.as_deref()))?,
+      Language::Zh => non_empty_str(self.hero.secondary_cta_text.as_deref())?,
+    };
+    Some((text, href))
+  }
+
+  /// 根据文档相对源文件路径（如 `"guide/intro/index.md"`）拼出完整编辑链接。
+  pub fn docs_edit_url(&self, source_file: &str) -> Option<String> {
+    let base = non_empty_str(self.docs_edit_url_base.as_deref())?.trim_end_matches('/');
+    let rel = non_empty_str(Some(source_file))?.trim_start_matches('/');
+    Some(format!("{base}/{rel}"))
+  }
+
+  /// 从 `footer.social` 中提取首个 GitHub 仓库/组织链接（供文档顶栏右上角图标使用）。
+  pub fn github_repo_url(&self) -> Option<&str> {
+    self
+      .footer
+      .social
+      .iter()
+      .find(|s| {
+        let u = s.url.trim();
+        !u.is_empty()
+          && (s.label.trim().eq_ignore_ascii_case("github") || u.starts_with("https://github.com/"))
+      })
+      .map(|s| s.url.trim())
+  }
+
   /// 当前布局名（空字符串回退到 `"classic"`）。
   pub fn active_layout_or_default(&self) -> &str {
     if self.active_layout.is_empty() {
@@ -464,7 +663,10 @@ impl Default for SiteConfig {
       og_image: default_og_image(),
       twitter_handle: None,
       submit_case_url: None,
+      docs_edit_url_base: None,
+      announcement: None,
       hero: HeroSettings::default(),
+      features: vec![],
       footer: FooterSettings::default(),
       annotations: AnnotationsSettings::default(),
       navigation: vec![],
@@ -722,6 +924,71 @@ mod tests {
     assert!(cfg.annotations.is_enabled("course"));
     assert!(cfg.annotations.is_enabled("doc"));
     assert!(!cfg.annotations.is_enabled("blog"));
+    assert_eq!(cfg.docs_edit_url("guide/index.md"), None);
+    assert_eq!(cfg.github_repo_url(), None);
     assert!(!SiteConfig::embedded().site_name_or_default().is_empty());
+  }
+
+  #[test]
+  fn docs_layout_settings_resolve_bilingual_and_urls() {
+    let json = r#"{
+      "active_layout": "docs",
+      "docs_edit_url_base": "https://github.com/yuxuetr/DioxusPress/edit/main/assets/docs/",
+      "announcement": {
+        "id": "v07",
+        "text": "DioxusPress 全新文档模板上线",
+        "text_en": "New Docusaurus-style template available",
+        "href": "/docs/guide"
+      },
+      "hero": {
+        "badge": "Dioxus 0.7 · 纯 Rust",
+        "badge_en": "Dioxus 0.7 · Pure Rust",
+        "install_command": "git clone https://github.com/yuxuetr/DioxusPress.git",
+        "primary_cta_text": "快速开始",
+        "primary_cta_text_en": "Get Started",
+        "primary_cta_href": "/docs/guide",
+        "secondary_cta_text": "GitHub",
+        "secondary_cta_href": "https://github.com/yuxuetr/DioxusPress"
+      },
+      "features": [
+        {
+          "icon": "bolt",
+          "title": "零数据库静态档位",
+          "title_en": "Zero-DB Basic Tier",
+          "description": "一条命令启动",
+          "description_en": "Run with a single binary"
+        }
+      ],
+      "footer": {
+        "social": [{ "label": "GitHub", "url": "https://github.com/yuxuetr/DioxusPress" }],
+        "columns": [
+          {
+            "title": "文档",
+            "title_en": "Docs",
+            "links": [{ "label": "入门", "label_en": "Intro", "href": "/docs/guide" }]
+          }
+        ]
+      }
+    }"#;
+    let cfg: SiteConfig = serde_json::from_str(json).expect("valid docs site.json");
+    assert_eq!(cfg.active_layout_or_default(), "docs");
+    assert_eq!(
+      cfg.docs_edit_url("/guide/index.md").as_deref(),
+      Some("https://github.com/yuxuetr/DioxusPress/edit/main/assets/docs/guide/index.md")
+    );
+    assert_eq!(cfg.github_repo_url(), Some("https://github.com/yuxuetr/DioxusPress"));
+    assert_eq!(cfg.hero_badge(Language::Zh), Some("Dioxus 0.7 · 纯 Rust"));
+    assert_eq!(cfg.hero_badge(Language::En), Some("Dioxus 0.7 · Pure Rust"));
+    assert_eq!(cfg.hero_primary_cta(Language::En), Some(("Get Started", "/docs/guide")));
+    assert_eq!(
+      cfg.hero_secondary_cta(Language::En),
+      Some(("GitHub", "https://github.com/yuxuetr/DioxusPress"))
+    );
+    let ann = cfg.announcement.as_ref().expect("announcement");
+    assert_eq!(ann.storage_key(), "dp_ann_v07");
+    assert_eq!(ann.text_for(Language::En), Some("New Docusaurus-style template available"));
+    assert_eq!(cfg.features[0].title_for(Language::En), "Zero-DB Basic Tier");
+    assert_eq!(cfg.footer.columns[0].title_for(Language::En), "Docs");
+    assert_eq!(cfg.footer.columns[0].links[0].label_for(Language::En), "Intro");
   }
 }

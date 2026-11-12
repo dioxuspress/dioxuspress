@@ -4,6 +4,7 @@ pub mod admin_entitlements;
 pub mod auth_modal;
 #[cfg(feature = "accounts")]
 pub mod comment;
+pub mod docs_home;
 pub mod ecosystem_menu;
 pub mod hero;
 pub mod home_sections;

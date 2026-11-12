@@ -417,3 +417,15 @@ podcast.loading = Loading…
 podcast.featured = Featured Podcast
 podcast.no_audio = Audio for this episode is not available yet
 podcast.no_results = No episodes match this tag
+
+# docs layout & breadcrumbs
+nav.docs = Docs
+nav.github = GitHub Repository
+nav.dismiss_announcement = Dismiss announcement
+hero.copy_cmd = Copy command
+hero.copied = Copied
+home.docs_volumes.title = Documentation Volumes
+home.docs_volumes.subtitle = Browse structured guides from quickstart to production operations
+home.docs_volumes.all = View all docs
+docs.breadcrumb_label = Breadcrumb
+docs.edit_page = Edit this page on GitHub

@@ -402,8 +402,9 @@ mod tests {
 
   #[test]
   fn page_title_appends_site_name() {
-    assert_eq!(page_title("案例"), "案例 - Rust in Everything");
-    assert_eq!(page_title(""), "Rust in Everything");
+    let name = site_name();
+    assert_eq!(page_title("案例"), format!("案例 - {name}"));
+    assert_eq!(page_title(""), name);
   }
 
   #[test]
