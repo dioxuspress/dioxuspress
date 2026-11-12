@@ -67,6 +67,12 @@ pub fn page_of(posts: &[BlogPostSummary], tag: &str, page: usize) -> BlogPage {
 static BLOG_LIST_CACHE: app_core::utils::DirListingCache<Vec<BlogPostSummary>> =
   app_core::utils::DirListingCache::new();
 
+/// E5.3：清空博客列表目录缓存（供 `SIGHUP` 或内容热刷新调用）。
+#[cfg(feature = "server")]
+pub fn invalidate_blog_cache() {
+  BLOG_LIST_CACHE.invalidate();
+}
+
 #[cfg(feature = "server")]
 fn build_blog_list(posts_dir: &std::path::Path) -> Vec<BlogPostSummary> {
   let Ok(entries) = fs::read_dir(posts_dir) else { return Vec::new() };

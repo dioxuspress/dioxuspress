@@ -40,7 +40,13 @@ curl -fsS http://127.0.0.1:8080/healthz
 
 在容器启动时将 `/srv/my-site-content` 只读挂载到 `/app/content`（设置 `CONTENT_DIR=/app/content`）：
 - **静态品牌图覆盖**：请求 `/images/*` 时，服务端优先返回 `$CONTENT_DIR/images/` 下的同名图片，不存在时平滑回退到框架内置图标；
-- **纯内容热发布**：日常新增文档或修改课程只需在宿主机同步私有内容仓库并重启容器，数秒内生效，无需重新跑 Cargo 编译。
+- **零停机增量热发布（`SIGHUP`）**：日常新增文档、发布文章或修改课程，只需在宿主机拉取私有内容仓库并向容器发送 `SIGHUP` 信号（`docker kill --signal=HUP dioxuspress-app`），进程在**不断开任何现有 TCP 连接**的前提下原子刷新 `site.json`、目录缓存与 `ETag` 纪元，并在后台毫秒级增量更新 Tantivy 全文索引（即使未发信号，内置的 `CONTENT_DIR` 节流轮询也会在 5 秒内自动同步）。
+
+```bash
+# 零停机纯内容发布（无需重建镜像，0 连接闪断）
+git -C /srv/my-site-content pull --ff-only
+docker kill --signal=HUP dioxuspress-app
+```
 
 ## 3. 数据持久化卷与定时备份
 

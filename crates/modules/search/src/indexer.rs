@@ -59,7 +59,7 @@ impl Default for IndexManifest {
 impl IndexManifest {
   pub const FILE_NAME: &'static str = "manifest.json";
   /// 索引字段生成规则变更时递增版本号，触发存量索引在下次刷新时重跑一次文件 upsert。
-  pub const CURRENT_VERSION: u32 = 2;
+  pub const CURRENT_VERSION: u32 = 3;
 
   /// 加载磁盘上的清单；不存在、解析失败或版本过期时返回默认空清单（触发全量刷新）。
   pub fn load(dir: &Path) -> Self {
@@ -329,7 +329,19 @@ fn collect_docs_versioned() -> Vec<VersionedDoc> {
 }
 
 fn doc_volume_label(vol_dir: &Path, fallback_slug: &str) -> String {
-  for name in ["index.mdx", "index.md"] {
+  doc_volume_label_from_names(vol_dir, &["index.mdx", "index.md"], fallback_slug)
+}
+
+fn doc_volume_label_en(vol_dir: &Path, fallback_slug: &str) -> String {
+  doc_volume_label_from_names(
+    vol_dir,
+    &["index.en.mdx", "index.en.md", "index.mdx", "index.md"],
+    fallback_slug,
+  )
+}
+
+fn doc_volume_label_from_names(vol_dir: &Path, names: &[&str], fallback_slug: &str) -> String {
+  for name in names {
     let file = vol_dir.join(name);
     if let Ok(raw) = std::fs::read_to_string(&file) {
       let fm = parse_frontmatter_kv(&raw);
@@ -368,10 +380,16 @@ fn qualify_search_doc_title(title: String, rel_path: &str, vol_label: Option<&st
 }
 
 fn walk_docs(base: &Path, dir: &Path, out: &mut Vec<VersionedDoc>) {
-  walk_docs_inner(base, dir, None, out);
+  walk_docs_inner(base, dir, None, None, out);
 }
 
-fn walk_docs_inner(base: &Path, dir: &Path, vol_label: Option<&str>, out: &mut Vec<VersionedDoc>) {
+fn walk_docs_inner(
+  base: &Path,
+  dir: &Path,
+  vol_label: Option<&str>,
+  vol_label_en: Option<&str>,
+  out: &mut Vec<VersionedDoc>,
+) {
   let entries = match std::fs::read_dir(dir) {
     Ok(e) => e,
     Err(_) => return,
@@ -390,6 +408,14 @@ fn walk_docs_inner(base: &Path, dir: &Path, vol_label: Option<&str>, out: &mut V
       None if dir == base => Some(doc_volume_label(&path, name)),
       None => None,
     };
+    let next_vol_label_en = match vol_label_en {
+      Some(v) => Some(v.to_string()),
+      None if dir == base => Some(doc_volume_label_en(&path, name)),
+      None => None,
+    };
+    let rel = path.strip_prefix(base).unwrap_or(&path);
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+
     // 当前目录的 index.{md,mdx}
     let mdx = path.join("index.mdx");
     let md = path.join("index.md");
@@ -402,8 +428,6 @@ fn walk_docs_inner(base: &Path, dir: &Path, vol_label: Option<&str>, out: &mut V
     };
     if let Some(file) = chosen {
       if let Some((title, body, date)) = read_md_file(&file) {
-        let rel = path.strip_prefix(base).unwrap_or(&path);
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
         let title = qualify_search_doc_title(title, &rel_str, next_vol_label.as_deref());
         let mtime = file_mtime_secs(&file);
         out.push(VersionedDoc {
@@ -419,8 +443,37 @@ fn walk_docs_inner(base: &Path, dir: &Path, vol_label: Option<&str>, out: &mut V
         });
       }
     }
+
+    // 若存在英文伴生文档 index.en.{mdx,md}，一并入库，检索命中后直跳 ?lang=en
+    let en_mdx = path.join("index.en.mdx");
+    let en_md = path.join("index.en.md");
+    let chosen_en = if en_mdx.exists() {
+      Some(en_mdx)
+    } else if en_md.exists() {
+      Some(en_md)
+    } else {
+      None
+    };
+    if let Some(file) = chosen_en {
+      if let Some((title, body, date)) = read_md_file(&file) {
+        let title = qualify_search_doc_title(title, &rel_str, next_vol_label_en.as_deref());
+        let mtime = file_mtime_secs(&file);
+        out.push(VersionedDoc {
+          doc: IndexedDocument {
+            kind: "doc".to_string(),
+            ref_id: format!("{rel_str}#en"),
+            title,
+            body,
+            url: format!("/docs/{rel_str}?lang=en"),
+            created_at: date,
+          },
+          mtime_secs: mtime,
+        });
+      }
+    }
+
     // 递归
-    walk_docs_inner(base, &path, next_vol_label.as_deref(), out);
+    walk_docs_inner(base, &path, next_vol_label.as_deref(), next_vol_label_en.as_deref(), out);
   }
 }
 

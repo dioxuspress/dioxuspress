@@ -48,8 +48,15 @@ pub struct DocTreeNode {
   pub title: String,
   pub path: String,
   pub has_content: bool,
+  /// 该节点是否同时存在中文（`index.{md,mdx}`）与英文伴生版（`index.en.{md,mdx}`）。
+  #[serde(default)]
+  pub has_bilingual: bool,
   pub description: String,
   pub children: Vec<DocTreeNode>,
+}
+
+fn default_resolved_lang() -> String {
+  "zh-CN".to_string()
 }
 
 /// 文档内容响应（内容 + 元数据）
@@ -66,6 +73,12 @@ pub struct DocContentResponse {
   /// 相对于 `docs/` 根目录的源文件路径（如 `"guide/intro/index.md"`），用于拼接「编辑此页」外链。
   #[serde(default)]
   pub source_file: String,
+  /// 实际命中的正文语言标签（`"en"` 或 `"zh-CN"`）：英文请求若回退到中文源文件则仍标 `"zh-CN"`。
+  #[serde(default = "default_resolved_lang")]
+  pub resolved_lang: String,
+  /// 当前路径是否同时拥有中英双语源文件（用于注入 `hreflang` 与按语言区分的 `canonical`）。
+  #[serde(default)]
+  pub has_bilingual: bool,
 }
 
 /// 指向另一篇文档的链接
@@ -133,29 +146,71 @@ fn fill_missing_meta(meta: &mut DocMeta, body: &str) {
   }
 }
 
-/// 从 index.md/index.mdx 提取元数据（标题、描述、排序等）
 #[cfg(feature = "server")]
-fn extract_doc_info(dir: &std::path::Path) -> (Option<String>, String, Option<i32>) {
-  let (title, desc, pos, _) = extract_doc_info_full(dir);
-  (title, desc, pos)
+fn parse_requested_lang(lang: Option<&str>) -> app_core::i18n::Language {
+  match lang.map(str::trim) {
+    Some(s)
+      if s.eq_ignore_ascii_case("en")
+        || s.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("en-")) =>
+    {
+      app_core::i18n::Language::En
+    }
+    Some(s)
+      if s.eq_ignore_ascii_case("zh")
+        || s.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("zh-")) =>
+    {
+      app_core::i18n::Language::Zh
+    }
+    _ => app_core::settings::SiteConfig::active().default_language_enum(),
+  }
 }
 
-/// 完整提取（额外返回 sort_children）
 #[cfg(feature = "server")]
-fn extract_doc_info_full(
+fn find_zh_doc_in_dir(dir: &std::path::Path) -> Option<PathBuf> {
+  ["index.md", "index.mdx"].into_iter().map(|n| dir.join(n)).find(|p| p.is_file())
+}
+
+#[cfg(feature = "server")]
+fn find_en_doc_in_dir(dir: &std::path::Path) -> Option<PathBuf> {
+  ["index.en.md", "index.en.mdx"].into_iter().map(|n| dir.join(n)).find(|p| p.is_file())
+}
+
+/// 从指定语言的伴生文档（回退默认文档）提取元数据（标题、描述、排序、存在性与双语状态）
+#[cfg(feature = "server")]
+fn extract_doc_info_for_lang(
   dir: &std::path::Path,
-) -> (Option<String>, String, Option<i32>, Option<String>) {
-  let md = dir.join("index.md");
-  let mdx = dir.join("index.mdx");
-  let path = if md.exists() {
-    md
-  } else if mdx.exists() {
-    mdx
-  } else {
-    return (None, String::new(), None, None);
+  lang: app_core::i18n::Language,
+) -> (Option<String>, String, Option<i32>, bool, bool) {
+  let (title, desc, pos, _, has_content, has_bilingual) = extract_doc_info_full_for_lang(dir, lang);
+  (title, desc, pos, has_content, has_bilingual)
+}
+
+/// 完整提取（额外返回 `sort_children`、`has_content` 与 `has_bilingual`）
+#[cfg(feature = "server")]
+fn extract_doc_info_full_for_lang(
+  dir: &std::path::Path,
+  lang: app_core::i18n::Language,
+) -> (Option<String>, String, Option<i32>, Option<String>, bool, bool) {
+  let zh_path = find_zh_doc_in_dir(dir);
+  let en_path = find_en_doc_in_dir(dir);
+  let has_bilingual = zh_path.is_some() && en_path.is_some();
+  let (primary, fallback) = match lang {
+    app_core::i18n::Language::En => (en_path, zh_path),
+    app_core::i18n::Language::Zh => (zh_path, en_path),
   };
-  let content = fs::read_to_string(&path).unwrap_or_default();
-  let (meta, body) = parse_doc_frontmatter(&content, &path);
+  let Some(chosen) = primary.or_else(|| fallback.clone()) else {
+    return (None, String::new(), None, None, false, false);
+  };
+
+  let content = fs::read_to_string(&chosen).unwrap_or_default();
+  let (meta, body) = parse_doc_frontmatter(&content, &chosen);
+
+  // 若英文伴生文件漏写了 sidebar_position / sort_children，自动继承同目录主文件的排序设置
+  let (fallback_pos, fallback_sort) = fallback
+    .filter(|fb| fb != &chosen)
+    .and_then(|fb| fs::read_to_string(&fb).ok().map(|raw| parse_doc_frontmatter(&raw, &fb).0))
+    .map(|m| (m.sidebar_position, m.sort_children))
+    .unwrap_or((None, None));
 
   // 标题优先级：sidebar_label > frontmatter title > # heading > 目录名
   let title = meta
@@ -164,34 +219,61 @@ fn extract_doc_info_full(
     .or_else(|| if !meta.title.is_empty() { Some(meta.title.clone()) } else { None })
     .or_else(|| first_heading(&body));
 
-  (title, meta.description.clone(), meta.sidebar_position, meta.sort_children.clone())
+  (
+    title,
+    meta.description,
+    meta.sidebar_position.or(fallback_pos),
+    meta.sort_children.or(fallback_sort),
+    true,
+    has_bilingual,
+  )
 }
 
-/// 扫描目录生成文档树（递归，最多 3 级）
-/// 优先级：_meta.json > 自动扫描目录（从 index.md 提取标题）
-#[cfg(feature = "server")]
+/// 扫描目录生成默认中文视图文档树（递归，最多 3 级）
+#[cfg(all(test, feature = "server"))]
 pub(crate) fn scan_doc_dir(
   dir: &std::path::Path,
   rel_prefix: &str,
   depth: u32,
 ) -> Vec<DocTreeNode> {
+  scan_doc_dir_for_lang(dir, rel_prefix, depth, app_core::i18n::Language::Zh)
+}
+
+/// 按指定语言扫描目录生成文档树（递归，最多 3 级）。
+/// 优先级：`_meta.en.json`（英文）/ `_meta.json` > 自动扫描目录（英文优先读 `index.en.{md,mdx}` 回退 `index.{md,mdx}`）。
+#[cfg(feature = "server")]
+pub(crate) fn scan_doc_dir_for_lang(
+  dir: &std::path::Path,
+  rel_prefix: &str,
+  depth: u32,
+  lang: app_core::i18n::Language,
+) -> Vec<DocTreeNode> {
   if depth > 3 {
     return vec![];
   }
 
-  // 优先读取 _meta.json
-  let meta_path = dir.join("_meta.json");
-  let entries: Vec<MetaEntry> = if meta_path.exists() {
+  // 优先读取 _meta.en.json（英文模式）或 _meta.json
+  let meta_en_path = dir.join("_meta.en.json");
+  let meta_zh_path = dir.join("_meta.json");
+  let chosen_meta = if lang == app_core::i18n::Language::En && meta_en_path.exists() {
+    Some(meta_en_path)
+  } else if meta_zh_path.exists() {
+    Some(meta_zh_path)
+  } else {
+    None
+  };
+
+  let entries: Vec<MetaEntry> = if let Some(meta_path) = chosen_meta {
     fs::read_to_string(&meta_path)
       .ok()
       .and_then(|s| serde_json::from_str(&s).ok())
       .unwrap_or_default()
   } else {
     // 读取当前目录的 sort_children 设置
-    let (_, _, _, sort_dir) = extract_doc_info_full(dir);
+    let (_, _, _, sort_dir, _, _) = extract_doc_info_full_for_lang(dir, lang);
     let descending = sort_dir.as_deref().map(|s| s.eq_ignore_ascii_case("desc")).unwrap_or(false);
 
-    // 自动扫描子目录，从 index.md 提取标题和排序
+    // 自动扫描子目录，按当前语言提取标题和排序
     let mut dirs: Vec<(String, String, String, Option<i32>)> = fs::read_dir(dir)
       .into_iter()
       .flatten()
@@ -202,7 +284,7 @@ pub(crate) fn scan_doc_dir(
         if name.starts_with('_') || name.starts_with('.') {
           return None;
         }
-        let (title, desc, pos) = extract_doc_info(&e.path());
+        let (title, desc, pos, _, _) = extract_doc_info_for_lang(&e.path(), lang);
         let title = title.unwrap_or_else(|| name.clone());
         Some((name, title, desc, pos))
       })
@@ -233,15 +315,18 @@ pub(crate) fn scan_doc_dir(
       } else {
         format!("{}/{}", rel_prefix, entry.slug)
       };
-      let has_content = child_dir.join("index.md").exists() || child_dir.join("index.mdx").exists();
-      let (_, desc, _) = extract_doc_info(&child_dir);
-      let children =
-        if child_dir.is_dir() { scan_doc_dir(&child_dir, &rel_path, depth + 1) } else { vec![] };
+      let (_, desc, _, has_content, has_bilingual) = extract_doc_info_for_lang(&child_dir, lang);
+      let children = if child_dir.is_dir() {
+        scan_doc_dir_for_lang(&child_dir, &rel_path, depth + 1, lang)
+      } else {
+        vec![]
+      };
       DocTreeNode {
         slug: entry.slug,
         title: entry.title,
         path: rel_path,
         has_content,
+        has_bilingual,
         description: desc,
         children,
       }
@@ -255,7 +340,7 @@ pub(crate) fn scan_doc_dir(
 pub async fn list_doc_tree() -> Result<Vec<DocTreeNode>, ServerFnError> {
   #[cfg(feature = "server")]
   {
-    Ok((*cached_tree()).clone())
+    Ok((*cached_tree_for_lang(app_core::i18n::Language::Zh)).clone())
   }
   #[cfg(not(feature = "server"))]
   {
@@ -265,27 +350,33 @@ pub async fn list_doc_tree() -> Result<Vec<DocTreeNode>, ServerFnError> {
 
 /// 侧栏数据：各卷的一级节点，只有 `volume` 这一卷带完整子树（见 [`nav_tree`]）。
 #[post("/api/docs/nav")]
-pub async fn doc_nav(volume: String) -> Result<Vec<DocTreeNode>, ServerFnError> {
+pub async fn doc_nav(
+  volume: String,
+  lang: Option<String>,
+) -> Result<Vec<DocTreeNode>, ServerFnError> {
   #[cfg(feature = "server")]
   {
-    Ok(nav_tree(&cached_tree(), &volume))
+    let target_lang = parse_requested_lang(lang.as_deref());
+    Ok(nav_tree(&cached_tree_for_lang(target_lang), &volume))
   }
   #[cfg(not(feature = "server"))]
   {
-    let _ = volume;
+    let _ = (volume, lang);
     Ok(vec![])
   }
 }
 
 /// 文档首页的卷卡片（见 [`volume_cards`]）。
 #[post("/api/docs/volumes")]
-pub async fn list_doc_volumes() -> Result<Vec<DocVolume>, ServerFnError> {
+pub async fn list_doc_volumes(lang: Option<String>) -> Result<Vec<DocVolume>, ServerFnError> {
   #[cfg(feature = "server")]
   {
-    Ok(volume_cards(&cached_tree()))
+    let target_lang = parse_requested_lang(lang.as_deref());
+    Ok(volume_cards(&cached_tree_for_lang(target_lang)))
   }
   #[cfg(not(feature = "server"))]
   {
+    let _ = lang;
     Ok(vec![])
   }
 }
@@ -309,6 +400,7 @@ pub fn nav_tree(full: &[DocTreeNode], volume: &str) -> Vec<DocTreeNode> {
       title: n.title.clone(),
       path: n.path.clone(),
       has_content: n.has_content,
+      has_bilingual: n.has_bilingual,
       description: String::new(),
       children: if deep { n.children.iter().map(|c| strip(c, true)).collect() } else { Vec::new() },
     }
@@ -340,41 +432,88 @@ pub fn volume_cards(full: &[DocTreeNode]) -> Vec<DocVolume> {
     .collect()
 }
 
-/// 扫描结果按 (index.md / index.mdx / _meta.json, mtime) 缓存：扫一遍要读约 2000 个文件的
-/// frontmatter，缓存命中时只剩一次目录遍历的 stat。
+/// 扫描结果按 (index.{md,mdx} / index.en.{md,mdx} / _meta*.json, mtime) 分中英文缓存：
+/// 扫一遍要读约 2000 个文件的 frontmatter，缓存命中时只剩一次目录遍历的 stat。
 #[cfg(feature = "server")]
-static TREE_CACHE: app_core::utils::DirListingCache<Vec<DocTreeNode>> =
+static TREE_CACHE_ZH: app_core::utils::DirListingCache<Vec<DocTreeNode>> =
+  app_core::utils::DirListingCache::new();
+#[cfg(feature = "server")]
+static TREE_CACHE_EN: app_core::utils::DirListingCache<Vec<DocTreeNode>> =
   app_core::utils::DirListingCache::new();
 
+/// E5.3：清空文档中英双目录树缓存（供 `SIGHUP` 或内容热刷新调用）。
 #[cfg(feature = "server")]
-fn cached_tree() -> std::sync::Arc<Vec<DocTreeNode>> {
+pub fn invalidate_doc_caches() {
+  TREE_CACHE_ZH.invalidate();
+  TREE_CACHE_EN.invalidate();
+}
+
+#[cfg(feature = "server")]
+fn cached_tree_for_lang(lang: app_core::i18n::Language) -> std::sync::Arc<Vec<DocTreeNode>> {
   let docs_dir = app_core::utils::content_dir("docs");
   if !docs_dir.exists() {
     return std::sync::Arc::new(Vec::new());
   }
   let fp = app_core::utils::fingerprint_for_dir(&docs_dir, |p| {
-    matches!(p.file_name().and_then(|n| n.to_str()), Some("index.md" | "index.mdx" | "_meta.json"))
+    matches!(
+      p.file_name().and_then(|n| n.to_str()),
+      Some(
+        "index.md" | "index.mdx" | "index.en.md" | "index.en.mdx" | "_meta.json" | "_meta.en.json"
+      )
+    )
   });
-  TREE_CACHE.get_or_rebuild(fp, || scan_doc_dir(&docs_dir, "", 1))
+  let cache = match lang {
+    app_core::i18n::Language::En => &TREE_CACHE_EN,
+    app_core::i18n::Language::Zh => &TREE_CACHE_ZH,
+  };
+  cache.get_or_rebuild(fp, || scan_doc_dir_for_lang(&docs_dir, "", 1, lang))
 }
 
-/// 文档路径 `path`（相对 docs 根目录，来自公开接口的请求体）对应的
-/// `index.md` / `index.mdx`。整条文件路径都过 `safe_join_under`，目录或
-/// 文件本身是指向根外的符号链接也会被拒绝（SEC-03）。
+/// 文档路径 `path`（相对 docs 根目录，来自公开接口的请求体）对应的源文件解析结果：
+/// 返回 `(安全文件路径, 实际命中的语言, 是否具备中英双语伴生文件)`。
+/// 整条文件路径都过 `safe_join_under`，目录或文件本身是指向根外的符号链接也会被拒绝（SEC-03）。
 #[cfg(feature = "server")]
-fn resolve_doc_file(docs_root: &std::path::Path, path: &str) -> Option<PathBuf> {
+fn resolve_doc_file_for_lang(
+  docs_root: &std::path::Path,
+  path: &str,
+  lang: app_core::i18n::Language,
+) -> Option<(PathBuf, app_core::i18n::Language, bool)> {
   let dir = path.trim_end_matches('/');
-  ["index.md", "index.mdx"].into_iter().find_map(|name| {
-    let rel = if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") };
-    app_core::utils::safe_join_under(docs_root, &rel).filter(|p| p.is_file())
-  })
+  let find_in_names = |names: &[&str]| {
+    names.iter().find_map(|name| {
+      let rel = if dir.is_empty() { (*name).to_string() } else { format!("{dir}/{name}") };
+      app_core::utils::safe_join_under(docs_root, &rel).filter(|p| p.is_file())
+    })
+  };
+  let zh_file = find_in_names(&["index.md", "index.mdx"]);
+  let en_file = find_in_names(&["index.en.md", "index.en.mdx"]);
+  let has_bilingual = zh_file.is_some() && en_file.is_some();
+  match lang {
+    app_core::i18n::Language::En => en_file
+      .map(|f| (f, app_core::i18n::Language::En, has_bilingual))
+      .or_else(|| zh_file.map(|f| (f, app_core::i18n::Language::Zh, false))),
+    app_core::i18n::Language::Zh => zh_file
+      .map(|f| (f, app_core::i18n::Language::Zh, has_bilingual))
+      .or_else(|| en_file.map(|f| (f, app_core::i18n::Language::En, false))),
+  }
+}
+
+#[cfg(all(test, feature = "server"))]
+fn resolve_doc_file(docs_root: &std::path::Path, path: &str) -> Option<PathBuf> {
+  resolve_doc_file_for_lang(docs_root, path, app_core::i18n::Language::Zh).map(|(p, _, _)| p)
 }
 
 /// 文档页的最后修改日期（`index.md` 的 mtime，UTC `YYYY-MM-DD`），给 sitemap 的 lastmod。
 /// 内容随 git / rsync 部署，只有改过的文件 mtime 会变。
 #[cfg(feature = "server")]
 pub fn doc_lastmod(path: &str) -> Option<String> {
-  let file = resolve_doc_file(&app_core::utils::content_dir("docs"), path)?;
+  doc_lastmod_for_lang(path, app_core::i18n::Language::Zh)
+}
+
+/// 指定语言版本的文档最后修改日期（给双语 `/docs/...?lang=en` sitemap 条目用）。
+#[cfg(feature = "server")]
+pub fn doc_lastmod_for_lang(path: &str, lang: app_core::i18n::Language) -> Option<String> {
+  let (file, _, _) = resolve_doc_file_for_lang(&app_core::utils::content_dir("docs"), path, lang)?;
   let modified = std::fs::metadata(file).ok()?.modified().ok()?;
   Some(chrono::DateTime::<chrono::Utc>::from(modified).format("%Y-%m-%d").to_string())
 }
@@ -459,18 +598,24 @@ pub(crate) fn qualify_doc_title(title: &str, path: &str, volume_label: Option<&s
 
 /// 文档正文与 frontmatter；`Ok(None)` 表示没有这篇文档（页面据此回 404）。
 #[post("/api/docs/content")]
-pub async fn get_doc_content(path: String) -> Result<Option<DocContentResponse>, ServerFnError> {
+pub async fn get_doc_content(
+  path: String,
+  lang: Option<String>,
+) -> Result<Option<DocContentResponse>, ServerFnError> {
   #[cfg(feature = "server")]
   {
+    let target_lang = parse_requested_lang(lang.as_deref());
     let docs_root = app_core::utils::content_dir("docs");
-    let Some(filepath) = resolve_doc_file(&docs_root, &path) else {
+    let Some((filepath, actual_lang, has_bilingual)) =
+      resolve_doc_file_for_lang(&docs_root, &path, target_lang)
+    else {
       return Ok(None);
     };
     let raw =
       fs::read_to_string(&filepath).map_err(|e| ServerFnError::new(format!("读取失败: {}", e)))?;
     let (mut meta, content) = parse_doc_frontmatter(&raw, &filepath);
     fill_missing_meta(&mut meta, &content);
-    let tree = cached_tree();
+    let tree = cached_tree_for_lang(target_lang);
     let vol_slug = path.trim_matches('/').split('/').next().unwrap_or_default();
     let vol_label = tree.iter().find(|n| n.path == vol_slug).map(|n| n.title.as_str());
     meta.title = qualify_doc_title(&meta.title, &path, vol_label);
@@ -485,11 +630,24 @@ pub async fn get_doc_content(path: String) -> Result<Option<DocContentResponse>,
         rel.components().filter_map(|c| c.as_os_str().to_str()).collect::<Vec<_>>().join("/")
       })
       .unwrap_or_default();
-    Ok(Some(DocContentResponse { content, meta, prev, next, breadcrumbs, source_file }))
+    let resolved_lang = match actual_lang {
+      app_core::i18n::Language::En => "en".to_string(),
+      app_core::i18n::Language::Zh => "zh-CN".to_string(),
+    };
+    Ok(Some(DocContentResponse {
+      content,
+      meta,
+      prev,
+      next,
+      breadcrumbs,
+      source_file,
+      resolved_lang,
+      has_bilingual,
+    }))
   }
   #[cfg(not(feature = "server"))]
   {
-    let _ = path;
+    let _ = (path, lang);
     Ok(None)
   }
 }
@@ -916,5 +1074,72 @@ mod tests {
         DocLink { path: "guide/advanced/ssr".to_string(), title: "SSR 水合".to_string() },
       ]
     );
+  }
+
+  #[test]
+  fn bilingual_docs_prefer_en_companion_and_smoothly_fallback_to_zh() {
+    use app_core::i18n::Language;
+
+    let tmp = TempDir::new().unwrap();
+    let docs = tmp.path();
+
+    // guide 卷与 quickstart 均提供 index.md + index.en.md；zh-only 仅有 index.md
+    write_index(
+      &docs.join("guide"),
+      Some("sidebar_label: 快速上手\nsidebar_position: 1"),
+      "# 导览",
+    );
+    std::fs::write(
+      docs.join("guide/index.en.md"),
+      "---\nsidebar_label: Getting Started\n---\n\n# Guide Overview\n",
+    )
+    .unwrap();
+
+    write_index(
+      &docs.join("guide/quickstart"),
+      Some("sidebar_label: 5 分钟快速开始\nsidebar_position: 1"),
+      "# 中文快速开始",
+    );
+    std::fs::write(
+      docs.join("guide/quickstart/index.en.md"),
+      "---\nsidebar_label: 5-Minute Quickstart\ndescription: Start in 50s\n---\n\n# Quickstart\n",
+    )
+    .unwrap();
+
+    write_index(
+      &docs.join("guide/zh-only"),
+      Some("sidebar_label: 仅中文专题\nsidebar_position: 2"),
+      "# 仅中文正文",
+    );
+
+    let tree_zh = scan_doc_dir_for_lang(docs, "", 1, Language::Zh);
+    let tree_en = scan_doc_dir_for_lang(docs, "", 1, Language::En);
+
+    assert_eq!(tree_zh[0].title, "快速上手");
+    assert!(tree_zh[0].has_bilingual);
+    assert_eq!(tree_zh[0].children[0].title, "5 分钟快速开始");
+    assert!(tree_zh[0].children[0].has_bilingual);
+    assert_eq!(tree_zh[0].children[1].title, "仅中文专题");
+    assert!(!tree_zh[0].children[1].has_bilingual);
+
+    // 英文树：有 .en.md 的用英文标题（且继承了主文件的 sidebar_position = 1），缺失的平滑回退中文
+    assert_eq!(tree_en[0].title, "Getting Started");
+    assert_eq!(slugs(&tree_en[0].children), vec!["quickstart", "zh-only"]);
+    assert_eq!(tree_en[0].children[0].title, "5-Minute Quickstart");
+    assert_eq!(tree_en[0].children[1].title, "仅中文专题");
+
+    // 文件解析：英文请求命中 index.en.md 时返回 Language::En + has_bilingual = true
+    let (en_file, actual_en, bi_en) =
+      resolve_doc_file_for_lang(docs, "guide/quickstart", Language::En).unwrap();
+    assert!(en_file.ends_with("index.en.md"));
+    assert_eq!(actual_en, Language::En);
+    assert!(bi_en);
+
+    // 英文请求访问无伴生文件的中文目录时，平滑回退 index.md 且标明 Language::Zh + has_bilingual = false
+    let (fb_file, actual_fb, bi_fb) =
+      resolve_doc_file_for_lang(docs, "guide/zh-only", Language::En).unwrap();
+    assert!(fb_file.ends_with("index.md"));
+    assert_eq!(actual_fb, Language::Zh);
+    assert!(!bi_fb);
   }
 }

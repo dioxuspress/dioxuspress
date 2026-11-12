@@ -18,6 +18,7 @@ DioxusPress 严格遵循十二要素应用（12-Factor App）规范：**站点�
 | :--- | :--- | :--- | :--- | :--- |
 | `BASE_URL` | 全部档位 | `accounts` 必填；`basic` 可选 | `http://localhost:8080`（`basic` 默认） | 站点对外根 URL（含协议、无尾斜杠）。用于生成 `/sitemap.xml`、`/feed.xml` Canonical 地址与 OAuth 回调地址；`basic` 档位本地预览未设时自动回退至 `http://localhost:{PORT}`，生产环境建议显式配置公网域名 |
 | `CONTENT_DIR` | 全部档位 | 可选 | 容器挂载非空 `/app/content` 时自动识别 | 外部内容目录（如 `/app/content`）。设置或挂载后，`site.json`、`docs/`、`posts/`、`courses/` 与优先覆盖的 `images/` 均从该目录读取 |
+| `CONTENT_WATCH_INTERVAL_SECS` | 全部档位 | 可选 | `5`（设为 `0` 关闭轮询，仅响应 `SIGHUP`） | 挂载 `CONTENT_DIR` 时的节流变更探测周期（秒），检测到 `.git/HEAD`、`site.json` 或内容目录更新时自动零停机热刷新 |
 | `SEARCH_INDEX_DIR` | 全部档位 | 可选 | `./data/search-index` | Tantivy 全文索引与增量清单持久化目录；容器部署建议挂载独立 Volume 以加速重启校验 |
 | `RUST_LOG` | 全部档位 | 可选 | `info` | `tracing-subscriber` 日志过滤表达式（如 `info,app_core=debug,sqlx=warn`） |
 

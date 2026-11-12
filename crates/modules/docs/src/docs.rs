@@ -10,9 +10,16 @@ use widgets::Markdown;
 
 use app_core::i18n::{t, Language};
 
-/// 当前语言（缺省 Zh）。O11：文档页 UI 文案随语言切换。
+/// 当前语言（缺省 Zh）。O11：文档页 UI 文案与伴生正文随语言切换。
 fn current_lang() -> Language {
   try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default()
+}
+
+fn lang_param(lang: Language) -> Option<String> {
+  match lang {
+    Language::En => Some("en".to_string()),
+    Language::Zh => Some("zh".to_string()),
+  }
 }
 
 /// 给定文档路径段，构造 SPA URL（`/docs/<path>`）。
@@ -28,13 +35,7 @@ fn doc_href(path: &str) -> String {
 /// 重构 B4：树形导航改由 `DocsIndexInner` 用 use_server_future 服务端预取（随 SSR HTML 下发）。
 #[component]
 pub fn Docs() -> Element {
-  let lang = current_lang();
   rsx! {
-      widgets::PageMeta {
-          title: t(lang, "docs.title"),
-          description: t(lang, "docs.subtitle"),
-          path: "/docs".to_string(),
-      }
       section { class: "min-h-screen bg-white dark:bg-slate-950",
           SuspenseBoundary {
               fallback: |_| rsx! {
@@ -51,9 +52,20 @@ pub fn Docs() -> Element {
 #[component]
 fn DocsIndexInner() -> Element {
   let lang = current_lang();
-  let tree = use_server_future(|| async move { list_doc_volumes().await.unwrap_or_default() })?;
+  let lang_code = lang_param(lang);
+  let tree = use_server_future(use_reactive!(|lang_code| async move {
+    list_doc_volumes(lang_code).await.unwrap_or_default()
+  }))?;
+  let has_any_bilingual =
+    tree().as_ref().is_some_and(|vols| vols.iter().any(|v| v.node.has_bilingual));
 
   rsx! {
+      widgets::PageMetaTags {
+          title: t(lang, "docs.title"),
+          description: t(lang, "docs.subtitle"),
+          path: "/docs".to_string(),
+          bilingual: has_any_bilingual.then_some(lang == Language::En),
+      }
       div { class: "max-w-7xl mx-auto flex",
               // 左侧导航：一级分类列表（仅桌面端显示）
               aside { class: "hidden lg:block shrink-0 w-64 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 pt-8 pb-12 px-4",
@@ -209,12 +221,12 @@ pub fn DocPage(path: Vec<String>, footer: Element) -> Element {
 /// 有正文的节点值为站内路径（可导航），没有正文的值为 `group:<path>`（只展开）。
 #[component]
 fn DocTree(active_path: String) -> Element {
-  // 只取当前卷的完整子树；同一卷内跳页 volume 不变，不会重取
+  // 只取当前卷的完整子树；同一卷内跳页 volume 不变不会重取，切换界面语言时立即重取本地化侧栏
   let volume = active_path.split('/').next().unwrap_or_default().to_string();
-  let tree =
-    use_server_future(use_reactive!(
-      |volume| async move { doc_nav(volume).await.unwrap_or_default() }
-    ))?;
+  let lang_code = lang_param(current_lang());
+  let tree = use_server_future(use_reactive!(|(volume, lang_code)| async move {
+    doc_nav(volume, lang_code).await.unwrap_or_default()
+  }))?;
   let Some(nodes) = tree() else {
     return VNode::empty();
   };
@@ -280,30 +292,32 @@ fn doc_tree_item(node: &DocTreeNode, level: u32) -> Element {
 #[component]
 fn DocPageInner(path: Vec<String>, footer: Element) -> Element {
   let lang = current_lang();
+  let lang_code = lang_param(lang);
   let doc_path = path.join("/");
   let doc_path_for_meta = doc_path.clone();
   // Markdown blog_id 携带 "doc:<path>" 前缀，JS 运行时以此识别资源归属
   let anno_blog_id = format!("doc:{}", doc_path);
 
-  // 正文：use_server_future 服务端预取，随路由参数 doc_path 变化重取。
-  let content =
-    use_server_future(use_reactive!(|doc_path| async move { get_doc_content(doc_path).await }))?;
+  // 正文：use_server_future 服务端预取，随路由参数 doc_path 或语言 lang_code 变化重取。
+  let content = use_server_future(use_reactive!(|(doc_path, lang_code)| async move {
+    get_doc_content(doc_path, lang_code).await
+  }))?;
 
   rsx! {
       match content() {
           Some(Ok(Some(resp))) => rsx! {
               div { class: "flex justify-center gap-10",
-                  // 正文只有中文：英文界面下 <html> 是 lang="en"，正文这层必须自己标 zh-CN，
-                  // 否则读屏软件按英文念中文。将来有英文正文时，这里跟正文语言一起改。
-                  article { class: "min-w-0 flex-1 max-w-3xl", lang: "zh-CN",
-                      // SEO：title / description / canonical / og / JSON-LD 由 PageMetaTags 输出
+                  // 正文语言由服务端按实际命中的文件（英文伴生文件 vs 回退中文）标定，保证读屏与爬虫语义准确。
+                  article { class: "min-w-0 flex-1 max-w-3xl", lang: "{resp.resolved_lang}",
+                      // SEO：title / description / canonical / hreflang / og / JSON-LD 由 PageMetaTags 输出
                       // （服务端已从正文补齐），这里只补 keywords。
                       widgets::PageMetaTags {
                           title: resp.meta.title.clone(),
                           description: resp.meta.description.clone(),
                           path: format!("/docs/{}", doc_path_for_meta),
-                          schema: Some(doc_schema(&resp.meta)),
+                          schema: Some(doc_schema(&resp.meta, &resp.resolved_lang)),
                           image: resp.meta.image.clone(),
+                          bilingual: resp.has_bilingual.then_some(resp.resolved_lang == "en"),
                       }
                       if !resp.meta.keywords.is_empty() {
                           document::Meta { name: "keywords", content: "{resp.meta.keywords.join(\", \")}" }
@@ -417,12 +431,12 @@ fn is_path_within(node: &DocTreeNode, active_path: &str) -> bool {
 }
 
 /// 文档页的 schema.org `TechArticle`；锁了源码版本的页面带上 `about`（对应的 crate 与版本）。
-fn doc_schema(meta: &crate::server::DocMeta) -> serde_json::Value {
+fn doc_schema(meta: &crate::server::DocMeta, in_language: &str) -> serde_json::Value {
   let mut v = serde_json::json!({
     "@type": "TechArticle",
     "headline": meta.title,
     "description": meta.description,
-    "inLanguage": "zh-CN",
+    "inLanguage": in_language,
     "isPartOf": { "@type": "WebSite", "name": widgets::site_name() },
   });
   if !meta.keywords.is_empty() {

@@ -37,6 +37,7 @@ crates/app/tailwind-sources.css
 !/assets/courses/rust-basics/
 /assets/docs/*
 !/assets/docs/index.md
+!/assets/docs/index.en.md
 !/assets/docs/guide/
 !/assets/docs/content/
 !/assets/docs/community/

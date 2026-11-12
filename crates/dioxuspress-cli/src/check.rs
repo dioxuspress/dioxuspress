@@ -108,14 +108,17 @@ pub fn resolve_target_root(input: &Path) -> Result<PathBuf, String> {
   if !input.exists() {
     return Err(format!("directory does not exist: {}", input.display()));
   }
+  let assets = input.join("assets");
+  if !input.join("site.json").is_file()
+    && input.join("Cargo.toml").is_file()
+    && assets.join("site.json").is_file()
+  {
+    return Ok(assets);
+  }
   let has_direct_content =
     ["site.json", "docs", "posts", "courses", "cases"].iter().any(|name| input.join(name).exists());
   if has_direct_content {
     return Ok(input.to_path_buf());
-  }
-  let assets = input.join("assets");
-  if input.join("Cargo.toml").is_file() && assets.join("site.json").is_file() {
-    return Ok(assets);
   }
   Err(format!(
     "no DioxusPress content found in {} (expected site.json, docs/, or posts/)",
@@ -956,6 +959,8 @@ fn verify_target_url(
     let target_base = root.join("docs").join(sub);
     if target_base.join("index.md").is_file()
       || target_base.join("index.mdx").is_file()
+      || target_base.join("index.en.md").is_file()
+      || target_base.join("index.en.mdx").is_file()
       || target_base.is_file()
     {
       return None;
@@ -1066,6 +1071,8 @@ fn verify_target_url(
   if candidate.is_file()
     || candidate.join("index.md").is_file()
     || candidate.join("index.mdx").is_file()
+    || candidate.join("index.en.md").is_file()
+    || candidate.join("index.en.mdx").is_file()
   {
     return None;
   }
@@ -1078,7 +1085,10 @@ fn collect_markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let path = entry.path();
     if path.is_dir() {
       collect_markdown_files(&path, out);
-    } else if matches!(path.file_name().and_then(|s| s.to_str()), Some("index.md" | "index.mdx")) {
+    } else if matches!(
+      path.file_name().and_then(|s| s.to_str()),
+      Some("index.md" | "index.mdx" | "index.en.md" | "index.en.mdx")
+    ) {
       out.push(path);
     }
   }

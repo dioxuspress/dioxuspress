@@ -24,3 +24,4 @@ DioxusPress 的生产部署遵循「小站点极简、大站点稳健」的原�
 - **[Tantivy 搜索与全站 SEO](/docs/operations/search-and-seo)**：增量索引清单、GSC 站点地图提交与结构化数据。
 - **[引擎架构与新模块开发](/docs/operations/module-development)**：如何按高内聚低耦合规范为 DioxusPress 新增一个业务模块。
 - **[环境变量与网关配置字典](/docs/operations/env-reference)**：`.env` 全量运行参数、OAuth / 支付密钥与 Pingora 多域名 SNI 网关参考。
+- **[实测性能看板与体积守卫](/docs/operations/benchmarks)**：空闲内存、SSR / `304` 延迟吞吐、Tantivy 检索速度与前端 WASM 体积 CI 门禁。

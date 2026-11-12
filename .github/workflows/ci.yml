@@ -105,6 +105,20 @@ jobs:
       - name: feature tiers (scripts/check_tiers.sh)
         run: ./scripts/check_tiers.sh
 
+  wasm-size:
+    name: WASM Bundle Size Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-wasm-size
+      - name: check wasm-release bundle budgets
+        run: ./scripts/check_wasm_size.sh
+
   # 网关不在 workspace 里（自带 Cargo.lock，tokio 锁在 1.54 以下，见 crates/gateway），
   # 上面的 --workspace 不覆盖它；之前只有改到网关路径时 release.yml 的镜像构建碰一下。
   gateway:

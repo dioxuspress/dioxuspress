@@ -86,6 +86,20 @@ dx serve
 首个管理员：用 OAuth 登录一次后，在仓库根目录运行 `set -a; source .env; set +a; scripts/promote_admin.sh <昵称>`（需要 `psql`），
 再退出并重新登录，新签发的会话才带 admin 角色。详见 [管理后台](docs/ADMIN_SPEC.md)。
 
+## 实测性能与资源占用
+
+所有数据均可通过仓库内置脚本 [`./scripts/bench_ssr.sh`](scripts/bench_ssr.sh) 与 [`./scripts/check_wasm_size.sh`](scripts/check_wasm_size.sh) 本地复现（详见在线文档 [`dioxuspress.dev/docs/operations/benchmarks`](https://dioxuspress.dev/docs/operations/benchmarks)）：
+
+| 指标 | `basic` 零数据库档 | `accounts` / `full` 全栈档 | 说明 |
+| --- | --- | --- | --- |
+| **服务端二进制 / 容器镜像** | `34.2 MiB` / `269 MB` | `47.4 MiB` / `319 MB` | Pingora 多域名 SNI 网关镜像 `143 MB`（常驻内存仅 `6.4 MiB`） |
+| **冷启动就绪耗时（`/healthz 200`）** | `547 ms` | `549 ms` | 毫秒级对外响应，Tantivy 差量校验异步执行 |
+| **空闲内存占用（Idle RSS）** | `91.7 MiB` | `95.6 MiB` | 含内嵌结巴中文分词词典与 Tantivy 内存映射索引 |
+| **首屏完整 SSR（`/` / `/docs/*`）** | `2.79 ms` / `4.04 ms` P50（`1,832` / `1,236 QPS`） | `2.90 ms` / `4.02 ms` P50（`1,764` / `1,234 QPS`） | 实时 Markdown 解析 + 三级侧栏 + VirtualDOM 渲染 |
+| **匿名条件缓存（`ETag` → `304`）** | **`0.096 ms` P50（`13,636 QPS`）** | **`0.093 ms` P50（`13,462 QPS`）** | 仅限纯匿名只读请求；登录态与私密路径严格 `private, no-store` |
+| **Tantivy 全文检索（`/api/search/query`）** | **`0.314 ms` P50（`9,215 QPS`）** | **`0.317 ms` P50（`9,326 QPS`）** | 中英 BM25 + 摘要提取；支持 `SIGHUP` 零停机增量热刷新 |
+| **前端 WASM 传输体积（`brotli -q 11`）** | **`1.04 MiB`**（`1.54 MiB` gzip） | **`1.35 MiB`**（`2.07 MiB` gzip） | CI 每次 PR 执行 `scripts/check_wasm_size.sh` 硬性体积门禁 |
+
 ## 提交前检查
 
 ```bash
@@ -93,7 +107,8 @@ cargo fmt --all -- --check
 cargo clippy --workspace --features server --all-targets -- -D warnings
 cargo test --features server --workspace -- --test-threads=1
 cargo check -p app --target wasm32-unknown-unknown --features web
-scripts/check_tiers.sh   # 四档 × server / web 都要编译通过且无 warning
+scripts/check_tiers.sh      # 四档 × server / web 都要编译通过且无 warning
+scripts/check_wasm_size.sh  # 校验 wasm-release 前端包体积未超预算
 ```
 
 ## Tailwind CSS 构建

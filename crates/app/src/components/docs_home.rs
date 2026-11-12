@@ -63,7 +63,13 @@ fn feature_icon(name: &str) -> Element {
 #[component]
 fn DocsVolumePreview() -> Element {
   let lang = use_i18n();
-  let vols_res = use_server_future(|| async move { list_doc_volumes().await.unwrap_or_default() })?;
+  let lang_code = match lang() {
+    app_core::i18n::Language::En => Some("en".to_string()),
+    app_core::i18n::Language::Zh => Some("zh".to_string()),
+  };
+  let vols_res = use_server_future(use_reactive!(|lang_code| async move {
+    list_doc_volumes(lang_code).await.unwrap_or_default()
+  }))?;
   let Some(vols) = vols_res() else {
     return rsx! {};
   };

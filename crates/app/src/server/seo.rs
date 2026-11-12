@@ -62,6 +62,14 @@ async fn collect_detail_paths(is_on: impl Fn(&str) -> bool) -> Vec<(String, Opti
       let lastmod = module_docs::server::doc_lastmod(&p);
       (format!("/docs/{p}"), lastmod)
     }));
+    let bi_paths = bilingual_doc_paths(&tree);
+    if !bi_paths.is_empty() {
+      paths.push(("/docs?lang=en".to_string(), None));
+      paths.extend(bi_paths.into_iter().map(|p| {
+        let lastmod = module_docs::server::doc_lastmod_for_lang(&p, app_core::i18n::Language::En);
+        (widgets::lang_path(&format!("/docs/{p}"), true), lastmod)
+      }));
+    }
   }
   if is_on("cases") {
     let cases = module_cases::server::list_cases(None, None, None).await.unwrap_or_default();
@@ -93,6 +101,18 @@ fn doc_paths(nodes: &[module_docs::server::DocTreeNode]) -> Vec<String> {
       out.push(n.path.clone());
     }
     out.extend(doc_paths(&n.children));
+  }
+  out
+}
+
+/// 同时拥有中英文正文的文档节点路径（用于生成 `/docs/<path>?lang=en` sitemap 条目）。
+fn bilingual_doc_paths(nodes: &[module_docs::server::DocTreeNode]) -> Vec<String> {
+  let mut out = Vec::new();
+  for n in nodes {
+    if n.has_content && n.has_bilingual && !n.path.is_empty() {
+      out.push(n.path.clone());
+    }
+    out.extend(bilingual_doc_paths(&n.children));
   }
   out
 }
@@ -303,6 +323,7 @@ mod tests {
       title: path.to_string(),
       path: path.to_string(),
       has_content,
+      has_bilingual: false,
       description: String::new(),
       children,
     }
@@ -384,7 +405,10 @@ mod tests {
         })
         .unwrap_or(0)
     };
-    let docs = doc_paths(&module_docs::server::list_doc_tree().await.unwrap_or_default()).len();
+    let tree = module_docs::server::list_doc_tree().await.unwrap_or_default();
+    let docs = doc_paths(&tree).len();
+    let en_docs = bilingual_doc_paths(&tree).len();
+    let en_index_entry = usize::from(en_docs > 0);
     let index_files = walk_count(&app_core::utils::content_dir("docs"));
     assert!(docs > 0);
     assert_eq!(docs, index_files, "文档树漏掉了磁盘上的文档（深度上限 / _meta.json 过滤？）");
@@ -395,9 +419,12 @@ mod tests {
       .iter()
       .filter(|(p, _)| p.starts_with("/course/") && p.matches('/').count() == 4)
       .count();
-    // 文档都带 lastmod（文件 mtime）
+    // 文档详情路径（含 ?lang=en 伴生页）都带 lastmod（文件 mtime）
     assert!(paths.iter().filter(|(p, _)| p.starts_with("/docs/")).all(|(_, m)| m.is_some()));
-    assert_eq!(paths.len(), docs + count_dirs("cases") + courses + open_lessons);
+    assert_eq!(
+      paths.len(),
+      docs + en_docs + en_index_entry + count_dirs("cases") + courses + open_lessons
+    );
     // G6：示例付费课程只有第一课是试看。
     if cfg!(feature = "course") {
       let has = |p: &str| paths.iter().any(|(x, _)| x == p);

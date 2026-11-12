@@ -455,6 +455,9 @@ fn main() {
       }
     });
 
+    // E5.3：启动 SIGHUP 零停机热刷新与 CONTENT_DIR 节流变更探测（避免纯内容发布重启容器）。
+    crate::server::hot_reload::spawn_hot_reload_tasks();
+
     // M5e：支付对账定时任务（payments feature）。周期扫描滞留 pending 单，
     // 向网关查单回填发货（回调丢失兜底）/ 超窗关单；网关未配置时每轮
     // 空跑（零成本）。PAY_RECONCILE_DISABLED=1 关闭。
@@ -517,6 +520,11 @@ fn main() {
 
     // G7：`/blog/` 这类尾斜杠地址 301 到 `/blog`，避免重复 URL。
     let router = router.layer(axum::middleware::from_fn(crate::server::seo::trailing_slash_mw));
+
+    // E5.2：匿名只读页面弱 ETag / If-None-Match (304) 短路与私密路由 private, no-store 防护。
+    // 挂在 CompressionLayer 内侧，使 304 命中直接跳过 SSR 与流式压缩，同时 200 仍正常经外层 br/gzip 压缩。
+    let router = router
+      .layer(axum::middleware::from_fn(crate::server::conditional_cache::conditional_cache_mw));
 
     // G4：按 Accept-Encoding 压缩响应（br / gzip）。HTML、CSS、JS、wasm、
     // sitemap / feed 都受益；图片和流式 SSE 由默认判定跳过，已带
