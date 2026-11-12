@@ -13,5 +13,6 @@ pub mod layouts;
 pub mod module_gate;
 pub mod nav;
 pub mod theme_picker;
+pub mod theme_showcase;
 pub mod user_menu;
 pub mod view;
