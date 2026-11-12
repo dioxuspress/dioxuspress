@@ -39,6 +39,7 @@ services:
     environment:
       TLS_CERT_PATH: /certs/fullchain.pem
       TLS_KEY_PATH: /certs/privkey.pem
+      HOST_UPSTREAMS: ${HOST_UPSTREAMS:-}
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - ${CERT_HOST_DIR:-/data/rie/certs}:/certs:ro
