@@ -131,7 +131,7 @@ pub struct SiteConfig {
   /// 段落标注（Annotation）按资源类型的启用开关。
   #[serde(default)]
   pub annotations: AnnotationsSettings,
-  /// 传统导航项配置（兼容旧版布局；当前主导航主要由 `modules` 控制）。
+  /// 额外自定义顶栏导航项（在 `docs` 布局顶栏与移动抽屉追加站内或外部链接，如 `[{"key": "nav.templates", "route": "/templates"}]`）。
   #[serde(default)]
   pub navigation: Vec<NavItem>,
   /// OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应环境变量凭据）。

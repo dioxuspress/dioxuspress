@@ -33,7 +33,7 @@ cargo install --git https://github.com/dioxuspress/dioxuspress dioxuspress-cli
 
 ### 2. 初始化内容仓库并校验
 
-`dioxuspress init` 内置 4 套场景预设（`docs` 文档站、`blog` 极简博客、`community` 社区、`portal` 知识门户）：
+`dioxuspress init` 内置 4 套场景预设（`docs` 文档站、`blog` 极简博客、`community` 社区、`portal` 知识门户；可在 [模板中心](/templates) 在线预览对比）：
 
 ```bash
 # 生成带 JSON Schema 自动补全的 site.json、示例文档与 docker-compose.yml

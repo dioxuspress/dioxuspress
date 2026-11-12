@@ -694,7 +694,7 @@
     },
     "navigation": {
       "default": [],
-      "description": "传统导航项配置（兼容旧版布局；当前主导航主要由 `modules` 控制）。",
+      "description": "额外自定义顶栏导航项（在 `docs` 布局顶栏与移动抽屉追加站内或外部链接，如 `[{\"key\": \"nav.templates\", \"route\": \"/templates\"}]`）。",
       "items": {
         "$ref": "#/$defs/NavItem"
       },

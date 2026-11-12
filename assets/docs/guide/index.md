@@ -35,5 +35,6 @@ flowchart TD
 1. **[5 分钟快速开始](/docs/guide/quickstart)**：本地克隆、启动零数据库文档站或完整全栈开发环境。
 2. **[四档编译分层](/docs/guide/feature-tiers)**：对比 `basic`、`accounts`、`course` 与默认完整档位的依赖与体积差异。
 3. **[`site.json` 全字段配置](/docs/guide/site-config)**：定制站名、明暗双态 Logo、公告横幅、首页 CTA 与模块开关。
-4. **[布局与主题定制](/docs/guide/layouts-and-themes)**：切换类 Docusaurus 文档模板、门户模板与三套 shadcn 主题令牌。
+4. **[布局与主题定制](/docs/guide/layouts-and-themes)**：切换类 Docusaurus 文档模板、门户模板与内置双模主题令牌。
 5. **[Tailwind CSS v4 工作流](/docs/guide/tailwind)**：理解 `@source` 自动扫描机制与自定义组件样式构建。
+6. **[官方 Starter 模板选用指南](/docs/guide/templates)**：对比 `docs`、`blog`、`community` 与 `portal` 四套场景化预设（或直接浏览 [模板中心](/templates)）。

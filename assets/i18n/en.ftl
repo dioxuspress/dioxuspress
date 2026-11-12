@@ -420,6 +420,7 @@ podcast.no_results = No episodes match this tag
 
 # docs layout & breadcrumbs
 nav.docs = Docs
+nav.templates = Templates
 nav.github = GitHub Repository
 nav.dismiss_announcement = Dismiss announcement
 hero.copy_cmd = Copy command
