@@ -1,0 +1,131 @@
+{
+  "$schema": "https://dioxuspress.dev/schemas/site.schema.json",
+  "site_name": "DioxusPress Docs Starter",
+  "site_description": "DioxusPress Docs Starter — 基于 DioxusPress 构建的零数据库开源项目文档站",
+  "author": "DioxusPress Team",
+  "default_language": "zh",
+  "active_layout": "docs",
+  "theme": "emerald",
+  "available_themes": [
+    "emerald",
+    "ocean",
+    "nord",
+    "corporate",
+    "dracula"
+  ],
+  "announcement": {
+    "id": "starter-v0-1",
+    "text": "🎉 v0.1 正式发布 —— 编辑 Markdown 即可获得毫秒级中英文检索与三级文档树",
+    "text_en": "🎉 v0.1 Released — Write Markdown to get instant CJK/English search and a 3-level docs tree",
+    "href": "/blog/v0-1-release"
+  },
+  "hero": {
+    "badge": "Zero-DB · Tantivy Search · Dual-Mode Themes",
+    "badge_en": "Zero-DB · Tantivy Search · Dual-Mode Themes",
+    "title": "DioxusPress Docs Starter",
+    "title_en": "DioxusPress Docs Starter",
+    "subtitle": "零数据库单容器即可运行的现代技术文档中心：支持多卷三级侧栏、代码标签组、Mermaid 架构图与 Cmd+K 全文搜索。",
+    "subtitle_en": "Modern documentation hub in a single zero-database container: multi-volume 3-level sidebar, code tabs, Mermaid diagrams, and Cmd+K search.",
+    "install_command": "docker compose up -d",
+    "primary_cta_text": "快速开始",
+    "primary_cta_text_en": "Get Started",
+    "primary_cta_href": "/docs/guide/getting-started",
+    "secondary_cta_text": "API 参考",
+    "secondary_cta_text_en": "API Reference",
+    "secondary_cta_href": "/docs/api"
+  },
+  "features": [
+    {
+      "icon": "book",
+      "title": "多卷三级文档树",
+      "title_en": "Multi-Volume 3-Level Tree",
+      "description": "按文件夹层级自动生成分卷入口、三级折叠侧栏、面包屑与上下篇导航，零手工路由维护。",
+      "description_en": "Folder hierarchy automatically builds volume cards, 3-level sidebars, breadcrumbs, and prev/next links.",
+      "href": "/docs/guide/getting-started"
+    },
+    {
+      "icon": "search",
+      "title": "嵌入式毫秒级搜索",
+      "title_en": "Embedded Instant Search",
+      "description": "进程内集成 Tantivy + Jieba 分词引擎，无需外部搜索服务即可按 Cmd+K 秒搜全站。",
+      "description_en": "In-process Tantivy + CJK tokenizer delivers instant Cmd+K search with zero external services.",
+      "href": "/docs/api/cli-reference"
+    },
+    {
+      "icon": "palette",
+      "title": "WCAG AA 双模主题色卡",
+      "title_en": "WCAG AA Dual-Mode Themes",
+      "description": "默认启用清翠绿（emerald）技术文档配色，开放 5 套双极性色卡无闪烁自由切换。",
+      "description_en": "Ships with the emerald docs palette and 5 zero-flash light/dark theme presets.",
+      "href": "/docs/guide/configuration"
+    }
+  ],
+  "modules": {
+    "docs": { "enabled": true },
+    "blog": { "enabled": true },
+    "cases": { "enabled": false },
+    "podcast": { "enabled": false },
+    "embedded": { "enabled": false },
+    "ai": { "enabled": false },
+    "web3": { "enabled": false },
+    "wasm": { "enabled": false },
+    "cli": { "enabled": false },
+    "papers": { "enabled": false },
+    "about": { "enabled": false }
+  },
+  "footer": {
+    "tagline": "DioxusPress Docs Starter · Powered by DioxusPress",
+    "tagline_en": "DioxusPress Docs Starter · Powered by DioxusPress",
+    "copyright": "DioxusPress Docs Starter",
+    "social": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/dioxuspress/dioxuspress"
+      }
+    ],
+    "columns": [
+      {
+        "title": "文档导航",
+        "title_en": "Documentation",
+        "links": [
+          {
+            "label": "快速开始",
+            "label_en": "Getting Started",
+            "href": "/docs/guide/getting-started"
+          },
+          {
+            "label": "配置说明",
+            "label_en": "Configuration",
+            "href": "/docs/guide/configuration"
+          },
+          {
+            "label": "生产部署",
+            "label_en": "Deployment",
+            "href": "/docs/guide/advanced/deployment"
+          }
+        ]
+      },
+      {
+        "title": "参考与动态",
+        "title_en": "Reference & News",
+        "links": [
+          {
+            "label": "API 参考卷",
+            "label_en": "API Reference",
+            "href": "/docs/api"
+          },
+          {
+            "label": "发布博客",
+            "label_en": "Release Blog",
+            "href": "/blog"
+          },
+          {
+            "label": "Atom 订阅源",
+            "label_en": "Atom Feed",
+            "href": "/feed.xml"
+          }
+        ]
+      }
+    ]
+  }
+}

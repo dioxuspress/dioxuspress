@@ -81,6 +81,11 @@ jobs:
         run: cargo test --features server --workspace -- --test-threads=1
       - name: dioxuspress check assets
         run: cargo run -p dioxuspress-cli -- check assets
+      - name: dioxuspress check starter templates
+        run: |
+          for tpl in docs blog community portal; do
+            cargo run -p dioxuspress-cli -- check "templates/${tpl}"
+          done
 
   build-server:
     name: Build (server feature)

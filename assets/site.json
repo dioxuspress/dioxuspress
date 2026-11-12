@@ -117,6 +117,11 @@
             "href": "/docs/guide/quickstart"
           },
           {
+            "label": "Starter 模板库",
+            "label_en": "Starter Templates",
+            "href": "/templates"
+          },
+          {
             "label": "四档功能分层",
             "label_en": "Feature Tiers",
             "href": "/docs/guide/feature-tiers"
@@ -206,6 +211,12 @@
     "doc": true,
     "blog": true
   },
+  "navigation": [
+    {
+      "key": "nav.templates",
+      "route": "/templates"
+    }
+  ],
   "modules": {
     "docs": {
       "enabled": true

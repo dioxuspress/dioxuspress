@@ -199,6 +199,9 @@ pub enum Route {
         #[route("/blog/:id")]
         Blog { id: String },
 
+        #[route("/templates")]
+        Templates {},
+
         #[route("/podcast")]
         Podcast {},
 
@@ -792,6 +795,13 @@ fn AboutBody() -> Element {
     Some(Ok(None)) => rsx! { widgets::NotFound { message: t(lang(), "common.not_found") } },
     Some(Err(_)) => rsx! { widgets::LoadFailed { message: t(lang(), "common.load_failed") } },
     None => rsx! {},
+  }
+}
+
+#[component]
+pub fn Templates() -> Element {
+  rsx! {
+      crate::components::templates_showcase::TemplatesPage {}
   }
 }
 

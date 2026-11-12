@@ -420,6 +420,7 @@ podcast.no_results = 没有匹配该标签的节目
 
 # docs layout & breadcrumbs
 nav.docs = 文档
+nav.templates = 模板
 nav.github = GitHub 仓库
 nav.dismiss_announcement = 关闭公告
 hero.copy_cmd = 复制命令

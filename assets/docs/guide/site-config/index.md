@@ -139,6 +139,7 @@ UPDATE_SCHEMA=1 cargo test --features server -p app-core site_schema_json_is_up_
 | `footer.icp_url` | `string \| null` | `"https://beian.miit.gov.cn/"` | 备案点击跳转地址 |
 | `footer.social` | `array` | `[]` | `{ "label": "GitHub", "url": "https://..." }` 数组；首个 GitHub 链接会自动提取到文档站顶栏右上角图标 |
 | `footer.columns` | `array` | `[]` | 结构化多列链接分组，每列含 `title`、`title_en` 与 `links: [{ "label", "label_en", "href" }]` |
+| `navigation` | `array` | `[]` | 在 `docs` 布局顶栏追加自定义导航链接，每项为 `{ "key": "nav.templates 或字面文案", "route": "/templates" }`（站内路径会自动纳入 `/sitemap.xml`） |
 
 ---
 

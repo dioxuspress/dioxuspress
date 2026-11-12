@@ -154,6 +154,11 @@ pub fn check_site(input: &Path) -> Result<CheckSummary, String> {
 
   let posts_dir = root.join("posts");
   if posts_dir.is_dir() {
+    let authors_yml = posts_dir.join("authors.yml");
+    if authors_yml.is_file() {
+      files_checked += 1;
+      check_yaml_file(&authors_yml, &mut diagnostics);
+    }
     if let Ok(entries) = fs::read_dir(&posts_dir) {
       let mut dirs: Vec<PathBuf> =
         entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
@@ -221,6 +226,55 @@ pub fn check_site(input: &Path) -> Result<CheckSummary, String> {
       files_checked += 1;
       check_yaml_file(&yf, &mut diagnostics);
     }
+
+    let mut readme_files = Vec::new();
+    collect_named_files(&cases_dir, &["README.md"], &mut readme_files);
+    readme_files.sort();
+    for rf in readme_files {
+      files_checked += 1;
+      check_markdown_file(
+        &rf,
+        &root,
+        ContentKind::FreePage,
+        &mut internal_links_checked,
+        &mut diagnostics,
+      );
+    }
+  }
+
+  let podcasts_dir = root.join("podcasts");
+  if podcasts_dir.is_dir() {
+    let mut yaml_files = Vec::new();
+    collect_named_files(&podcasts_dir, &["episode.yaml"], &mut yaml_files);
+    yaml_files.sort();
+    for yf in yaml_files {
+      files_checked += 1;
+      check_yaml_file(&yf, &mut diagnostics);
+    }
+  }
+
+  let pages_dir = root.join("pages");
+  if pages_dir.is_dir() {
+    if let Ok(entries) = fs::read_dir(&pages_dir) {
+      let mut md_files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+          p.is_file() && matches!(p.extension().and_then(|s| s.to_str()), Some("md" | "mdx"))
+        })
+        .collect();
+      md_files.sort();
+      for file in md_files {
+        files_checked += 1;
+        check_markdown_file(
+          &file,
+          &root,
+          ContentKind::FreePage,
+          &mut internal_links_checked,
+          &mut diagnostics,
+        );
+      }
+    }
   }
 
   Ok(CheckSummary { root, files_checked, internal_links_checked, diagnostics })
@@ -231,6 +285,7 @@ enum ContentKind {
   Doc,
   BlogPost,
   CourseLesson,
+  FreePage,
 }
 
 fn check_site_json(path: &Path, root: &Path, diagnostics: &mut Vec<Diagnostic>) {
@@ -958,8 +1013,49 @@ fn verify_target_url(
     return Some(format!("missing image '{raw_url}': {} not found", target.display()));
   }
 
+  if let Some(sub) = without_frag.strip_prefix("/course/") {
+    if root.join("courses").is_dir() {
+      *internal_links_checked += 1;
+      let mut parts = sub.split('/');
+      let course_slug = parts.next().unwrap_or("");
+      let chapter = parts.next();
+      let lesson = parts.next();
+      let course_dir = root.join("courses").join(course_slug);
+      if !course_dir.join("course.yaml").is_file() {
+        return Some(format!(
+          "broken course link '{raw_url}': expected {}/course.yaml",
+          course_dir.display()
+        ));
+      }
+      if let (Some(ch), Some(ls)) = (chapter, lesson) {
+        let lesson_dir = course_dir.join(ch).join(ls);
+        if !lesson_dir.join("index.md").is_file() && !lesson_dir.join("index.mdx").is_file() {
+          return Some(format!(
+            "broken lesson link '{raw_url}': expected {}/index.md (or .mdx)",
+            lesson_dir.display()
+          ));
+        }
+      }
+    }
+    return None;
+  }
+
+  if let Some(slug) = without_frag.strip_prefix("/case/") {
+    if root.join("cases").is_dir() {
+      *internal_links_checked += 1;
+      let case_dir = root.join("cases").join(slug);
+      if !case_dir.join("case.yaml").is_file() {
+        return Some(format!(
+          "broken case link '{raw_url}': expected {}/case.yaml",
+          case_dir.display()
+        ));
+      }
+    }
+    return None;
+  }
+
   if without_frag.starts_with('/') {
-    // 其它应用动态路由（如 /topics、/cases、/courses、/podcast、/about、/feed.xml、/schemas/*）不对应静态 Markdown
+    // 其它应用动态路由（如 /topics、/course、/case、/podcast、/about、/feed.xml、/schemas/*）不对应静态 Markdown
     return None;
   }
 
@@ -1107,6 +1203,21 @@ mod tests {
       "official assets/ failed dioxuspress check:\n{}",
       summary.diagnostics.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")
     );
+  }
+
+  #[test]
+  fn official_starter_templates_pass_check_with_zero_errors() {
+    let templates_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+    for tpl in Template::ALL {
+      let dir = templates_root.join(tpl.id());
+      let summary = check_site(&dir).unwrap();
+      assert!(
+        summary.is_ok(),
+        "templates/{} failed dioxuspress check:\n{}",
+        tpl.id(),
+        summary.diagnostics.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")
+      );
+    }
   }
 
   #[test]

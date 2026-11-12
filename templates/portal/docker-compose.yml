@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dioxuspress
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_in_env}
+      POSTGRES_DB: dioxuspress
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dioxuspress"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  site:
+    image: ghcr.io/dioxuspress/dioxuspress-app:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      SEARCH_INDEX_DIR: /app/data/search-index
+    volumes:
+      - ./:/app/content:ro
+      - search-index:/app/data/search-index
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  search-index:

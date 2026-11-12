@@ -130,6 +130,18 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
       .filter(|e| e.domains.iter().any(|d| is_on(d.module_id)))
       .map(|e| format!("/ecosystem/{}", e.id)),
   );
+  // 站点自定义顶栏站内导航（如 dioxuspress.dev 的 /templates）自动纳入 sitemap。
+  let site_cfg = app_core::settings::SiteConfig::active();
+  for nav_item in &site_cfg.navigation {
+    let r = nav_item.route.trim();
+    if r.starts_with('/')
+      && r != "/feed.xml"
+      && r != "/sitemap.xml"
+      && !static_paths.iter().any(|p| p == r)
+    {
+      static_paths.push(r.to_string());
+    }
+  }
   let mut entries = entries;
   for (path, lastmod) in collect_detail_paths(is_on).await {
     match lastmod {

@@ -1,0 +1,11 @@
+id: 1
+title: EP01：为什么我们用单个纯 Rust 二进制重构知识与课程门户
+description: 复盘从多套分散服务收敛到同构 SSR + WASM + Tantivy 单体架构的真实成本与延迟收益。
+duration: "18:40"
+date: 2026-11-12
+audio_url: https://dioxuspress.dev/audio/神经网络大揭秘：从零件到架构，深度解析AI模型核心原理.m4a
+guest: DioxusPress Team
+tags:
+  - Rust
+  - 架构复盘
+  - WebAssembly

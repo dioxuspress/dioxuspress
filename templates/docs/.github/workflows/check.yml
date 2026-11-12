@@ -1,0 +1,19 @@
+name: Content Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Validate site.json & Markdown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dioxuspress CLI
+        run: cargo install --git https://github.com/dioxuspress/dioxuspress.git dioxuspress-cli
+      - name: Run offline site & link check
+        run: dioxuspress check .

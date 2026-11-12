@@ -1,0 +1,16 @@
+name: DioxusPress Fullstack Engine
+description: 基于 Dioxus 0.7 与 Axum 的纯 Rust 全栈知识与商业化门户引擎，支持零数据库文档与完整社区双态部署。
+category: fullstack
+tags:
+  - rust
+  - dioxus
+  - fullstack
+  - wasm
+repo: https://github.com/dioxuspress/dioxuspress
+website: https://dioxuspress.dev
+author: DioxusPress Team
+author_url: https://github.com/dioxuspress
+language: Rust
+stars: 1200
+favorite: true
+date_added: 2026-11-12

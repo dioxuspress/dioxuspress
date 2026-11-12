@@ -131,7 +131,7 @@ pub struct SiteConfig {
   /// 段落标注（Annotation）按资源类型的启用开关。
   #[serde(default)]
   pub annotations: AnnotationsSettings,
-  /// 传统导航项配置（兼容旧版布局；当前主导航主要由 `modules` 控制）。
+  /// 额外自定义顶栏导航项（在 `docs` 布局顶栏与移动抽屉追加站内或外部链接，如 `[{"key": "nav.templates", "route": "/templates"}]`）。
   #[serde(default)]
   pub navigation: Vec<NavItem>,
   /// OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应环境变量凭据）。
@@ -1525,6 +1525,22 @@ mod tests {
     let raw = std::fs::read_to_string(assets_dir.join("site.json")).expect("read site.json");
     let diags = diagnose_site_json(&raw, Some(&assets_dir), None);
     assert!(diags.is_empty(), "官方 assets/site.json 不应产生体检告警: {diags:#?}");
+  }
+
+  #[test]
+  fn starter_template_site_configs_deserialize_and_pass_diagnostics() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let assets_dir = repo_root.join("assets");
+    for preset in ["docs", "blog", "community", "portal"] {
+      let tpl_dir = repo_root.join("templates").join(preset);
+      let raw = std::fs::read_to_string(tpl_dir.join("site.json"))
+        .unwrap_or_else(|e| panic!("读取 templates/{preset}/site.json 失败: {e}"));
+      let cfg: SiteConfig = serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("反序列化 templates/{preset}/site.json 失败: {e}"));
+      assert!(!cfg.site_name.trim().is_empty());
+      let diags = diagnose_site_json(&raw, Some(&assets_dir), Some(&tpl_dir));
+      assert!(diags.is_empty(), "templates/{preset}/site.json 不应产生体检告警: {diags:#?}");
+    }
   }
 
   #[test]

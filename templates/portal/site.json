@@ -1,0 +1,80 @@
+{
+  "$schema": "https://dioxuspress.dev/schemas/site.schema.json",
+  "site_name": "DioxusPress Portal Starter",
+  "site_description": "DioxusPress Portal Starter — 汇聚结构化文档、实战付费课程、开源案例库、技术播客与论坛的全栈知识门户",
+  "author": "Portal Editorial Team",
+  "default_language": "zh",
+  "active_layout": "classic",
+  "theme": "corporate",
+  "available_themes": [
+    "corporate",
+    "ocean",
+    "emerald",
+    "silk",
+    "nord",
+    "dracula"
+  ],
+  "submit_case_url": "https://github.com/dioxuspress/dioxuspress/issues/new",
+  "hero": {
+    "badge": "Docs · Courses · Cases · Podcast · Forum",
+    "badge_en": "Docs · Courses · Cases · Podcast · Forum",
+    "title": "DioxusPress Portal Starter",
+    "title_en": "DioxusPress Portal Starter",
+    "subtitle": "对齐 Rust in Everything 生产架构：一套引擎贯通文档中心、试读与付费课程、精选案例库、播客电台与 LLM 内容风控。",
+    "subtitle_en": "Production-grade portal blueprint: docs, preview & paid courses, case showcase, podcast episodes, forum, and LLM moderation.",
+    "primary_cta_text": "浏览实战课程",
+    "primary_cta_text_en": "Explore Courses",
+    "primary_cta_href": "/course",
+    "secondary_cta_text": "阅读架构文档",
+    "secondary_cta_text_en": "Read Docs",
+    "secondary_cta_href": "/docs/architecture/content-pipeline"
+  },
+  "auth": {
+    "enabled": true,
+    "providers": [
+      "github",
+      "google",
+      "discord"
+    ]
+  },
+  "annotations": {
+    "course": true,
+    "doc": true,
+    "blog": true
+  },
+  "moderation": {
+    "enabled": true,
+    "url_blocklist": [
+      "spam.example",
+      "*.phishing.example"
+    ],
+    "llm_review": false,
+    "on_llm_failure": "review"
+  },
+  "modules": {
+    "docs": { "enabled": true },
+    "blog": { "enabled": true },
+    "cases": { "enabled": true },
+    "podcast": { "enabled": true },
+    "forum": { "enabled": true },
+    "course": { "enabled": true },
+    "about": { "enabled": true },
+    "papers": { "enabled": false },
+    "embedded": { "enabled": false },
+    "ai": { "enabled": false },
+    "web3": { "enabled": false },
+    "wasm": { "enabled": false },
+    "cli": { "enabled": false }
+  },
+  "footer": {
+    "tagline": "DioxusPress Portal Starter · 全栈知识与商业化门户示范",
+    "tagline_en": "DioxusPress Portal Starter · Fullstack knowledge & course portal",
+    "copyright": "DioxusPress Portal Starter",
+    "social": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/dioxuspress/dioxuspress"
+      }
+    ]
+  }
+}

@@ -99,6 +99,7 @@ fn AnnouncementBar() -> Element {
 #[component]
 pub fn DocsShell() -> Element {
   let route = use_route::<Route>();
+  let current_route_path = route.to_string();
   let lang = use_i18n();
   let site_cfg = app_core::settings::SiteConfig::active();
   let mut is_dark = use_signal(|| false);
@@ -179,6 +180,31 @@ pub fn DocsShell() -> Element {
               }
               if on_blog {
                 Link { to: Route::BlogIndex {}, class: nav_item_class(Route::BlogIndex {}), "{t(lang(), \"nav.blog\")}" }
+              }
+              for (nav_idx, item) in site_cfg.navigation.iter().enumerate() {
+                if !item.route.trim().is_empty() && !item.key.trim().is_empty() {
+                  if is_external_or_raw_href(&item.route) {
+                    a {
+                      key: "custom-nav-{nav_idx}",
+                      href: "{item.route}",
+                      target: if item.route.starts_with("http") { "_blank" },
+                      rel: if item.route.starts_with("http") { "noopener noreferrer" },
+                      class: "px-2.5 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white transition-colors h-14 inline-flex items-center",
+                      "{t(lang(), &item.key)}"
+                    }
+                  } else {
+                    Link {
+                      key: "custom-nav-{nav_idx}",
+                      to: item.route.clone(),
+                      class: if current_route_path == item.route {
+                        "px-2.5 text-sm font-semibold text-[var(--color-primary)] h-14 inline-flex items-center border-b-2 border-[var(--color-primary)]"
+                      } else {
+                        "px-2.5 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white transition-colors h-14 inline-flex items-center"
+                      },
+                      "{t(lang(), &item.key)}"
+                    }
+                  }
+                }
               }
               if on_cases {
                 Link { to: Route::Cases {}, class: nav_item_class(Route::Cases {}), "{t(lang(), \"nav.cases\")}" }
@@ -275,6 +301,29 @@ pub fn DocsShell() -> Element {
             }
             if on_blog {
               Link { to: Route::BlogIndex {}, class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.blog\")}" }
+            }
+            for (nav_idx, item) in site_cfg.navigation.iter().enumerate() {
+              if !item.route.trim().is_empty() && !item.key.trim().is_empty() {
+                if is_external_or_raw_href(&item.route) {
+                  a {
+                    key: "mobile-custom-nav-{nav_idx}",
+                    href: "{item.route}",
+                    target: if item.route.starts_with("http") { "_blank" },
+                    rel: if item.route.starts_with("http") { "noopener noreferrer" },
+                    class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200",
+                    onclick: move |_| show_mobile_menu.set(false),
+                    "{t(lang(), &item.key)}"
+                  }
+                } else {
+                  Link {
+                    key: "mobile-custom-nav-{nav_idx}",
+                    to: item.route.clone(),
+                    class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200",
+                    onclick: move |_| show_mobile_menu.set(false),
+                    "{t(lang(), &item.key)}"
+                  }
+                }
+              }
             }
             if on_cases {
               Link { to: Route::Cases {}, class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.cases\")}" }

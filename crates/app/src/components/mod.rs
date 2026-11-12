@@ -12,6 +12,7 @@ pub mod lang_picker;
 pub mod layouts;
 pub mod module_gate;
 pub mod nav;
+pub mod templates_showcase;
 pub mod theme_picker;
 pub mod theme_showcase;
 pub mod user_menu;
