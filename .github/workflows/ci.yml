@@ -79,6 +79,8 @@ jobs:
       # registry / DB 单例并发污染。
       - name: cargo test --features server --workspace
         run: cargo test --features server --workspace -- --test-threads=1
+      - name: dioxuspress check assets
+        run: cargo run -p dioxuspress-cli -- check assets
 
   build-server:
     name: Build (server feature)

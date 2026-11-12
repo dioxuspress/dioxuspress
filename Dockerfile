@@ -98,6 +98,7 @@ COPY crates/app/tailwind-input.css crates/app/tailwind-input.css
 # npm run build 先跑它生成 tailwind-sources.css（组件库源码的 @source 行，路径来自 cargo metadata）
 COPY scripts/tw-sources.mjs scripts/tw-sources.mjs
 COPY crates/migration/Cargo.toml crates/migration/Cargo.toml
+COPY crates/dioxuspress-cli/Cargo.toml crates/dioxuspress-cli/Cargo.toml
 COPY crates/modules ./crates/modules
 # build.rs 引用 ../../assets，提供占位避免预热阶段 panic
 RUN mkdir -p assets crates/app/assets
@@ -109,6 +110,7 @@ COPY crates/llm/src crates/llm/src
 COPY crates/widgets/src crates/widgets/src
 COPY crates/board/src crates/board/src
 COPY crates/migration/src crates/migration/src
+COPY crates/dioxuspress-cli/src crates/dioxuspress-cli/src
 COPY crates/app/src crates/app/src
 COPY assets ./assets
 # `build.rs` 期望根 assets 同步到 crates/app/assets

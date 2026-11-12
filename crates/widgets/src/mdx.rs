@@ -863,17 +863,25 @@ fn code_fence(trimmed: &str) -> Option<(char, usize)> {
   (len >= 3).then_some((ch, len))
 }
 
+fn split_admonition_directive(rest: &str) -> (&str, &str) {
+  let word_len = rest.bytes().take_while(|b| b.is_ascii_alphabetic() || *b == b'-').count();
+  (&rest[..word_len], &rest[word_len..])
+}
+
 /// 将 :::type 语法转换为 GFM alert 语法，并将 :::code-tabs 转换为多标签代码对比块
 fn convert_admonitions(body: &str) -> String {
   let mut result = String::with_capacity(body.len());
-  let mut in_block = false;
+  let mut block_indent: Option<String> = None;
   let mut in_code_tabs = false;
   let mut code_tabs_lines: Vec<&str> = Vec::new();
   // 围栏代码块里的 `:::`（比如 rustc 报错里的 `  ::: src/x.rs:1:1`）原样保留
   let mut fence: Option<(char, usize)> = None;
 
   for line in body.lines() {
-    let trimmed = line.trim();
+    let trimmed_start = line.trim_start();
+    let indent = &line[..line.len() - trimmed_start.len()];
+    let trimmed = trimmed_start.trim_end();
+
     if let Some((ch, len)) = fence {
       let closes = code_fence(trimmed)
         .is_some_and(|(c, n)| c == ch && n >= len && trimmed.chars().all(|x| x == ch));
@@ -882,14 +890,45 @@ fn convert_admonitions(body: &str) -> String {
       }
     } else if let Some(open) = code_fence(trimmed) {
       fence = Some(open);
-    } else if !in_block && !in_code_tabs {
-      if let Some(rest) = trimmed.strip_prefix(":::") {
-        let word = rest.split_whitespace().next().unwrap_or("").to_lowercase();
-        if matches!(word.as_str(), "code-tabs" | "codetabs" | "tabs") {
-          in_code_tabs = true;
-          code_tabs_lines.clear();
-          continue;
+    } else if in_code_tabs {
+      if trimmed == ":::" {
+        in_code_tabs = false;
+        let tabs = parse_code_tabs_lines(&code_tabs_lines);
+        if let Ok(json) = serde_json::to_string(&tabs) {
+          if let Some(ref b_indent) = block_indent {
+            result.push_str(b_indent);
+            result.push_str("> ``````__code_tabs__\n");
+            result.push_str(b_indent);
+            result.push_str("> ");
+            result.push_str(&json);
+            result.push('\n');
+            result.push_str(b_indent);
+            result.push_str("> ``````\n");
+            result.push_str(b_indent);
+            result.push_str(">\n");
+          } else {
+            result.push_str("``````__code_tabs__\n");
+            result.push_str(&json);
+            result.push_str("\n``````\n\n");
+          }
         }
+        code_tabs_lines.clear();
+        continue;
+      }
+    } else if let Some(rest) = trimmed.strip_prefix(":::") {
+      let (raw_word, tail) = split_admonition_directive(rest);
+      let word = raw_word.to_ascii_lowercase();
+      if matches!(word.as_str(), "code-tabs" | "codetabs" | "tabs") {
+        in_code_tabs = true;
+        code_tabs_lines.clear();
+        continue;
+      }
+      if trimmed == ":::" && block_indent.is_some() {
+        block_indent = None;
+        result.push('\n');
+        continue;
+      }
+      if block_indent.is_none() {
         let kind = match word.as_str() {
           "note" | "info" => Some("NOTE"),
           "tip" | "success" => Some("TIP"),
@@ -900,25 +939,37 @@ fn convert_admonitions(body: &str) -> String {
           _ => None,
         };
         if let Some(kind) = kind {
-          result.push_str(&format!("> [!{}]\n", kind));
-          in_block = true;
+          // 单行写法：`:::note命令名称必须唯一。:::`
+          if let Some(inline_raw) = tail.strip_suffix(":::") {
+            let inline_body = inline_raw.trim();
+            result.push_str(indent);
+            result.push_str(&format!("> [!{kind}]\n"));
+            if !inline_body.is_empty() {
+              result.push_str(indent);
+              result.push_str("> ");
+              result.push_str(inline_body);
+              result.push('\n');
+            }
+            result.push('\n');
+            continue;
+          }
+
+          result.push_str(indent);
+          result.push_str(&format!("> [!{kind}]\n"));
+          let has_leading_space = tail.starts_with(char::is_whitespace);
+          let extra = tail.trim();
+          if !extra.is_empty() {
+            result.push_str(indent);
+            if has_leading_space {
+              result.push_str(&format!("> **{extra}**\n{indent}>\n"));
+            } else {
+              result.push_str(&format!("> {extra}\n"));
+            }
+          }
+          block_indent = Some(indent.to_string());
           continue;
         }
       }
-    } else if in_code_tabs && trimmed == ":::" {
-      in_code_tabs = false;
-      let tabs = parse_code_tabs_lines(&code_tabs_lines);
-      if let Ok(json) = serde_json::to_string(&tabs) {
-        result.push_str("``````__code_tabs__\n");
-        result.push_str(&json);
-        result.push_str("\n``````\n\n");
-      }
-      code_tabs_lines.clear();
-      continue;
-    } else if in_block && trimmed == ":::" {
-      in_block = false;
-      result.push('\n');
-      continue;
     }
 
     if in_code_tabs {
@@ -926,9 +977,15 @@ fn convert_admonitions(body: &str) -> String {
       continue;
     }
 
-    if in_block {
-      result.push_str("> ");
-      result.push_str(line);
+    if let Some(ref b_indent) = block_indent {
+      let inner = line.strip_prefix(b_indent.as_str()).unwrap_or(trimmed_start);
+      result.push_str(b_indent);
+      if inner.is_empty() {
+        result.push('>');
+      } else {
+        result.push_str("> ");
+        result.push_str(inner);
+      }
     } else {
       result.push_str(line);
     }
@@ -1895,5 +1952,17 @@ mod tests {
     assert!(html.contains(">Markdown</button>"), "{html}");
     assert!(html.contains(r#"class="language-typst text-sm text-slate-200""#), "{html}");
     assert!(html.contains("= Heading"), "{html}");
+  }
+
+  #[test]
+  fn admonitions_support_nested_code_tabs_inline_title_and_single_line() {
+    let md = ":::important 动脑筋\n先看对比：\n\n:::code-tabs\n```python [PyTorch]\na - a.mean(dim=1)\n```\n\n```rust [Burn]\na.clone() - a.clone().mean_dim(1)\n```\n:::\n\n尾注说明。\n:::\n\n1. 列表项\n\n    :::note命令名称必须唯一。:::\n";
+    let html = render_markdown(md, false);
+    assert!(html.contains("IMPORTANT"), "{html}");
+    assert!(html.contains("动脑筋"), "{html}");
+    assert!(html.contains(">PyTorch</button>"), "{html}");
+    assert!(html.contains(">Burn</button>"), "{html}");
+    assert!(html.contains("尾注说明。"), "{html}");
+    assert!(html.contains("命令名称必须唯一。"), "{html}");
   }
 }
