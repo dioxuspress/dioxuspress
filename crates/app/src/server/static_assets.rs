@@ -1,6 +1,6 @@
 //! S7（风险 R8）：静态资源目录服务。从 `main.rs` 拆出，行为不变。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use axum::http::{header, HeaderValue};
 use axum::middleware;
@@ -12,7 +12,7 @@ use tower_http::services::ServeDir;
 
 /// 挂载静态资源目录。`assets_root` 为资产根目录（启动期解析）。
 pub fn mount(router: Router, assets_root: &str) -> Router {
-  let content_root = std::env::var_os("CONTENT_DIR").filter(|v| !v.is_empty()).map(PathBuf::from);
+  let content_root = app_core::utils::content_root();
   mount_with_content(router, assets_root, content_root.as_deref())
 }
 

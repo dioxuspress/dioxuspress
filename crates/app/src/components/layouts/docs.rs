@@ -34,7 +34,7 @@ fn is_external_or_raw_href(href: &str) -> bool {
 #[component]
 fn AnnouncementBar() -> Element {
   let lang = use_i18n();
-  let site_cfg = app_core::settings::SiteConfig::embedded();
+  let site_cfg = app_core::settings::SiteConfig::active();
   let Some(ref ann) = site_cfg.announcement else {
     return rsx! {};
   };
@@ -100,7 +100,7 @@ fn AnnouncementBar() -> Element {
 pub fn DocsShell() -> Element {
   let route = use_route::<Route>();
   let lang = use_i18n();
-  let site_cfg = app_core::settings::SiteConfig::embedded();
+  let site_cfg = app_core::settings::SiteConfig::active();
   let mut is_dark = use_signal(|| false);
   let mut show_auth_modal = crate::use_auth_modal();
   let session_user = crate::use_session_user();

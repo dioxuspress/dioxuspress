@@ -18,12 +18,14 @@ use crate::server::get_active_layout;
 /// 彻底消除 `docs` / `minimal` 布局在首屏水合时闪回 `classic` 的问题。
 #[component]
 pub fn Navbar() -> Element {
-  let default_layout = app_core::settings::SiteConfig::embedded().active_layout_or_default();
-  let layout_res = use_resource(move || async move {
-    get_active_layout().await.unwrap_or_else(|_| default_layout.to_string())
+  let default_layout =
+    app_core::settings::SiteConfig::active().active_layout_or_default().to_string();
+  let fallback = default_layout.clone();
+  let layout_res = use_resource(move || {
+    let fallback = fallback.clone();
+    async move { get_active_layout().await.unwrap_or(fallback) }
   });
-  let layout: String =
-    layout_res.read().as_ref().cloned().unwrap_or_else(|| default_layout.to_string());
+  let layout: String = layout_res.read().as_ref().cloned().unwrap_or(default_layout);
 
   rsx! {
     match layout.as_str() {

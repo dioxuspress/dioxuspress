@@ -348,7 +348,7 @@ fn DocPageInner(path: Vec<String>, footer: Element) -> Element {
                       div { class: "text-slate-700 dark:text-slate-200",
                           Markdown { content: resp.content.clone(), blog_id: anno_blog_id.clone() }
                       }
-                      if let Some(edit_url) = app_core::settings::SiteConfig::embedded().docs_edit_url(&resp.source_file) {
+                      if let Some(edit_url) = app_core::settings::SiteConfig::active().docs_edit_url(&resp.source_file) {
                           div { class: "mt-8 flex items-center",
                               a {
                                   href: "{edit_url}",

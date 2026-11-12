@@ -20,7 +20,7 @@ fn initial_language() -> Language {
   #[cfg(feature = "server")]
   {
     use dioxus::fullstack::FullstackContext;
-    let default_lang = app_core::settings::SiteConfig::embedded().default_language_enum();
+    let default_lang = app_core::settings::SiteConfig::active().default_language_enum();
     let Some(ctx) = FullstackContext::current() else { return default_lang };
     let parts = ctx.parts_mut();
     let query = parts
@@ -52,7 +52,7 @@ pub fn pick_language(query: Option<&str>, cookie: Option<&str>) -> Language {
   pick_language_with_default(
     query,
     cookie,
-    app_core::settings::SiteConfig::embedded().default_language_enum(),
+    app_core::settings::SiteConfig::active().default_language_enum(),
   )
 }
 

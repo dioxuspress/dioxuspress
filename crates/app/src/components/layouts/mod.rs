@@ -26,7 +26,7 @@ pub use minimal::MinimalShell;
 /// DOM 完全一致，配合 `DARK_MODE_BOOT_SCRIPT` 零闪烁。
 #[component]
 pub(super) fn BrandMark(#[props(default = false)] compact: bool) -> Element {
-  let site_cfg = app_core::settings::SiteConfig::embedded();
+  let site_cfg = app_core::settings::SiteConfig::active();
   let site_title = widgets::site_name();
 
   if compact {

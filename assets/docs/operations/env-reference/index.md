@@ -16,8 +16,8 @@ DioxusPress 严格遵循十二要素应用（12-Factor App）规范：**站点�
 
 | 变量名 | 生效档位 | 必填性 | 默认值 / 示例 | 作用说明 |
 | :--- | :--- | :--- | :--- | :--- |
-| `BASE_URL` | 全部档位 | **必填** | `http://127.0.0.1:8080` | 站点对外根 URL（含协议、无尾斜杠）。用于生成 `/sitemap.xml`、`/feed.xml` Canonical 地址与 OAuth 回调地址；以 `https://` 开头时会话与 PKCE Cookie 自动附加 `Secure` 属性 |
-| `CONTENT_DIR` | 全部档位 | 可选 | 未设置（回退内置 `assets/`） | 外部私有内容仓库挂载目录（如 `/app/content`）。设置后，`docs/`、`posts/`、`courses/` 与优先覆盖的 `images/` 均从该目录读取 |
+| `BASE_URL` | 全部档位 | `accounts` 必填；`basic` 可选 | `http://localhost:8080`（`basic` 默认） | 站点对外根 URL（含协议、无尾斜杠）。用于生成 `/sitemap.xml`、`/feed.xml` Canonical 地址与 OAuth 回调地址；`basic` 档位本地预览未设时自动回退至 `http://localhost:{PORT}`，生产环境建议显式配置公网域名 |
+| `CONTENT_DIR` | 全部档位 | 可选 | 容器挂载非空 `/app/content` 时自动识别 | 外部内容目录（如 `/app/content`）。设置或挂载后，`site.json`、`docs/`、`posts/`、`courses/` 与优先覆盖的 `images/` 均从该目录读取 |
 | `SEARCH_INDEX_DIR` | 全部档位 | 可选 | `./data/search-index` | Tantivy 全文索引与增量清单持久化目录；容器部署建议挂载独立 Volume 以加速重启校验 |
 | `RUST_LOG` | 全部档位 | 可选 | `info` | `tracing-subscriber` 日志过滤表达式（如 `info,app_core=debug,sqlx=warn`） |
 

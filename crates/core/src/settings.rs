@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::engines::module::ModuleSettings;
 use crate::i18n::Language;
@@ -140,7 +140,7 @@ pub struct SiteConfig {
   /// 模块开关：key = ModuleSpec.id，value = `{ enabled: true|false }`。
   /// `ModuleEngine::init` 读取该字段覆盖默认 enabled 状态。
   #[serde(default)]
-  pub modules: HashMap<String, ModuleSettings>,
+  pub modules: BTreeMap<String, ModuleSettings>,
   /// Phase 4.3：审核配置（独立于通用 `modules` 开关，因为还有 LLM 开关、
   /// 阈值与链接黑名单）。
   /// 默认 disabled → 整条流水线为空，提交直接通过，不调 LLM。
@@ -521,7 +521,7 @@ impl SiteConfig {
     Ok(cfg)
   }
 
-  /// 编译期内嵌的 `assets/site.json` 配置（SSR 与 WASM 双端一致、零 IO）。
+  /// 编译期内嵌的 `assets/site.json` 配置（回退基线与 Schema 对齐测试用）。
   /// 解析失败时回退到 [`SiteConfig::default`]。
   pub fn embedded() -> &'static Self {
     use std::sync::OnceLock;
@@ -530,6 +530,45 @@ impl SiteConfig {
       serde_json::from_str::<SiteConfig>(include_str!("../../../assets/site.json"))
         .unwrap_or_default()
     })
+  }
+
+  /// 序列化为紧凑 JSON 字符串（用于 SSR `<meta name="dp-site-config">` 注入；`modules` 使用 `BTreeMap` 保证键序确定性）。
+  pub fn to_json(&self) -> String {
+    serde_json::to_string(self).unwrap_or_default()
+  }
+
+  /// 从 SSR 注入的紧凑 JSON 字符串反序列化运行期站点配置。
+  pub fn from_json(raw: &str) -> Option<Self> {
+    serde_json::from_str(raw).ok()
+  }
+
+  /// WASM 客户端启动水合入口：在 `dioxus::launch` 前从 SSR 注入的 `<meta name="dp-site-config">`
+  /// 初始化运行期配置，使零编译 Docker 镜像挂载外部 `/app/content/site.json` 时 SSR 与水合完全一致。
+  pub fn init_hydrated(cfg: SiteConfig) {
+    let _ = hydrated_slot().set(std::sync::Arc::new(cfg));
+  }
+
+  /// 当前生效的站点配置：
+  /// - 服务端 / 原生目标：走 [`crate::utils::site_json_path`] + [`Self::load_cached`]（支持挂载 `/app/content/site.json` 零编译覆盖与热修改），失败时回退 [`Self::embedded`]。
+  /// - WASM 客户端：优先读 [`Self::init_hydrated`] 注入的 SSR 同源配置，未注入时回退 [`Self::embedded`]。
+  pub fn active() -> std::sync::Arc<Self> {
+    #[cfg(target_arch = "wasm32")]
+    {
+      if let Some(cfg) = hydrated_slot().get() {
+        return cfg.clone();
+      }
+      std::sync::Arc::new(Self::embedded().clone())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+      let path = crate::utils::site_json_path();
+      if let Some(p) = path.to_str() {
+        if let Ok(cfg) = Self::load_cached(p) {
+          return cfg;
+        }
+      }
+      std::sync::Arc::new(Self::embedded().clone())
+    }
   }
 
   /// 站点名称（为空或全空白时回退到 [`DEFAULT_SITE_NAME`]）。
@@ -1001,15 +1040,17 @@ pub fn diagnose_site_json(
   diags
 }
 
+fn hydrated_slot() -> &'static std::sync::OnceLock<std::sync::Arc<SiteConfig>> {
+  static HYDRATED: std::sync::OnceLock<std::sync::Arc<SiteConfig>> = std::sync::OnceLock::new();
+  &HYDRATED
+}
+
 /// 启动期一次性读取生效的 `site.json` 并输出 `tracing::warn!` 体检告警（不阻塞启动）。
 pub fn log_startup_diagnostics(
   asset_root: &std::path::Path,
   content_root: Option<&std::path::Path>,
 ) {
-  let site_path = content_root
-    .map(|c| c.join("site.json"))
-    .filter(|p| p.is_file())
-    .unwrap_or_else(|| asset_root.join("site.json"));
+  let site_path = crate::utils::site_json_path_in(asset_root, content_root);
 
   match std::fs::read_to_string(&site_path) {
     Ok(raw) => {
@@ -1063,7 +1104,7 @@ impl Default for SiteConfig {
       annotations: AnnotationsSettings::default(),
       navigation: vec![],
       auth: AuthSettings::default(),
-      modules: HashMap::new(),
+      modules: BTreeMap::new(),
       moderation: ModerationSettings::default(),
     }
   }

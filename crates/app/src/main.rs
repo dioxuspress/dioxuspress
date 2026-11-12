@@ -182,7 +182,7 @@ const GLOBAL_REHIGHLIGHT_BOOT_SCRIPT: &str = r#"
 /// 见 HeadAssets：`?lang=` 优先、其次 `site_lang` cookie、最后 `site.json::default_language`，
 /// 英文时把 `<html lang>` 改成 `en`。
 fn lang_boot_script() -> String {
-  let default_lang = match app_core::settings::SiteConfig::embedded().default_language_enum() {
+  let default_lang = match app_core::settings::SiteConfig::active().default_language_enum() {
     app_core::i18n::Language::En => "en",
     app_core::i18n::Language::Zh => "zh",
   };
@@ -332,12 +332,14 @@ fn main() {
     //    只有带登录的构建（accounts 层）需要；basic 层不签发也不认 JWT。
     #[cfg(feature = "accounts")]
     let _ = app_core::session::get_jwt_secret();
-    // 2) BASE_URL 必须配置为可访问的公网 / 内网地址，且不能仍是 .env.example 占位
-    // S9 豁免：启动门禁有意 fail-fast，缺失即 panic 是安全策略而非疏忽。
-    #[allow(clippy::expect_used)]
-    let base_url =
-      std::env::var("BASE_URL").expect("BASE_URL 未配置，请在环境变量或 .env 中设置 BASE_URL");
-    app_core::session::assert_not_placeholder("BASE_URL", &base_url);
+    // 2) BASE_URL 解析：
+    //    - accounts 及以上档位：涉及 OAuth 回调与 Secure 会话 Cookie，缺失即 fail-fast；
+    //    - basic 零数据库档位：支持 `docker run -p 8080:8080 -v ./my-site:/app/content:ro`
+    //      零环境变量开箱即跑，未设时自动回退到 `http://localhost:{PORT}` 并输出提示日志。
+    let base_url = resolve_startup_base_url(
+      std::env::var("BASE_URL").ok().as_deref(),
+      std::env::var("PORT").ok().as_deref(),
+    );
     #[cfg(feature = "accounts")]
     let cookie_is_secure = base_url.starts_with("https://");
     // S5（风险 R2）：独立数据加密密钥。可选；配了就不能是占位值。
@@ -486,8 +488,7 @@ fn main() {
     let assets_root: &'static str = ASSETS_ROOT.get_or_init(|| {
       Box::leak(app_core::utils::get_asset_root().to_string_lossy().into_owned().into_boxed_str())
     });
-    let content_dir_opt =
-      std::env::var_os("CONTENT_DIR").filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    let content_dir_opt = app_core::utils::content_root();
     app_core::settings::log_startup_diagnostics(
       std::path::Path::new(assets_root),
       content_dir_opt.as_deref(),
@@ -530,9 +531,58 @@ fn main() {
     Ok(router)
   });
 
-  // Client: standard launch
+  // Client: 从 SSR 注入的 `<meta name="dp-site-config">` 水合运行期站点配置（使零编译镜像挂载
+  // `/app/content/site.json` 时双端一致），随后启动 Dioxus 客户端运行时。
   #[cfg(not(feature = "server"))]
-  dioxus::launch(App);
+  {
+    if let Some(raw) = widgets::browser::meta_content("dp-site-config") {
+      if let Some(cfg) = app_core::settings::SiteConfig::from_json(&raw) {
+        widgets::update_site_seo_meta(
+          cfg.site_name_or_default(),
+          cfg.og_image_or_default(),
+          cfg.twitter_handle_or_none(),
+          cfg.default_language_enum() == app_core::i18n::Language::En,
+        );
+        app_core::settings::SiteConfig::init_hydrated(cfg);
+      }
+    }
+    dioxus::launch(App);
+  }
+}
+
+#[cfg(feature = "server")]
+fn resolve_startup_base_url(raw_base_url: Option<&str>, raw_port: Option<&str>) -> String {
+  #[cfg(feature = "accounts")]
+  {
+    let _ = raw_port;
+    // S9 豁免：带登录档位缺失 BASE_URL 有意 fail-fast，防止 OAuth 回调误跳 localhost。
+    #[allow(clippy::expect_used)]
+    let base_url = raw_base_url
+      .map(str::trim)
+      .filter(|s| !s.is_empty())
+      .expect("BASE_URL 未配置，请在环境变量或 .env 中设置 BASE_URL")
+      .to_string();
+    app_core::session::assert_not_placeholder("BASE_URL", &base_url);
+    base_url
+  }
+  #[cfg(not(feature = "accounts"))]
+  {
+    match raw_base_url.map(str::trim).filter(|s| !s.is_empty()) {
+      Some(url) => {
+        app_core::session::assert_not_placeholder("BASE_URL", url);
+        url.to_string()
+      }
+      None => {
+        let port = raw_port.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("8080");
+        let fallback = format!("http://localhost:{port}");
+        tracing::info!(
+          base_url = %fallback,
+          "startup: BASE_URL not set in basic mode, defaulting to local address (set BASE_URL in production for accurate sitemap/canonical URLs)"
+        );
+        fallback
+      }
+    }
+  }
 }
 
 /// 全局登录模态框状态
@@ -556,13 +606,15 @@ fn HeadAssets() -> Element {
   // asset 路径只含 [A-Za-z0-9./_-]，可直接放进单引号字符串
   let prism_src = PRISM_JS.to_string();
   let lang_script = lang_boot_script();
-  let site_cfg = app_core::settings::SiteConfig::embedded();
+  let site_cfg = app_core::settings::SiteConfig::active();
+  let site_cfg_json = site_cfg.to_json();
   let favicon_href = site_cfg.favicon_or_default();
   let favicon_32_href = site_cfg.favicon_32_url();
   let favicon_16_href = site_cfg.favicon_16_url();
   let apple_touch_href = site_cfg.apple_touch_icon_url();
   let manifest_href = site_cfg.manifest_url();
   rsx! {
+      document::Meta { name: "dp-site-config", content: "{site_cfg_json}" }
       // <html lang> 跟首屏语言走（index.html 写死 zh-CN）；规则同 i18n::pick_language
       document::Script { {lang_script} }
       // 暗色偏好在首次绘制前就加到 <html> 上（同步内联脚本，规则同
@@ -647,6 +699,13 @@ fn auth_modal(show: Signal<bool>) -> Element {
 
 #[component]
 fn App() -> Element {
+  let site_cfg = app_core::settings::SiteConfig::active();
+  widgets::update_site_seo_meta(
+    site_cfg.site_name_or_default(),
+    site_cfg.og_image_or_default(),
+    site_cfg.twitter_handle_or_none(),
+    site_cfg.default_language_enum() == app_core::i18n::Language::En,
+  );
   init_i18n();
 
   let show_auth = use_signal(|| false);
@@ -698,5 +757,30 @@ fn App() -> Element {
 
       // 全局搜索模态框(在根挂一次,任意页面都可 Cmd+K 拉起)
       SearchModal {}
+  }
+}
+
+#[cfg(all(test, feature = "server"))]
+mod startup_tests {
+  use super::resolve_startup_base_url;
+
+  #[test]
+  fn explicit_base_url_is_preserved_and_trimmed() {
+    let url = resolve_startup_base_url(Some(" https://docs.example.com "), Some("9000"));
+    assert_eq!(url, "https://docs.example.com");
+  }
+
+  #[cfg(not(feature = "accounts"))]
+  #[test]
+  fn basic_mode_defaults_base_url_when_unset() {
+    assert_eq!(resolve_startup_base_url(None, None), "http://localhost:8080");
+    assert_eq!(resolve_startup_base_url(Some("   "), Some("3000")), "http://localhost:3000");
+  }
+
+  #[cfg(feature = "accounts")]
+  #[test]
+  #[should_panic(expected = "BASE_URL 未配置")]
+  fn accounts_mode_requires_explicit_base_url() {
+    let _ = resolve_startup_base_url(None, None);
   }
 }

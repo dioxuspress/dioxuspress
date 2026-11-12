@@ -1014,7 +1014,7 @@ pub async fn admin_get_moderation_settings(
     use app_core::session::require_admin;
     use app_core::settings::SiteConfig;
     let _ = require_admin().await?;
-    let path = app_core::utils::get_asset_root().join("site.json");
+    let path = app_core::utils::site_json_path();
     let config = SiteConfig::from_file(path.to_str().unwrap_or("assets/site.json"))
       .map_err(|e| ServerFnError::new(e.to_string()))?;
     Ok(config.moderation)
@@ -1044,7 +1044,7 @@ pub async fn admin_set_moderation_settings(
     let _ = require_admin().await?;
     validate_moderation_settings(&settings).map_err(ServerFnError::new)?;
 
-    let path = app_core::utils::get_asset_root().join("site.json");
+    let path = app_core::utils::site_json_path();
     write_moderation_settings_to_site_json(&path, &settings).map_err(ServerFnError::new)?;
 
     // 立即生效：审核 pipeline 重建（重读 site.json + LLM env）

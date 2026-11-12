@@ -1,8 +1,12 @@
-# 阶段 V：发布镜像到 ghcr，服务器上 `docker compose pull` 后重启（不在服务器上编译）。
-# 打 `v*` tag 或手动触发时构建并推送；PR 改到镜像构建输入时只构建不推送，
-# 防止 Dockerfile 跟不上仓库变化（T0 加了 tw-sources.mjs 而 Dockerfile 没拷，v0.1.0 构建失败）。
-# app 镜像是 accounts 档（无课程与支付），只含框架与示例内容，
-# 正式内容由 compose 运行时只读挂载私有内容仓库。
+# 阶段 V & Phase E3.1：发布多架构（linux/amd64 + linux/arm64）官方镜像到 GHCR。
+#
+# 镜像矩阵：
+# - `ghcr.io/dioxuspress/dioxuspress-basic`：零数据库纯内容档位（`--no-default-features`），挂载 `/app/content:ro` 即开箱运行
+# - `ghcr.io/dioxuspress/dioxuspress-app`：`accounts` 社区档位（OAuth 登录 + 评论 + 论坛 + 划线标注）
+# - `ghcr.io/dioxuspress/dioxuspress-gateway`：Pingora 多域名 SNI TLS 卸载与反向代理网关
+#
+# 多架构策略：使用 GitHub 原生 `ubuntu-24.04`（x86_64）与 `ubuntu-24.04-arm`（ARM64）分架构并行原生编译，
+# 彻底避免 QEMU 模拟编译 Rust + WASM 过慢的问题；发布时按 digest 推送后由 `merge` 任务合成双架构 Manifest。
 
 name: Release images
 
@@ -26,21 +30,36 @@ permissions:
   packages: write
 
 jobs:
-  image:
-    name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+  build:
+    name: ${{ matrix.image.name }} (${{ matrix.arch.slug }})
+    runs-on: ${{ matrix.arch.runner }}
     strategy:
       fail-fast: false
       matrix:
-        include:
+        image:
+          - name: basic
+            context: .
+            file: Dockerfile
+            build-args: |
+              APP_FEATURES=--no-default-features
+              INCLUDE_PAPERS_INGEST=0
           - name: app
             context: .
             file: Dockerfile
-            build-args: APP_FEATURES=--no-default-features --features accounts
+            build-args: |
+              APP_FEATURES=--no-default-features --features accounts
+              INCLUDE_PAPERS_INGEST=1
           - name: gateway
             context: crates/gateway
             file: crates/gateway/Dockerfile
             build-args: ""
+        arch:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            slug: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            slug: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -53,19 +72,82 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
+          images: ghcr.io/${{ github.repository_owner }}/dioxuspress-${{ matrix.image.name }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.file }}
+          platforms: ${{ matrix.arch.platform }}
+          build-args: ${{ matrix.image.build-args }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: >-
+            ${{
+              github.event_name != 'pull_request'
+              && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', steps.meta.outputs.name)
+              || 'type=cacheonly'
+            }}
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.arch.slug }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,scope={0}-{1},mode=max', matrix.image.name, matrix.arch.slug) || '' }}
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digests-${{ matrix.image.name }}-${{ matrix.arch.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge multi-arch (${{ matrix.name }})
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [basic, app, gateway]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.name }}-*
+          path: /tmp/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
           images: ghcr.io/${{ github.repository_owner }}/dioxuspress-${{ matrix.name }}
           tags: |
             type=ref,event=tag
             type=sha,format=short
             type=raw,value=latest
-      - uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
-          platforms: linux/amd64
-          build-args: ${{ matrix.build-args }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,scope={0},mode=max', matrix.name) || '' }}
+      - name: Create and push multi-arch manifest list
+        working-directory: /tmp/digests
+        env:
+          IMAGE_NAME: ${{ steps.meta.outputs.name }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          sources=()
+          for file in *; do
+            sources+=("${IMAGE_NAME}@sha256:${file}")
+          done
+          tag_args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && tag_args+=(-t "$tag")
+          done <<< "$IMAGE_TAGS"
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+      - name: Inspect published manifest
+        run: |
+          first_tag="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n 1)"
+          docker buildx imagetools inspect "$first_tag"

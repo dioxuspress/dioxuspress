@@ -128,6 +128,20 @@ pub fn query_param(name: &str) -> Option<String> {
   }
 }
 
+/// 读取 `<meta name="...">` 的 `content` 属性（用于零编译镜像水合阶段读取 SSR 注入的配置快照）。
+pub fn meta_content(name: &str) -> Option<String> {
+  #[cfg(target_arch = "wasm32")]
+  {
+    let selector = format!("meta[name='{name}']");
+    document()?.query_selector(&selector).ok()??.get_attribute("content")
+  }
+  #[cfg(not(target_arch = "wasm32"))]
+  {
+    let _ = name;
+    None
+  }
+}
+
 /// 设置 `document.title`。页面里用 [`PageTitle`]，它在服务端也能输出 `<title>`。
 pub fn set_title(title: &str) {
   #[cfg(target_arch = "wasm32")]

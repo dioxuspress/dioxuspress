@@ -45,10 +45,8 @@ static SHARED: OnceLock<RwLock<Arc<ModerationPipeline>>> = OnceLock::new();
 
 /// 从 `site.json` + env 重新构造一条 pipeline。
 fn build_pipeline() -> ModerationPipeline {
-  let site = SiteConfig::from_file(
-    app_core::utils::get_asset_root().join("site.json").to_str().unwrap_or_default(),
-  )
-  .unwrap_or_default();
+  let site = SiteConfig::from_file(app_core::utils::site_json_path().to_str().unwrap_or_default())
+    .unwrap_or_default();
 
   let llm: Option<Arc<dyn LlmClient>> = default_client_from_env().map(Arc::from);
 

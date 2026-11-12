@@ -19,19 +19,61 @@ pub fn get_asset_root() -> PathBuf {
   path
 }
 
+/// 容器默认内容挂载路径：用户执行 `docker run -v ./my-site:/app/content:ro ...`
+/// 时，即使未显式传 `-e CONTENT_DIR=/app/content`，只要 `/app/content` 非空即自动启用。
+pub const DEFAULT_DOCKER_CONTENT_DIR: &str = "/app/content";
+
+/// 返回当前生效的外部内容根目录（`CONTENT_DIR` 环境变量优先；未设时若 `/app/content`
+/// 存在且非空则自动命中，否则返回 `None` 回退到框架内置 `assets/`）。
+pub fn content_root() -> Option<PathBuf> {
+  content_root_from(std::env::var_os("CONTENT_DIR"), Path::new(DEFAULT_DOCKER_CONTENT_DIR))
+}
+
+fn content_root_from(
+  content_env: Option<std::ffi::OsString>,
+  default_mount: &Path,
+) -> Option<PathBuf> {
+  if let Some(root) = content_env.filter(|v| !v.is_empty()) {
+    return Some(PathBuf::from(root));
+  }
+  if default_mount.is_dir()
+    && std::fs::read_dir(default_mount).ok().and_then(|mut it| it.next()).is_some()
+  {
+    return Some(default_mount.to_path_buf());
+  }
+  None
+}
+
 /// 站点内容目录：`kind` 为 `posts`（文章）、`docs`（文档卷）、`courses`（课程）或 `images`（品牌与配图）。
 ///
-/// 设了 `CONTENT_DIR` 就读 `$CONTENT_DIR/<kind>`——站点自己的内容放在框架仓库之外
-/// （私有内容仓库）；没设则用资产根下随框架发布的示例内容。
+/// 设了 `CONTENT_DIR`（或容器挂载了非空 `/app/content`）就读 `<content_root>/<kind>`——站点自己的内容
+/// 放在框架仓库之外；否则用资产根下随框架发布的示例内容。
 pub fn content_dir(kind: &str) -> PathBuf {
   content_dir_in(std::env::var_os("CONTENT_DIR"), kind)
 }
 
-fn content_dir_in(content_root: Option<std::ffi::OsString>, kind: &str) -> PathBuf {
-  match content_root.filter(|v| !v.is_empty()) {
-    Some(root) => PathBuf::from(root).join(kind),
+fn content_dir_in(content_env: Option<std::ffi::OsString>, kind: &str) -> PathBuf {
+  match content_root_from(content_env, Path::new(DEFAULT_DOCKER_CONTENT_DIR)) {
+    Some(root) => root.join(kind),
     None => get_asset_root().join(kind),
   }
+}
+
+/// 当前生效的 `site.json` 磁盘路径：优先取 `<content_root>/site.json`（若该文件存在），
+/// 否则回退到 `<asset_root>/site.json`。
+pub fn site_json_path() -> PathBuf {
+  site_json_path_in(&get_asset_root(), content_root().as_deref())
+}
+
+/// 在给定资产根与可选内容根下解析生效的 `site.json` 路径。
+pub fn site_json_path_in(asset_root: &Path, content_root: Option<&Path>) -> PathBuf {
+  if let Some(root) = content_root {
+    let candidate = root.join("site.json");
+    if candidate.is_file() {
+      return candidate;
+    }
+  }
+  asset_root.join("site.json")
 }
 
 /// Phase 8.5：目录扫描结果的 mtime 缓存。
@@ -277,5 +319,41 @@ mod tests {
       fp.iter().map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
     assert!(names.contains(&"index.md".to_string()));
     assert!(names.contains(&"index.mdx".to_string()));
+  }
+
+  #[test]
+  fn content_root_auto_detects_non_empty_docker_mount() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let empty_mount = tmp.path().join("empty-mount");
+    std::fs::create_dir_all(&empty_mount).unwrap();
+
+    // 空挂载点不触发覆盖，避免未挂卷的占位目录遮蔽内置 assets
+    assert_eq!(content_root_from(None, &empty_mount), None);
+    assert_eq!(content_root_from(Some("".into()), &empty_mount), None);
+
+    // 放入任意内容文件后自动识别为生效内容根
+    std::fs::write(empty_mount.join("site.json"), "{}").unwrap();
+    assert_eq!(content_root_from(None, &empty_mount), Some(empty_mount.clone()));
+
+    // 显式 CONTENT_DIR 优先级最高
+    let explicit = tmp.path().join("explicit");
+    assert_eq!(content_root_from(Some(explicit.clone().into()), &empty_mount), Some(explicit));
+  }
+
+  #[test]
+  fn site_json_path_prefers_content_root_with_asset_fallback() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let assets = tmp.path().join("assets");
+    let content = tmp.path().join("content");
+    std::fs::create_dir_all(&assets).unwrap();
+    std::fs::create_dir_all(&content).unwrap();
+    std::fs::write(assets.join("site.json"), r#"{"site_name":"Default"}"#).unwrap();
+
+    // content 目录尚未放 site.json → 回退 assets/site.json
+    assert_eq!(site_json_path_in(&assets, Some(&content)), assets.join("site.json"));
+
+    // content 目录提供 site.json → 优先使用 content/site.json
+    std::fs::write(content.join("site.json"), r#"{"site_name":"Custom"}"#).unwrap();
+    assert_eq!(site_json_path_in(&assets, Some(&content)), content.join("site.json"));
   }
 }

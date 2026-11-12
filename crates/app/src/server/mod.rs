@@ -20,7 +20,7 @@ use app_core::session::SessionUser;
 #[cfg(feature = "server")]
 use app_core::settings::SiteConfig;
 #[cfg(feature = "server")]
-use app_core::utils::get_asset_root;
+use app_core::utils::{content_dir, get_asset_root, site_json_path};
 use dioxus::fullstack::{post, ServerFnError};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -90,8 +90,7 @@ pub async fn get_aggregated_theme_css() -> Result<String, ServerFnError> {
 
     // S10：热路径（每次页面渲染拉主题 CSS）——mtime 缓存读取。
     let config =
-      SiteConfig::load_cached(get_asset_root().join("site.json").to_str().unwrap_or_default())
-        .unwrap_or_default();
+      SiteConfig::load_cached(site_json_path().to_str().unwrap_or_default()).unwrap_or_default();
     let cookie = read_request_cookie(THEME_COOKIE_NAME);
     Ok(
       resolve_theme_for_site(&config.theme, &config.available_themes, cookie.as_deref())
@@ -113,8 +112,7 @@ pub async fn list_available_themes() -> Result<Vec<ThemeInfo>, ServerFnError> {
     use app_core::engines::theme::{resolve_available_themes, resolve_theme_for_site};
 
     let config =
-      SiteConfig::load_cached(get_asset_root().join("site.json").to_str().unwrap_or_default())
-        .unwrap_or_default();
+      SiteConfig::load_cached(site_json_path().to_str().unwrap_or_default()).unwrap_or_default();
     let cookie = read_request_cookie(THEME_COOKIE_NAME);
     let active =
       resolve_theme_for_site(&config.theme, &config.available_themes, cookie.as_deref()).id;
@@ -155,8 +153,7 @@ pub async fn set_user_theme(id: String) -> Result<(), ServerFnError> {
     use dioxus::fullstack::FullstackContext;
 
     let config =
-      SiteConfig::load_cached(get_asset_root().join("site.json").to_str().unwrap_or_default())
-        .unwrap_or_default();
+      SiteConfig::load_cached(site_json_path().to_str().unwrap_or_default()).unwrap_or_default();
     let allowed = resolve_available_themes(&config.theme, &config.available_themes);
 
     let trimmed = id.trim();
@@ -211,7 +208,7 @@ fn build_auth_service() -> (app_core::auth::AuthService, SiteConfig) {
   let base_url =
     std::env::var("BASE_URL").expect("BASE_URL 未配置，请在环境变量或 .env 中设置 BASE_URL");
   let config = AuthConfig { base_url };
-  let site_path = get_asset_root().join("site.json");
+  let site_path = site_json_path();
   // S10：mtime 缓存读取；返回需要 owned，clone 一次（配置体积小）。
   let site_config = site_path
     .to_str()
@@ -369,12 +366,18 @@ pub async fn is_module_enabled(id: String) -> Result<bool, ServerFnError> {
 
 // ========== About ==========
 
-/// About 页正文（`assets/pages/about.md`，含 frontmatter）。文件不存在 → `None`（页面 404）。
+/// About 页正文（优先读 `$CONTENT_DIR/pages/about.md`，未提供时回退 `assets/pages/about.md`）。
 #[post("/api/pages/about")]
 pub async fn get_about_page() -> Result<Option<String>, ServerFnError> {
   #[cfg(feature = "server")]
   {
-    match std::fs::read_to_string(get_asset_root().join("pages").join("about.md")) {
+    let content_about = content_dir("pages").join("about.md");
+    let target = if content_about.is_file() {
+      content_about
+    } else {
+      get_asset_root().join("pages").join("about.md")
+    };
+    match std::fs::read_to_string(target) {
       Ok(content) => Ok(Some(content)),
       Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
       Err(e) => {
@@ -398,8 +401,7 @@ pub async fn get_active_layout() -> Result<String, ServerFnError> {
   {
     // S10：mtime 缓存读取（每次布局渲染都会调）。
     let cfg =
-      SiteConfig::load_cached(get_asset_root().join("site.json").to_str().unwrap_or_default())
-        .unwrap_or_default();
+      SiteConfig::load_cached(site_json_path().to_str().unwrap_or_default()).unwrap_or_default();
     Ok(cfg.active_layout_or_default().to_string())
   }
   #[cfg(not(feature = "server"))]
