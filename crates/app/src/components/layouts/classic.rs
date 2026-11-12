@@ -288,7 +288,7 @@ pub fn ClassicShell() -> Element {
                               super::BrandMark {}
                           }
                           p { class: "mt-2 max-w-sm text-slate-500 dark:text-slate-400 leading-relaxed",
-                              "{app_core::settings::SiteConfig::embedded().footer_tagline(lang())}"
+                              "{app_core::settings::SiteConfig::active().footer_tagline(lang())}"
                           }
                       }
                       div {
@@ -332,7 +332,7 @@ pub fn ClassicShell() -> Element {
                               if on_about {
                                   Link { to: Route::About {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"footer.about\")}" }
                               }
-                              for item in app_core::settings::SiteConfig::embedded().footer.social.iter().filter(|s| !s.label.trim().is_empty() && !s.url.trim().is_empty()) {
+                              for item in app_core::settings::SiteConfig::active().footer.social.iter().filter(|s| !s.label.trim().is_empty() && !s.url.trim().is_empty()) {
                                   a {
                                       key: "{item.label}-{item.url}",
                                       href: "{item.url}",
@@ -346,8 +346,8 @@ pub fn ClassicShell() -> Element {
                       }
                   }
                   div { class: "py-5 border-t border-slate-100 dark:border-slate-900 text-xs text-slate-400 flex flex-wrap items-center justify-between gap-2",
-                      span { "© {app_core::settings::SiteConfig::embedded().footer_copyright()}" }
-                      if let Some((icp, icp_url)) = app_core::settings::SiteConfig::embedded().footer_icp() {
+                      span { "© {app_core::settings::SiteConfig::active().footer_copyright()}" }
+                      if let Some((icp, icp_url)) = app_core::settings::SiteConfig::active().footer_icp() {
                           a {
                               href: "{icp_url}",
                               target: "_blank",

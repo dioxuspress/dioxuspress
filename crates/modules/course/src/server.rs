@@ -2723,7 +2723,7 @@ fn normalize_visibility(v: Option<&str>) -> String {
 /// 读 site.json 中 annotations 开关（统一走 `SiteConfig::load_cached`）
 #[cfg(feature = "server")]
 fn read_annotations_switch(kind: &str) -> bool {
-  let site_path = app_core::utils::get_asset_root().join("site.json");
+  let site_path = app_core::utils::site_json_path();
   if let Ok(cfg) =
     app_core::settings::SiteConfig::load_cached(site_path.to_str().unwrap_or_default())
   {

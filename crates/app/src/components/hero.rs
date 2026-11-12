@@ -8,7 +8,7 @@ use crate::routes::Route;
 #[component]
 pub fn Hero(enabled: Vec<String>) -> Element {
   let lang = use_i18n();
-  let site_cfg = app_core::settings::SiteConfig::embedded();
+  let site_cfg = app_core::settings::SiteConfig::active();
   let on = |id: &str| enabled.iter().any(|e| e == id);
   rsx! {
       section { class: "w-full py-16 sm:py-20 bg-gradient-to-b from-slate-950 to-slate-900",

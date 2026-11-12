@@ -58,10 +58,9 @@ pub fn inject_seo(meta: &PostMetadata, path: &str, base_url: &str) -> Element {
   let canonical = build_canonical(meta.canonical.as_deref(), path, base_url);
   let json_ld = build_json_ld(meta, &canonical, base_url);
   // 文章没配图时用站点默认分享图，分享卡片不至于空白
-  let image = absolute_url(
-    meta.image.as_deref().filter(|s| !s.is_empty()).unwrap_or_else(|| default_og_image()),
-    base_url,
-  );
+  let default_img = default_og_image();
+  let image =
+    absolute_url(meta.image.as_deref().filter(|s| !s.is_empty()).unwrap_or(&default_img), base_url);
 
   rsx! {
       crate::browser::PageTitle { title: page_title(&meta.title) }
@@ -111,6 +110,7 @@ pub fn inject_seo(meta: &PostMetadata, path: &str, base_url: &str) -> Element {
   }
 }
 
+#[derive(Clone)]
 struct SiteSeoMeta {
   site_name: String,
   og_image: String,
@@ -118,9 +118,9 @@ struct SiteSeoMeta {
   in_language: &'static str,
 }
 
-fn site_seo_meta() -> &'static SiteSeoMeta {
-  use std::sync::OnceLock;
-  static META: OnceLock<SiteSeoMeta> = OnceLock::new();
+fn site_seo_slot() -> &'static std::sync::RwLock<SiteSeoMeta> {
+  use std::sync::{OnceLock, RwLock};
+  static META: OnceLock<RwLock<SiteSeoMeta>> = OnceLock::new();
   META.get_or_init(|| {
     #[derive(serde::Deserialize, Default)]
     struct PartialSite {
@@ -137,29 +137,67 @@ fn site_seo_meta() -> &'static SiteSeoMeta {
       Some(lang) if lang.eq_ignore_ascii_case("en") => "en-US",
       _ => "zh-CN",
     };
-    SiteSeoMeta {
+    RwLock::new(SiteSeoMeta {
       site_name: trim_non_empty(parsed.site_name).unwrap_or_else(|| "DioxusPress".to_string()),
       og_image: trim_non_empty(parsed.og_image).unwrap_or_else(|| DEFAULT_OG_IMAGE.to_string()),
       twitter_handle: trim_non_empty(parsed.twitter_handle),
       in_language,
-    }
+    })
   })
 }
 
-/// 从 `assets/site.json` 读取站名（作为顶栏、页脚、Atom feed、schema.org 与所有页面
-/// `<title>` 的后缀）；未配置或为空时回退到开源引擎名 `"DioxusPress"`。
-pub fn site_name() -> &'static str {
-  &site_seo_meta().site_name
+fn site_seo_meta() -> SiteSeoMeta {
+  site_seo_slot().read().map(|g| g.clone()).unwrap_or(SiteSeoMeta {
+    site_name: "DioxusPress".to_string(),
+    og_image: DEFAULT_OG_IMAGE.to_string(),
+    twitter_handle: None,
+    in_language: "zh-CN",
+  })
 }
 
-/// 从 `assets/site.json` 读取默认分享图路径；未配置时回退到 [`DEFAULT_OG_IMAGE`]。
-pub fn default_og_image() -> &'static str {
-  &site_seo_meta().og_image
+/// 同步运行期生效的 `site.json` 品牌 SEO 元信息（支持零编译容器挂载 `/app/content/site.json` 与热重载）。
+pub fn update_site_seo_meta(
+  site_name: &str,
+  og_image: &str,
+  twitter_handle: Option<&str>,
+  default_en: bool,
+) {
+  let name = site_name.trim();
+  let og = og_image.trim();
+  let next = SiteSeoMeta {
+    site_name: if name.is_empty() { "DioxusPress".to_string() } else { name.to_string() },
+    og_image: if og.is_empty() { DEFAULT_OG_IMAGE.to_string() } else { og.to_string() },
+    twitter_handle: twitter_handle.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+    in_language: if default_en { "en-US" } else { "zh-CN" },
+  };
+  if let Ok(g) = site_seo_slot().read() {
+    if g.site_name == next.site_name
+      && g.og_image == next.og_image
+      && g.twitter_handle == next.twitter_handle
+      && g.in_language == next.in_language
+    {
+      return;
+    }
+  }
+  if let Ok(mut w) = site_seo_slot().write() {
+    *w = next;
+  }
 }
 
-/// 从 `assets/site.json` 读取可选 `twitter_handle`（用于 `twitter:site`）。
-pub fn twitter_site() -> Option<&'static str> {
-  site_seo_meta().twitter_handle.as_deref()
+/// 读取当前生效站名（作为顶栏、页脚、Atom feed、schema.org 与所有页面 `<title>` 的后缀）；
+/// 未配置或为空时回退到开源引擎名 `"DioxusPress"`。
+pub fn site_name() -> String {
+  site_seo_meta().site_name
+}
+
+/// 读取当前生效默认分享图路径；未配置时回退到 [`DEFAULT_OG_IMAGE`]。
+pub fn default_og_image() -> String {
+  site_seo_meta().og_image
+}
+
+/// 读取可选 `twitter_handle`（用于 `twitter:site`）。
+pub fn twitter_site() -> Option<String> {
+  site_seo_meta().twitter_handle
 }
 
 /// 页面没有自己的图时的分享图默认值（1200×630，`assets/images/og-default.jpg`）。
@@ -219,10 +257,9 @@ pub fn PageMetaTags(
   });
   let full_title = page_title(&title);
   let json_ld = schema.as_ref().and_then(|v| page_json_ld(v, &canonical));
-  let image = absolute_url(
-    image.as_deref().filter(|s| !s.is_empty()).unwrap_or_else(|| default_og_image()),
-    &base_url,
-  );
+  let default_img = default_og_image();
+  let image =
+    absolute_url(image.as_deref().filter(|s| !s.is_empty()).unwrap_or(&default_img), &base_url);
   rsx! {
       crate::browser::PageTitle { title: full_title.clone() }
       if !description.is_empty() {

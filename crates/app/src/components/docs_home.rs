@@ -149,7 +149,7 @@ fn render_volume_card(vol: &DocVolume, lang: app_core::i18n::Language) -> Elemen
 #[component]
 pub fn DocsLanding(enabled: Vec<String>) -> Element {
   let lang = use_i18n();
-  let site_cfg = app_core::settings::SiteConfig::embedded();
+  let site_cfg = app_core::settings::SiteConfig::active();
   let mut copied = use_signal(|| false);
 
   let on = |id: &str| enabled.iter().any(|e| e == id);

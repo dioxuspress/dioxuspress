@@ -18,15 +18,19 @@
 # wasm-bindgen bindings"）。glibc 基础镜像可直接运行这些工具，绕开整类问题。
 # Tailwind v4 需要 Node ≥ 20，trixie 自带 nodejs 20，亦满足。
 #
-# 构建：
+# 构建（全栈版 / 零数据库 basic 版）：
 #   docker build -t dioxuspress:latest .
+#   docker build --build-arg APP_FEATURES="--no-default-features" --build-arg INCLUDE_PAPERS_INGEST=0 -t dioxuspress-basic:latest .
 #
-# 运行（最小）：
+# 运行（零数据库 basic 镜像，开箱即跑无需任何密钥或环境变量）：
+#   docker run --rm -p 8080:8080 -v ./my-site:/app/content:ro ghcr.io/dioxuspress/dioxuspress-basic:latest
+#
+# 运行（带登录与数据库的 app 镜像）：
 #   docker run --rm -p 8080:8080 \
 #     -e DATABASE_URL=postgres://user:pass@postgres:5432/app \
 #     -e JWT_SECRET=$(openssl rand -hex 32) \
 #     -e BASE_URL=https://example.com \
-#     dioxuspress:latest
+#     ghcr.io/dioxuspress/dioxuspress-app:latest
 #
 # `docker-compose.yml` 会把 postgres + 本 app 串起来。
 
@@ -143,16 +147,20 @@ RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=ri
  && [ "$status" -eq 0 ] \
  && if grep -q 'wasm-opt failed' /tmp/bundle.log; then echo 'dx bundle: wasm-opt failed' >&2; exit 1; fi
 
-# 3. 论文采集程序（阶段 N）：不链接进 app，服务器 cron 用 `docker compose run --rm app /app/papers-ingest` 跑
+# 3. 论文采集程序（阶段 N）：不链接进 app，服务器 cron 用 `docker compose run --rm app /app/papers-ingest` 跑；
+#    零数据库 `basic` 镜像传 `--build-arg INCLUDE_PAPERS_INGEST=0` 跳过以缩短构建耗时与镜像体积。
+ARG INCLUDE_PAPERS_INGEST=1
 RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=rie-cargo-registry,target=/usr/local/cargo/registry \
-    cargo build --release -p module-papers --features ingest --bin papers-ingest
+    if [ "$INCLUDE_PAPERS_INGEST" = "1" ]; then \
+      cargo build --release -p module-papers --features ingest --bin papers-ingest; \
+    fi
 
 # 4. 收敛产物到统一目录，方便 runtime 阶段单层 COPY
 RUN --mount=type=cache,id=rie-target,target=/tmp/target \
     mkdir -p /out \
  && cp -r /tmp/target/dx/app/release/web/public /out/public \
  && cp /tmp/target/dx/app/release/web/server /out/server \
- && cp /tmp/target/release/papers-ingest /out/papers-ingest \
+ && if [ "$INCLUDE_PAPERS_INGEST" = "1" ]; then cp /tmp/target/release/papers-ingest /out/papers-ingest; fi \
  && cp -r assets /out/assets
 
 
@@ -173,10 +181,7 @@ RUN groupadd --system app && useradd --system --gid app --no-create-home app
 
 WORKDIR /app
 
-COPY --from=builder --chown=app:app /out/server /app/server
-COPY --from=builder --chown=app:app /out/papers-ingest /app/papers-ingest
-COPY --from=builder --chown=app:app /out/public /app/public
-COPY --from=builder --chown=app:app /out/assets /app/assets
+COPY --from=builder --chown=app:app /out/ /app/
 
 # 挂卷点要先在镜像里建好并归 app 所有：docker 初始化空的命名卷时沿用镜像里该目录的属主，
 # 镜像里没有这个目录时卷归 root，app 用户写不进去（上传失败、搜索索引建不起来）。

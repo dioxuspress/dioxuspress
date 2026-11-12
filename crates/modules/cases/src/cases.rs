@@ -98,8 +98,8 @@ fn tag_color_class(t: &str) -> &'static str {
   }
 }
 
-fn submit_case_url() -> Option<&'static str> {
-  app_core::settings::SiteConfig::embedded().submit_case_url_or_none()
+fn submit_case_url() -> Option<String> {
+  app_core::settings::SiteConfig::active().submit_case_url_or_none().map(str::to_string)
 }
 
 #[component]

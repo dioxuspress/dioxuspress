@@ -291,7 +291,7 @@ pub enum Route {
 #[component]
 pub fn Home() -> Element {
   let lang = use_i18n();
-  let site_cfg = app_core::settings::SiteConfig::embedded();
+  let site_cfg = app_core::settings::SiteConfig::active();
   // 与 navbar 共用「站点模块开关」。
   let enabled = use_enabled_modules();
   let is_docs_layout = site_cfg.active_layout_or_default() == "docs";
