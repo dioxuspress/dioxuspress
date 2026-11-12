@@ -31,6 +31,7 @@ fn mount_with_content(router: Router, assets_root: &str, content_root: Option<&P
   // 文章图片 / 音频改动很少，一天；上传文件可能被审核撤下，一小时；字体基本不变，30 天。
   let router = router
     .nest("/images", images_router)
+    .nest("/schemas", cached(ServeDir::new(format!("{}/schemas", assets_root)), DAY))
     .nest("/posts", cached(ServeDir::new(app_core::utils::content_dir("posts")), DAY))
     // 文档卷里的图（卷首页的架构图等）。`/docs` 本身是页面路由，文件走单独的前缀。
     .nest("/docs-files", cached(ServeDir::new(app_core::utils::content_dir("docs")), DAY))
@@ -120,6 +121,17 @@ mod tests {
     let res = get(tmp.path().to_str().unwrap(), "/js/a.js").await;
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(cache_control(&res), Some("no-cache"));
+  }
+
+  /// `/schemas/site.schema.json` 对外暴露官方 JSON Schema 供 IDE 拉取，缓存一天。
+  #[tokio::test]
+  async fn schemas_served_with_day_cache() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("schemas")).unwrap();
+    std::fs::write(tmp.path().join("schemas/site.schema.json"), r#"{"type":"object"}"#).unwrap();
+    let res = get(tmp.path().to_str().unwrap(), "/schemas/site.schema.json").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(cache_control(&res), Some("public, max-age=86400"));
   }
 
   /// 文章图片等无哈希文件给一天缓存，过期后复验；改为长缓存前要先给文件名加哈希。

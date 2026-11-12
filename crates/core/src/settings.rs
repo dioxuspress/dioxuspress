@@ -49,10 +49,17 @@ fn non_empty_str(opt: Option<&str>) -> Option<&str> {
   opt.map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// 官方 `site.json` JSON Schema 在线地址（用于 IDE 自动补全与字段校验）。
+pub const SITE_SCHEMA_URL: &str = "https://dioxuspress.dev/schemas/site.schema.json";
+
+/// DioxusPress 站点级非敏感配置文件（`assets/site.json`）根结构。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SiteConfig {
+  /// 站点名称（用于浏览器标题后缀、顶栏纯文字站名与页脚默认版权主体；留空回退 `"DioxusPress"`）。
   #[serde(default = "default_site_name")]
   pub site_name: String,
+  /// 站点一句话描述（注入首页默认 `<meta name="description">` 与 RSS `<description>`）。
   #[serde(default)]
   pub site_description: String,
   /// 默认主题 id（见 [`crate::engines::theme::THEMES`]）；访客可用 cookie 覆盖。
@@ -64,6 +71,7 @@ pub struct SiteConfig {
   /// 默认界面语言：`"zh"`（默认）或 `"en"`。无 `?lang=` 与 `site_lang` cookie 时生效。
   #[serde(default = "default_language")]
   pub default_language: String,
+  /// 站点默认作者署名（如 `"yuxuetr"`）。
   #[serde(default)]
   pub author: String,
   /// 站点图标路径（如 `"/images/favicon.ico"` 或 `"/images/favicon.svg"`）。
@@ -120,8 +128,10 @@ pub struct SiteConfig {
   /// 段落标注（Annotation）按资源类型的启用开关。
   #[serde(default)]
   pub annotations: AnnotationsSettings,
+  /// 传统导航项配置（兼容旧版布局；当前主导航主要由 `modules` 控制）。
   #[serde(default)]
   pub navigation: Vec<NavItem>,
+  /// OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应环境变量凭据）。
   #[serde(default)]
   pub auth: AuthSettings,
   /// 模块开关：key = ModuleSpec.id，value = `{ enabled: true|false }`。
@@ -139,14 +149,18 @@ pub struct SiteConfig {
 
 /// 顶部可关闭公告条配置（常用于版本发布或活动提示）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AnnouncementSettings {
   /// 公告唯一标识（访客关闭后以 `dp_ann_{id}` 写入 `localStorage`；变更 `id` 会重新展示）。
   #[serde(default)]
   pub id: String,
+  /// 公告正文（中文或单语默认文本；为空时不渲染公告条）。
   #[serde(default)]
   pub text: String,
+  /// 公告正文英文覆盖（可选；未配置时回退到 `text`）。
   #[serde(default)]
   pub text_en: Option<String>,
+  /// 点击公告条跳转链接（支持站内路由如 `"/docs/guide"` 或外部 URL）。
   #[serde(default)]
   pub href: Option<String>,
 }
@@ -176,49 +190,68 @@ impl AnnouncementSettings {
 
 /// 首页 Hero 区域自定义文案（留空时回退到 `i18n` 的 `hero.title` / `hero.subtitle`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct HeroSettings {
+  /// 首页主标题上方的胶囊徽章文案（中文）。
   #[serde(default)]
   pub badge: Option<String>,
+  /// 首页主标题上方的胶囊徽章文案（英文覆盖）。
   #[serde(default)]
   pub badge_en: Option<String>,
+  /// 首页 Hero 主标题（中文）。
   #[serde(default)]
   pub title: Option<String>,
+  /// 首页 Hero 主标题（英文覆盖）。
   #[serde(default)]
   pub title_en: Option<String>,
+  /// 首页 Hero 副标题描述（中文）。
   #[serde(default)]
   pub subtitle: Option<String>,
+  /// 首页 Hero 副标题描述（英文覆盖）。
   #[serde(default)]
   pub subtitle_en: Option<String>,
   /// 开源项目首页一键复制终端命令（如 `"git clone ..."` 或 `"cargo add ..."`）。
   #[serde(default)]
   pub install_command: Option<String>,
+  /// 主行动按钮文案（中文）。
   #[serde(default)]
   pub primary_cta_text: Option<String>,
+  /// 主行动按钮文案（英文覆盖）。
   #[serde(default)]
   pub primary_cta_text_en: Option<String>,
+  /// 主行动按钮跳转路径或 URL（留空时不展示主按钮）。
   #[serde(default)]
   pub primary_cta_href: Option<String>,
+  /// 次行动按钮文案（中文）。
   #[serde(default)]
   pub secondary_cta_text: Option<String>,
+  /// 次行动按钮文案（英文覆盖）。
   #[serde(default)]
   pub secondary_cta_text_en: Option<String>,
+  /// 次行动按钮跳转路径或 URL（留空时不展示次按钮）。
   #[serde(default)]
   pub secondary_cta_href: Option<String>,
 }
 
 /// 开源项目首页特性卡片（`active_layout = "docs"` 时渲染为 3 列栅格）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FeatureItem {
   /// 图标标识（支持内置 `"bolt"` / `"book"` / `"layers"` / `"search"` / `"shield"` / `"palette"` 或短字符）。
   #[serde(default)]
   pub icon: String,
+  /// 特性标题（中文或默认语言）。
   pub title: String,
+  /// 特性标题（英文覆盖）。
   #[serde(default)]
   pub title_en: Option<String>,
+  /// 特性详细说明（中文或默认语言）。
   #[serde(default)]
   pub description: String,
+  /// 特性详细说明（英文覆盖）。
   #[serde(default)]
   pub description_en: Option<String>,
+  /// 点击卡片跳转的目标路由或外链（可选）。
   #[serde(default)]
   pub href: Option<String>,
 }
@@ -245,6 +278,7 @@ impl FeatureItem {
 
 /// 页脚自定义信息（口号、版权、备案号、社交链接、多列分组）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FooterSettings {
   /// 页脚口号（中文）；未配置时回退到 `i18n` 的 `footer.tagline`。
   #[serde(default)]
@@ -271,10 +305,14 @@ pub struct FooterSettings {
 
 /// 多列结构化页脚单列配置。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FooterColumn {
+  /// 列分组标题（中文或默认语言）。
   pub title: String,
+  /// 列分组标题（英文覆盖）。
   #[serde(default)]
   pub title_en: Option<String>,
+  /// 该列包含的导航或外部链接列表。
   #[serde(default)]
   pub links: Vec<FooterLink>,
 }
@@ -290,10 +328,14 @@ impl FooterColumn {
 
 /// 多列页脚中的单条内外链。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FooterLink {
+  /// 链接显示名称（中文或默认语言）。
   pub label: String,
+  /// 链接显示名称（英文覆盖）。
   #[serde(default)]
   pub label_en: Option<String>,
+  /// 跳转目标（以 `"/"` 开头走 SPA 站内路由，以 `"http"` 开头作为新标签外链打开）。
   pub href: String,
 }
 
@@ -308,18 +350,25 @@ impl FooterLink {
 
 /// 页脚外部社交或社区链接。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SocialLink {
+  /// 平台名称（如 `"GitHub"`、`"Discord"`；包含 `"GitHub"` 时会自动提取为文档顶栏仓库图标链接）。
   pub label: String,
+  /// 完整外部链接地址。
   pub url: String,
 }
 
-/// 段落标注（Annotation）按资源类型的启用开关。
+/// 段落标注（Annotation）按资源类型的启用开关（需 `accounts` 特性档位）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AnnotationsSettings {
+  /// 是否在课程章节页开启段落划线标注（默认 `true`）。
   #[serde(default = "default_true")]
   pub course: bool,
+  /// 是否在文档详情页开启段落划线标注（默认 `true`）。
   #[serde(default = "default_true")]
   pub doc: bool,
+  /// 是否在博客文章页开启段落划线标注（默认 `false`）。
   #[serde(default)]
   pub blog: bool,
 }
@@ -345,6 +394,7 @@ impl AnnotationsSettings {
 /// 审核功能在 site.json 中的配置块。**默认 disabled**，意味着评论 / 话题 /
 /// 标注的提交路径不会调用任何 LLM。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ModerationSettings {
   /// 总开关。默认 `false`。
   #[serde(default)]
@@ -374,6 +424,7 @@ pub struct ModerationSettings {
 /// LLM 审核失败时的处理（SEC-12：不再放行）。没有「放行」选项：
 /// 开了 LLM 审核却在审核失败时放行，等于攻击者把审核打挂就能绕过。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum LlmFailureAction {
   /// 记为 Flag：先不公开，进审核队列等管理员通过后显示。
@@ -385,22 +436,33 @@ pub enum LlmFailureAction {
 
 /// `ModerationSettings::thresholds` 的可选覆盖。字段缺失时不影响其它字段。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ModerationThresholdsConfig {
+  /// 风险分高于该阈值直接拦截（范围 `0.0..=1.0`，默认 `0.9`）。
   pub block_above: Option<f32>,
+  /// 风险分高于该阈值进入人工审核队列（范围 `0.0..=1.0`，默认 `0.5`）。
   pub flag_above: Option<f32>,
 }
 
+/// 自定义导航栏条目。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct NavItem {
+  /// 国际化词条 key 或字面显示文本。
   pub key: String,
+  /// 点击跳转路由路径（如 `"/docs"`）。
   pub route: String,
 }
 
-/// 授权登录配置
+/// OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应 `*_CLIENT_ID` / `*_CLIENT_SECRET` 环境变量）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AuthSettings {
+  /// 是否开启用户登录入口。
+  #[serde(default)]
   pub enabled: bool,
-  /// 启用的内置 provider id（见 [`crate::auth::Provider`]），按登录弹窗显示顺序。
+  /// 启用的内置 provider id（`"github"` / `"google"` / `"discord"` / `"twitter"`），按登录弹窗显示顺序排列。
+  #[serde(default)]
   pub providers: Vec<String>,
 }
 
@@ -990,5 +1052,82 @@ mod tests {
     assert_eq!(cfg.features[0].title_for(Language::En), "Zero-DB Basic Tier");
     assert_eq!(cfg.footer.columns[0].title_for(Language::En), "Docs");
     assert_eq!(cfg.footer.columns[0].links[0].label_for(Language::En), "Intro");
+  }
+
+  /// 生成官方 `assets/schemas/site.schema.json`，补充 `$id`、`$schema` 自引用字段及动态枚举约束。
+  fn build_site_schema_json() -> String {
+    let mut root = serde_json::to_value(schemars::schema_for!(SiteConfig)).expect("schema to json");
+    let obj = root.as_object_mut().expect("schema root object");
+    obj.insert("$id".to_string(), serde_json::json!(SITE_SCHEMA_URL));
+
+    if let Some(props) = obj.get_mut("properties").and_then(|v| v.as_object_mut()) {
+      props.insert(
+        "$schema".to_string(),
+        serde_json::json!({
+          "type": "string",
+          "description": "JSON Schema URI（用于 VS Code / Zed 等编辑器的字段悬停说明与自动补全）。"
+        }),
+      );
+      if let Some(layout_prop) = props.get_mut("active_layout").and_then(|v| v.as_object_mut()) {
+        layout_prop.insert("enum".to_string(), serde_json::json!(["classic", "docs", "minimal"]));
+      }
+      if let Some(lang_prop) = props.get_mut("default_language").and_then(|v| v.as_object_mut()) {
+        lang_prop.insert("enum".to_string(), serde_json::json!(["zh", "en"]));
+      }
+      if let Some(theme_prop) = props.get_mut("theme").and_then(|v| v.as_object_mut()) {
+        let theme_ids: Vec<&str> = crate::engines::theme::THEMES.iter().map(|t| t.id).collect();
+        theme_prop.insert("enum".to_string(), serde_json::json!(theme_ids));
+      }
+    }
+
+    // 为 AuthSettings.providers 数组元素注入内置 OAuth Provider 枚举
+    let provider_ids: Vec<&str> = crate::auth::Provider::ALL.into_iter().map(|p| p.id()).collect();
+    for defs_key in ["$defs", "definitions"] {
+      if let Some(items) = obj
+        .get_mut(defs_key)
+        .and_then(|d| d.get_mut("AuthSettings"))
+        .and_then(|a| a.get_mut("properties"))
+        .and_then(|p| p.get_mut("providers"))
+        .and_then(|pr| pr.get_mut("items"))
+        .and_then(|i| i.as_object_mut())
+      {
+        items.insert("enum".to_string(), serde_json::json!(provider_ids));
+      }
+    }
+
+    let mut out = serde_json::to_string_pretty(&root).expect("pretty schema");
+    out.push('\n');
+    out
+  }
+
+  /// 守卫测试：保证 `assets/schemas/site.schema.json` 与 `SiteConfig` Rust 定义严格一致。
+  /// 修改 `SiteConfig` 字段或注释后，运行 `UPDATE_SCHEMA=1 cargo test -p app-core` 自动更新。
+  #[test]
+  fn site_schema_json_is_up_to_date() {
+    let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("../../assets/schemas/site.schema.json");
+    let generated = build_site_schema_json();
+
+    if std::env::var("UPDATE_SCHEMA").as_deref() == Ok("1") {
+      if let Some(parent) = schema_path.parent() {
+        std::fs::create_dir_all(parent).expect("create schemas dir");
+      }
+      std::fs::write(&schema_path, &generated).expect("write site.schema.json");
+    }
+
+    let on_disk = std::fs::read_to_string(&schema_path).unwrap_or_else(|e| {
+      panic!(
+        "无法读取 {} ({e})；请运行 `UPDATE_SCHEMA=1 cargo test -p app-core` 生成",
+        schema_path.display()
+      )
+    });
+    assert_eq!(
+      on_disk, generated,
+      "assets/schemas/site.schema.json 与 SiteConfig 定义不一致，请运行 `UPDATE_SCHEMA=1 cargo test -p app-core` 同步"
+    );
+
+    // 确认带 "$schema" 的官方 assets/site.json 可正常解析
+    let embedded = SiteConfig::embedded();
+    assert_eq!(embedded.site_name_or_default(), "DioxusPress");
   }
 }

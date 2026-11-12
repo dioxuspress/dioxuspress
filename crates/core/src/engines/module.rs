@@ -95,9 +95,11 @@ impl ModuleSpec {
   }
 }
 
-/// 模块在 site.json 中的配置开关。
+/// 模块在 `site.json::modules.<id>` 中的启用开关。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ModuleSettings {
+  /// 是否启用该模块（设为 `false` 时隐藏导航入口、拦截对应路由并从 Sitemap / RSS 移除）。默认 `true`。
   #[serde(default = "default_enabled")]
   pub enabled: bool,
 }
