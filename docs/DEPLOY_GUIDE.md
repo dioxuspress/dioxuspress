@@ -37,8 +37,8 @@ basic 档只需要 `BASE_URL`，不连库、不要求 `JWT_SECRET`，`/healthz` 
 ### 3.1 准备 .env
 
 ```bash
-git clone https://github.com/yuxuetr/DioxusPress.git
-cd DioxusPress
+git clone https://github.com/dioxuspress/dioxuspress.git
+cd dioxuspress
 cp .env.example .env
 $EDITOR .env
 ```
@@ -101,9 +101,9 @@ docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB \
 服务器上把两个仓库并排克隆，框架的 `.env` 指向内容仓库：
 
 ```bash
-git clone https://github.com/yuxuetr/DioxusPress.git
+git clone https://github.com/dioxuspress/dioxuspress.git
 git clone git@github.com:<owner>/<content-repo>.git   # 私有仓库：服务器上配一把只读 deploy key
-cd DioxusPress
+cd dioxuspress
 echo 'CONTENT_HOST_DIR=../<content-repo>' >> .env
 docker compose up -d --build
 ```

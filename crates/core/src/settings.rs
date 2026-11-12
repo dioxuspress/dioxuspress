@@ -933,7 +933,7 @@ mod tests {
   fn docs_layout_settings_resolve_bilingual_and_urls() {
     let json = r#"{
       "active_layout": "docs",
-      "docs_edit_url_base": "https://github.com/yuxuetr/DioxusPress/edit/main/assets/docs/",
+      "docs_edit_url_base": "https://github.com/dioxuspress/dioxuspress/edit/main/assets/docs/",
       "announcement": {
         "id": "v07",
         "text": "DioxusPress 全新文档模板上线",
@@ -943,12 +943,12 @@ mod tests {
       "hero": {
         "badge": "Dioxus 0.7 · 纯 Rust",
         "badge_en": "Dioxus 0.7 · Pure Rust",
-        "install_command": "git clone https://github.com/yuxuetr/DioxusPress.git",
+        "install_command": "git clone https://github.com/dioxuspress/dioxuspress.git",
         "primary_cta_text": "快速开始",
         "primary_cta_text_en": "Get Started",
         "primary_cta_href": "/docs/guide",
         "secondary_cta_text": "GitHub",
-        "secondary_cta_href": "https://github.com/yuxuetr/DioxusPress"
+        "secondary_cta_href": "https://github.com/dioxuspress/dioxuspress"
       },
       "features": [
         {
@@ -960,7 +960,7 @@ mod tests {
         }
       ],
       "footer": {
-        "social": [{ "label": "GitHub", "url": "https://github.com/yuxuetr/DioxusPress" }],
+        "social": [{ "label": "GitHub", "url": "https://github.com/dioxuspress/dioxuspress" }],
         "columns": [
           {
             "title": "文档",
@@ -974,15 +974,15 @@ mod tests {
     assert_eq!(cfg.active_layout_or_default(), "docs");
     assert_eq!(
       cfg.docs_edit_url("/guide/index.md").as_deref(),
-      Some("https://github.com/yuxuetr/DioxusPress/edit/main/assets/docs/guide/index.md")
+      Some("https://github.com/dioxuspress/dioxuspress/edit/main/assets/docs/guide/index.md")
     );
-    assert_eq!(cfg.github_repo_url(), Some("https://github.com/yuxuetr/DioxusPress"));
+    assert_eq!(cfg.github_repo_url(), Some("https://github.com/dioxuspress/dioxuspress"));
     assert_eq!(cfg.hero_badge(Language::Zh), Some("Dioxus 0.7 · 纯 Rust"));
     assert_eq!(cfg.hero_badge(Language::En), Some("Dioxus 0.7 · Pure Rust"));
     assert_eq!(cfg.hero_primary_cta(Language::En), Some(("Get Started", "/docs/guide")));
     assert_eq!(
       cfg.hero_secondary_cta(Language::En),
-      Some(("GitHub", "https://github.com/yuxuetr/DioxusPress"))
+      Some(("GitHub", "https://github.com/dioxuspress/dioxuspress"))
     );
     let ann = cfg.announcement.as_ref().expect("announcement");
     assert_eq!(ann.storage_key(), "dp_ann_v07");

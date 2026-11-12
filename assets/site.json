@@ -16,8 +16,8 @@
   "logo_wordmark": true,
   "og_image": "/images/og-default.jpg",
   "twitter_handle": "",
-  "submit_case_url": "https://github.com/yuxuetr/DioxusPress/issues/new",
-  "docs_edit_url_base": "https://github.com/yuxuetr/DioxusPress/edit/main/assets/docs",
+  "submit_case_url": "https://github.com/dioxuspress/dioxuspress/issues/new",
+  "docs_edit_url_base": "https://github.com/dioxuspress/dioxuspress/edit/main/assets/docs",
   "announcement": {
     "id": "dp-docs-template-v1",
     "text": "🎉 DioxusPress 全新类 Docusaurus 文档站模板上线 —— 支持零数据库单容器极速部署",
@@ -31,13 +31,13 @@
     "title_en": "Build Blazing-Fast Docs & Knowledge Communities in Pure Rust",
     "subtitle": "SSR 首屏直出 + WASM 无刷新水合 + Tantivy 毫秒级全文检索。既能零数据库替代 Docusaurus，也能一键开启登录、论坛、划线标注与付费课程。",
     "subtitle_en": "SSR first-paint + WASM hydration + embedded Tantivy search. Run as a zero-database Docusaurus alternative or scale to auth, forum, annotations, and courses.",
-    "install_command": "git clone https://github.com/yuxuetr/DioxusPress.git && cd DioxusPress",
+    "install_command": "git clone https://github.com/dioxuspress/dioxuspress.git && cd dioxuspress",
     "primary_cta_text": "5 分钟快速开始",
     "primary_cta_text_en": "Quickstart Guide",
     "primary_cta_href": "/docs/guide/quickstart",
     "secondary_cta_text": "GitHub 仓库",
     "secondary_cta_text_en": "View on GitHub",
-    "secondary_cta_href": "https://github.com/yuxuetr/DioxusPress"
+    "secondary_cta_href": "https://github.com/dioxuspress/dioxuspress"
   },
   "features": [
     {
@@ -98,7 +98,7 @@
     "social": [
       {
         "label": "GitHub",
-        "url": "https://github.com/yuxuetr/DioxusPress"
+        "url": "https://github.com/dioxuspress/dioxuspress"
       },
       {
         "label": "Rust in Everything",
@@ -180,7 +180,7 @@
           {
             "label": "GitHub 源码",
             "label_en": "GitHub",
-            "href": "https://github.com/yuxuetr/DioxusPress"
+            "href": "https://github.com/dioxuspress/dioxuspress"
           }
         ]
       }

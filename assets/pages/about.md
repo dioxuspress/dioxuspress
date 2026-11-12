@@ -15,5 +15,6 @@ description: 基于 Dioxus 0.7 与 Axum 构建的开源全栈 Rust 文档、内�
 
 ## 线上标杆案例
 
+- **官方网站**：[dioxuspress.dev](https://dioxuspress.dev)
 - **[Rust in Everything (`rustineverything.app`)](https://rustineverything.app)**：承载 38 卷 2,100+ 篇 Rust 生态源码解析文档、体系化 AI 实战课程、论文速递与技术社区，完全由 DioxusPress 驱动运行。
-- **源码仓库**：[github.com/yuxuetr/DioxusPress](https://github.com/yuxuetr/DioxusPress)（MIT 开源协议）。
+- **源码仓库**：[github.com/dioxuspress/dioxuspress](https://github.com/dioxuspress/dioxuspress)（MIT 开源协议）。
