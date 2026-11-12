@@ -123,8 +123,13 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
       static_paths.push(p.to_string());
     }
   }
-  // G6：生态落地页不是模块，不在 ModuleSpec 里，单独列出。
-  static_paths.extend(crate::taxonomy::ecosystems().iter().map(|e| format!("/ecosystem/{}", e.id)));
+  // G6：生态落地页不是模块，不在 ModuleSpec 里；仅在该生态下至少有一个领域板块启用时收录。
+  static_paths.extend(
+    crate::taxonomy::ecosystems()
+      .iter()
+      .filter(|e| e.domains.iter().any(|d| is_on(d.module_id)))
+      .map(|e| format!("/ecosystem/{}", e.id)),
+  );
   let mut entries = entries;
   for (path, lastmod) in collect_detail_paths(is_on).await {
     match lastmod {
