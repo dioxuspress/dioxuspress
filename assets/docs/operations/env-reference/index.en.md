@@ -18,6 +18,7 @@ DioxusPress follows 12-Factor App boundaries: **public branding and structure be
 | :--- | :--- | :--- | :--- | :--- |
 | `BASE_URL` | All | Required in `accounts`+; optional in `basic` | `http://localhost:8080` (`basic` fallback) | Public origin without trailing slash; used for `/sitemap.xml`, `/feed.xml`, canonical tags, and OAuth redirect URIs |
 | `CONTENT_DIR` | All | Optional | Auto-detected when `/app/content` is non-empty | External read-only content directory overriding `site.json`, `docs/`, `posts/`, `courses/`, and `images/` |
+| `CONTENT_WATCH_INTERVAL_SECS` | All | Optional | `5` (`0` disables polling; `SIGHUP` remains active) | Polling interval in seconds for `CONTENT_DIR` `.git/HEAD`, `site.json`, and directory mtime zero-downtime hot reload |
 | `SEARCH_INDEX_DIR` | All | Optional | `./data/search-index` | Persistent directory for Tantivy segments and `manifest.json` |
 | `RUST_LOG` | All | Optional | `info` | `tracing-subscriber` filter directive (e.g. `info,app_core=debug,sqlx=warn`) |
 

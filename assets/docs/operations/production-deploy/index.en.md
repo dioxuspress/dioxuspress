@@ -40,7 +40,13 @@ To pull upstream DioxusPress releases cleanly with zero merge conflicts, keep yo
 
 Mount `/srv/my-site-content` read-only at `/app/content` (`CONTENT_DIR=/app/content`):
 - **Brand image overlay**: Requests to `/images/*` check `$CONTENT_DIR/images/` first and gracefully fall back to built-in `assets/images/`;
-- **Fast content releases**: Publishing new docs or course lessons only requires syncing the content repo on the host — no Rust recompilation needed.
+- **Zero-downtime incremental hot reload (`SIGHUP`)**: Publishing new docs, blog posts, or course lessons only requires syncing the content repo on the host and sending `SIGHUP` (`docker kill --signal=HUP dioxuspress-app`). Without dropping a single active TCP connection, the server atomically refreshes `site.json`, directory caches, and weak `ETag` epochs while incrementally updating Tantivy segments in the background (and even without `SIGHUP`, the built-in `CONTENT_DIR` watcher reconciles changes within 5 seconds).
+
+```bash
+# Zero-downtime content release (no image rebuild, 0 dropped connections)
+git -C /srv/my-site-content pull --ff-only
+docker kill --signal=HUP dioxuspress-app
+```
 
 ## 3. Persistent Volumes & Backup Checklist
 

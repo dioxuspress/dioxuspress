@@ -100,6 +100,20 @@ Open the exact `BASE_URL` configured in `.env` (e.g., `http://127.0.0.1:8080`). 
 
 **First Admin User**: Sign in once via OAuth, run `set -a; source .env; set +a; scripts/promote_admin.sh <username>` from the repository root (requires `psql`), then sign out and sign back in to receive an `admin` JWT session. See [`docs/ADMIN_SPEC.md`](docs/ADMIN_SPEC.md).
 
+## Verified Performance & Footprint
+
+Reproduce every metric locally with [`./scripts/bench_ssr.sh`](scripts/bench_ssr.sh) and [`./scripts/check_wasm_size.sh`](scripts/check_wasm_size.sh) (see [`dioxuspress.dev/docs/operations/benchmarks?lang=en`](https://dioxuspress.dev/docs/operations/benchmarks?lang=en)):
+
+| Metric | `basic` Tier (Zero-DB Docs & Blog) | `accounts` / `full` Tier | Notes |
+| --- | --- | --- | --- |
+| **Release Binary / Image** | `34.2 MiB` / `269 MB` | `47.4 MiB` / `319 MB` | Pingora SNI gateway image is `143 MB` (`6.4 MiB` live RSS) |
+| **Cold Start (`/healthz 200`)** | `547 ms` | `549 ms` | Ready to serve HTTP before background incremental index pass |
+| **Idle Memory (RSS)** | `91.7 MiB` | `95.6 MiB` | Includes embedded Jieba dictionary + Tantivy mmap |
+| **First-Paint SSR (`GET /` / `/docs/*`)** | `2.79 ms` / `4.04 ms` P50 (`1,832` / `1,236 QPS`) | `2.90 ms` / `4.02 ms` P50 (`1,764` / `1,234 QPS`) | Full Markdown parse + 3-level sidebar + VirtualDOM SSR |
+| **Conditional `ETag` (`304`)** | **`0.096 ms` P50 (`13,636 QPS`)** | **`0.093 ms` P50 (`13,462 QPS`)** | Anonymous-only; auth/dynamic routes strictly emit `private, no-store` |
+| **Tantivy Search (`POST /api/search/query`)** | **`0.314 ms` P50 (`9,215 QPS`)** | **`0.317 ms` P50 (`9,326 QPS`)** | Bilingual BM25 + snippet highlighting; `SIGHUP` hot-reloads with `0` dropped requests |
+| **Frontend WASM (`brotli -q 11`)** | **`1.04 MiB`** (`1.54 MiB` gzip) | **`1.35 MiB`** (`2.07 MiB` gzip) | Guarded on every PR in CI by `scripts/check_wasm_size.sh` |
+
 ## Pre-Commit Verification
 
 ```bash
@@ -107,7 +121,8 @@ cargo fmt --all -- --check
 cargo clippy --workspace --features server --all-targets -- -D warnings
 cargo test --features server --workspace -- --test-threads=1
 cargo check -p app --target wasm32-unknown-unknown --features web
-scripts/check_tiers.sh   # Verifies all 4 tiers × (server + web) compile cleanly
+scripts/check_tiers.sh      # Verifies all 4 tiers × (server + web) compile cleanly
+scripts/check_wasm_size.sh  # Verifies wasm-release bundle sizes stay under budget
 ```
 
 ## Tailwind CSS Build Pipeline

@@ -24,3 +24,4 @@ DioxusPress follows a "tiny footprint for small sites, resilient architecture fo
 - **[Tantivy Search & Technical SEO](/docs/operations/search-and-seo)**: Incremental `manifest.json` indexing, sitemaps, Schema.org JSON-LD, and Google Search Console setup.
 - **[Engine Architecture & Custom Modules](/docs/operations/module-development)**: Add new cohesive domain crates with zero cross-module coupling.
 - **[Environment Variables & Pingora Gateway Reference](/docs/operations/env-reference)**: Complete `.env`, OAuth2, payment webhook, and multi-domain SNI TLS dictionary.
+- **[Verified Benchmarks & Size Guardrails](/docs/operations/benchmarks)**: Reproducible RSS memory, SSR / `304` throughput, Tantivy latency, and CI WASM bundle budgets.
