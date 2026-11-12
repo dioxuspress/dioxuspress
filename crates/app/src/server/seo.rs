@@ -143,6 +143,9 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
       static_paths.push(p.to_string());
     }
   }
+  if is_on("about") && crate::server::about_page_is_bilingual() {
+    static_paths.push("/about?lang=en".to_string());
+  }
   // G6：生态落地页不是模块，不在 ModuleSpec 里；仅在该生态下至少有一个领域板块启用时收录。
   static_paths.extend(
     crate::taxonomy::ecosystems()

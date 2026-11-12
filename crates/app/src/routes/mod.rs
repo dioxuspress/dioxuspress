@@ -16,7 +16,7 @@ use crate::components::home_sections::{
 use crate::components::module_gate::{use_enabled_modules, ModuleGate};
 use crate::components::nav::Navbar;
 use crate::components::view::Container;
-use crate::i18n::{t, use_i18n};
+use crate::i18n::{t, use_i18n, Language};
 use crate::server::get_about_page;
 use module_ai::{AiArticlePage, AiIndexPage};
 use module_blog::server::{get_blog_content, list_blog_page};
@@ -777,19 +777,25 @@ pub fn About() -> Element {
 #[component]
 fn AboutBody() -> Element {
   let lang = use_i18n();
-  let page = use_server_future(|| async move { get_about_page().await })?;
+  let lang_code = match lang() {
+    Language::En => Some("en".to_string()),
+    Language::Zh => Some("zh".to_string()),
+  };
+  let page =
+    use_server_future(use_reactive!(|lang_code| async move { get_about_page(lang_code).await }))?;
   match page() {
-    Some(Ok(Some(content))) => {
-      let (meta, _body) = parse_mdx(&content);
+    Some(Ok(Some(resp))) => {
+      let (meta, _body) = parse_mdx(&resp.content);
       let title =
         if meta.title.is_empty() { t(lang(), "footer.about") } else { meta.title.clone() };
       rsx! {
-          widgets::PageMeta {
+          widgets::PageMetaTags {
               title,
               description: meta.description.clone().unwrap_or_default(),
               path: "/about".to_string(),
+              bilingual: resp.has_bilingual.then_some(lang() == Language::En),
           }
-          Markdown { content, blog_id: "about".to_string() }
+          Markdown { content: resp.content, blog_id: "about".to_string() }
       }
     }
     Some(Ok(None)) => rsx! { widgets::NotFound { message: t(lang(), "common.not_found") } },

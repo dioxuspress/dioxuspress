@@ -14,9 +14,10 @@
 1. **首屏语言在服务端就定下来**，SSR 与 hydration 用同一个值，不再闪：
    `?lang=en|zh` 查询参数 > `site_lang` cookie > 中文。服务端从当前请求
    （`FullstackContext`）读，客户端从 `location.search` / `document.cookie` 读，规则同一个纯函数。
-2. **按真实双语内容开放英文 URL**（论文页 + 带 `index.en.{md,mdx}` 伴生文件的文档页）：
+2. **按真实双语内容开放英文 URL**（论文页 + 带 `index.en.{md,mdx}` 伴生文件的文档页 + 带 `about.en.{md,mdx}` 的 About 页）：
    - 论文页：`/papers?lang=en`、`/papers/<id>?lang=en`、`/papers/topic/<slug>?lang=en`；
    - 文档页（Phase E5.1）：当某文档目录同时存在 `index.{md,mdx}` 与 `index.en.{md,mdx}` 时（如 `dioxuspress.dev` 官方文档全集），自动开放 `/docs/<path>?lang=en` 与 `/docs?lang=en`，英文界面优先读取 `index.en.{md,mdx}` 并本地化侧栏/面包屑/上下篇标题，缺失时平滑回退中文原文件（且将 `<article lang="zh-CN">` 保持为实际正文语言）。
+   - About 页：当生效的 `pages/` 目录同时存在 `about.{md,mdx}` 与 `about.en.{md,mdx}` 时，自动开放 `/about?lang=en` 并在语言切换时响应式加载对应正文；若外部挂载 `$CONTENT_DIR/pages/about.md` 未提供英文伴生文件，则严格在该挂载目录内回退中文原稿，不会串读镜像内置的 `assets/pages/about.en.md`。
    - 这些真实双语页面输出 `<link rel="alternate" hreflang="zh-CN|en">`，canonical 指向各自语言的 URL，且 `/sitemap.xml` 自动收录对应的 `?lang=en` 条目。
    - 不输出 `x-default`：它的 href 与 zh-CN 相同，而 `document::Link` 按 href+rel 去重
      （dioxus-document 0.7.9 `should_insert_link`），第二条会被丢掉。x-default 对 Google 是可选项，
