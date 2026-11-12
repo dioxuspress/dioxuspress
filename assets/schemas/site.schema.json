@@ -1,0 +1,727 @@
+{
+  "$defs": {
+    "AnnotationsSettings": {
+      "description": "段落标注（Annotation）按资源类型的启用开关（需 `accounts` 特性档位）。",
+      "properties": {
+        "blog": {
+          "default": false,
+          "description": "是否在博客文章页开启段落划线标注（默认 `false`）。",
+          "type": "boolean"
+        },
+        "course": {
+          "default": true,
+          "description": "是否在课程章节页开启段落划线标注（默认 `true`）。",
+          "type": "boolean"
+        },
+        "doc": {
+          "default": true,
+          "description": "是否在文档详情页开启段落划线标注（默认 `true`）。",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "AnnouncementSettings": {
+      "description": "顶部可关闭公告条配置（常用于版本发布或活动提示）。",
+      "properties": {
+        "href": {
+          "default": null,
+          "description": "点击公告条跳转链接（支持站内路由如 `\"/docs/guide\"` 或外部 URL）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "default": "",
+          "description": "公告唯一标识（访客关闭后以 `dp_ann_{id}` 写入 `localStorage`；变更 `id` 会重新展示）。",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "description": "公告正文（中文或单语默认文本；为空时不渲染公告条）。",
+          "type": "string"
+        },
+        "text_en": {
+          "default": null,
+          "description": "公告正文英文覆盖（可选；未配置时回退到 `text`）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AuthSettings": {
+      "description": "OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应 `*_CLIENT_ID` / `*_CLIENT_SECRET` 环境变量）。",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "是否开启用户登录入口。",
+          "type": "boolean"
+        },
+        "providers": {
+          "default": [],
+          "description": "启用的内置 provider id（`\"github\"` / `\"google\"` / `\"discord\"` / `\"twitter\"`），按登录弹窗显示顺序排列。",
+          "items": {
+            "enum": [
+              "github",
+              "google",
+              "discord",
+              "twitter"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "FeatureItem": {
+      "description": "开源项目首页特性卡片（`active_layout = \"docs\"` 时渲染为 3 列栅格）。",
+      "properties": {
+        "description": {
+          "default": "",
+          "description": "特性详细说明（中文或默认语言）。",
+          "type": "string"
+        },
+        "description_en": {
+          "default": null,
+          "description": "特性详细说明（英文覆盖）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "href": {
+          "default": null,
+          "description": "点击卡片跳转的目标路由或外链（可选）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icon": {
+          "default": "",
+          "description": "图标标识（支持内置 `\"bolt\"` / `\"book\"` / `\"layers\"` / `\"search\"` / `\"shield\"` / `\"palette\"` 或短字符）。",
+          "type": "string"
+        },
+        "title": {
+          "description": "特性标题（中文或默认语言）。",
+          "type": "string"
+        },
+        "title_en": {
+          "default": null,
+          "description": "特性标题（英文覆盖）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "FooterColumn": {
+      "description": "多列结构化页脚单列配置。",
+      "properties": {
+        "links": {
+          "default": [],
+          "description": "该列包含的导航或外部链接列表。",
+          "items": {
+            "$ref": "#/$defs/FooterLink"
+          },
+          "type": "array"
+        },
+        "title": {
+          "description": "列分组标题（中文或默认语言）。",
+          "type": "string"
+        },
+        "title_en": {
+          "default": null,
+          "description": "列分组标题（英文覆盖）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "FooterLink": {
+      "description": "多列页脚中的单条内外链。",
+      "properties": {
+        "href": {
+          "description": "跳转目标（以 `\"/\"` 开头走 SPA 站内路由，以 `\"http\"` 开头作为新标签外链打开）。",
+          "type": "string"
+        },
+        "label": {
+          "description": "链接显示名称（中文或默认语言）。",
+          "type": "string"
+        },
+        "label_en": {
+          "default": null,
+          "description": "链接显示名称（英文覆盖）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "label",
+        "href"
+      ],
+      "type": "object"
+    },
+    "FooterSettings": {
+      "description": "页脚自定义信息（口号、版权、备案号、社交链接、多列分组）。",
+      "properties": {
+        "columns": {
+          "default": [],
+          "description": "类 Docusaurus 多列页脚链接分组（非空时在 `DocsShell` 中优先渲染）。",
+          "items": {
+            "$ref": "#/$defs/FooterColumn"
+          },
+          "type": "array"
+        },
+        "copyright": {
+          "default": null,
+          "description": "版权声明文本（如 `\"2024–2026 Rust in Everything\"`）；未配置时回退到 `site_name`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icp": {
+          "default": null,
+          "description": "ICP 备案号（如 `\"京ICP备xxxxxxxx号\"`）；为空时不渲染备案链接。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icp_url": {
+          "default": null,
+          "description": "备案跳转链接（默认 `\"https://beian.miit.gov.cn/\"`）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "social": {
+          "default": [],
+          "description": "页脚「社区」栏展示的外部社交链接（GitHub / X / Discord 等）。",
+          "items": {
+            "$ref": "#/$defs/SocialLink"
+          },
+          "type": "array"
+        },
+        "tagline": {
+          "default": null,
+          "description": "页脚口号（中文）；未配置时回退到 `i18n` 的 `footer.tagline`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tagline_en": {
+          "default": null,
+          "description": "页脚口号（英文）；未配置时回退到 `i18n` 的 `footer.tagline`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "HeroSettings": {
+      "description": "首页 Hero 区域自定义文案（留空时回退到 `i18n` 的 `hero.title` / `hero.subtitle`）。",
+      "properties": {
+        "badge": {
+          "default": null,
+          "description": "首页主标题上方的胶囊徽章文案（中文）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "badge_en": {
+          "default": null,
+          "description": "首页主标题上方的胶囊徽章文案（英文覆盖）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "install_command": {
+          "default": null,
+          "description": "开源项目首页一键复制终端命令（如 `\"git clone ...\"` 或 `\"cargo add ...\"`）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "primary_cta_href": {
+          "default": null,
+          "description": "主行动按钮跳转路径或 URL（留空时不展示主按钮）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "primary_cta_text": {
+          "default": null,
+          "description": "主行动按钮文案（中文）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "primary_cta_text_en": {
+          "default": null,
+          "description": "主行动按钮文案（英文覆盖）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secondary_cta_href": {
+          "default": null,
+          "description": "次行动按钮跳转路径或 URL（留空时不展示次按钮）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secondary_cta_text": {
+          "default": null,
+          "description": "次行动按钮文案（中文）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secondary_cta_text_en": {
+          "default": null,
+          "description": "次行动按钮文案（英文覆盖）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subtitle": {
+          "default": null,
+          "description": "首页 Hero 副标题描述（中文）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subtitle_en": {
+          "default": null,
+          "description": "首页 Hero 副标题描述（英文覆盖）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "default": null,
+          "description": "首页 Hero 主标题（中文）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title_en": {
+          "default": null,
+          "description": "首页 Hero 主标题（英文覆盖）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "LlmFailureAction": {
+      "description": "LLM 审核失败时的处理（SEC-12：不再放行）。没有「放行」选项：\n开了 LLM 审核却在审核失败时放行，等于攻击者把审核打挂就能绕过。",
+      "oneOf": [
+        {
+          "const": "review",
+          "description": "记为 Flag：先不公开，进审核队列等管理员通过后显示。",
+          "type": "string"
+        },
+        {
+          "const": "reject",
+          "description": "记为 Block：拒绝提交，提示用户稍后再试。",
+          "type": "string"
+        }
+      ]
+    },
+    "ModerationSettings": {
+      "description": "审核功能在 site.json 中的配置块。**默认 disabled**，意味着评论 / 话题 /\n标注的提交路径不会调用任何 LLM。",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "总开关。默认 `false`。",
+          "type": "boolean"
+        },
+        "llm_review": {
+          "default": false,
+          "description": "是否让 LLM 审核（内置 stage，见 `module_moderation::LlmModerationStage`）。\n还需配置 LLM 环境变量（`OPENAI_LLM_*` / `ANTHROPIC_LLM_*`），未配置时跳过。",
+          "type": "boolean"
+        },
+        "on_llm_failure": {
+          "$ref": "#/$defs/LlmFailureAction",
+          "default": "review",
+          "description": "LLM 调用失败 / 回复无法解析时怎么处理这条提交。默认送人工复核。"
+        },
+        "thresholds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModerationThresholdsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "可选：覆盖默认阈值（block_above = 0.9 / flag_above = 0.5）。\n留空表示用默认。"
+        },
+        "url_blocklist": {
+          "default": [],
+          "description": "URL 域名黑名单。命中即 Block（score=1.0），不走 LLM。\n匹配规则（不区分大小写）：\n- 精确：`\"scam.com\"` 只匹配 host = `scam.com`\n- 通配：`\"*.phishing.example\"` 匹配 `sub.phishing.example` 与\n  `phishing.example` 本身\n\n默认空 → 该 stage 不注册，零开销。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ModerationThresholdsConfig": {
+      "description": "`ModerationSettings::thresholds` 的可选覆盖。字段缺失时不影响其它字段。",
+      "properties": {
+        "block_above": {
+          "description": "风险分高于该阈值直接拦截（范围 `0.0..=1.0`，默认 `0.9`）。",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "flag_above": {
+          "description": "风险分高于该阈值进入人工审核队列（范围 `0.0..=1.0`，默认 `0.5`）。",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ModuleSettings": {
+      "description": "模块在 `site.json::modules.<id>` 中的启用开关。",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "是否启用该模块（设为 `false` 时隐藏导航入口、拦截对应路由并从 Sitemap / RSS 移除）。默认 `true`。",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "NavItem": {
+      "description": "自定义导航栏条目。",
+      "properties": {
+        "key": {
+          "description": "国际化词条 key 或字面显示文本。",
+          "type": "string"
+        },
+        "route": {
+          "description": "点击跳转路由路径（如 `\"/docs\"`）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "route"
+      ],
+      "type": "object"
+    },
+    "SocialLink": {
+      "description": "页脚外部社交或社区链接。",
+      "properties": {
+        "label": {
+          "description": "平台名称（如 `\"GitHub\"`、`\"Discord\"`；包含 `\"GitHub\"` 时会自动提取为文档顶栏仓库图标链接）。",
+          "type": "string"
+        },
+        "url": {
+          "description": "完整外部链接地址。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://dioxuspress.dev/schemas/site.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "DioxusPress 站点级非敏感配置文件（`assets/site.json`）根结构。",
+  "properties": {
+    "$schema": {
+      "description": "JSON Schema URI（用于 VS Code / Zed 等编辑器的字段悬停说明与自动补全）。",
+      "type": "string"
+    },
+    "active_layout": {
+      "default": "classic",
+      "description": "当前生效布局：`\"classic\"`（默认门户）、`\"docs\"`（类 Docusaurus 文档站）或 `\"minimal\"`（极简阅读条）。",
+      "enum": [
+        "classic",
+        "docs",
+        "minimal"
+      ],
+      "type": "string"
+    },
+    "annotations": {
+      "$ref": "#/$defs/AnnotationsSettings",
+      "default": {
+        "blog": false,
+        "course": true,
+        "doc": true
+      },
+      "description": "段落标注（Annotation）按资源类型的启用开关。"
+    },
+    "announcement": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnnouncementSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "顶部可关闭公告条配置（留空时不展示）。"
+    },
+    "apple_touch_icon": {
+      "default": null,
+      "description": "iOS 主屏图标路径（可选，如 `\"/images/apple-touch-icon.png\"`）。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth": {
+      "$ref": "#/$defs/AuthSettings",
+      "default": {
+        "enabled": false,
+        "providers": []
+      },
+      "description": "OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应环境变量凭据）。"
+    },
+    "author": {
+      "default": "",
+      "description": "站点默认作者署名（如 `\"yuxuetr\"`）。",
+      "type": "string"
+    },
+    "default_language": {
+      "default": "zh",
+      "description": "默认界面语言：`\"zh\"`（默认）或 `\"en\"`。无 `?lang=` 与 `site_lang` cookie 时生效。",
+      "enum": [
+        "zh",
+        "en"
+      ],
+      "type": "string"
+    },
+    "docs_edit_url_base": {
+      "default": null,
+      "description": "文档页底部「在 GitHub 上编辑此页」链接前缀（如 `\"https://github.com/org/repo/edit/main/assets/docs\"`）。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "favicon": {
+      "default": "/images/favicon.ico",
+      "description": "站点图标路径（如 `\"/images/favicon.ico\"` 或 `\"/images/favicon.svg\"`）。",
+      "type": "string"
+    },
+    "favicon_16": {
+      "default": null,
+      "description": "16×16 PNG 浏览器图标路径（可选，如 `\"/images/favicon-16.png\"`）。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "favicon_32": {
+      "default": null,
+      "description": "32×32 PNG 浏览器图标路径（可选，如 `\"/images/favicon-32.png\"`）。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "features": {
+      "default": [],
+      "description": "开源项目首页（`active_layout = \"docs\"`）特性展示卡片列表。",
+      "items": {
+        "$ref": "#/$defs/FeatureItem"
+      },
+      "type": "array"
+    },
+    "footer": {
+      "$ref": "#/$defs/FooterSettings",
+      "default": {
+        "columns": [],
+        "copyright": null,
+        "icp": null,
+        "icp_url": null,
+        "social": [],
+        "tagline": null,
+        "tagline_en": null
+      },
+      "description": "页脚口号、版权、ICP 备案号与外部社交链接。"
+    },
+    "hero": {
+      "$ref": "#/$defs/HeroSettings",
+      "default": {
+        "badge": null,
+        "badge_en": null,
+        "install_command": null,
+        "primary_cta_href": null,
+        "primary_cta_text": null,
+        "primary_cta_text_en": null,
+        "secondary_cta_href": null,
+        "secondary_cta_text": null,
+        "secondary_cta_text_en": null,
+        "subtitle": null,
+        "subtitle_en": null,
+        "title": null,
+        "title_en": null
+      },
+      "description": "首页 Hero 区域自定义文案（留空时回退到 `assets/i18n/{zh,en}.ftl` 的 `hero.*`）。"
+    },
+    "logo": {
+      "default": null,
+      "description": "顶栏浅色/默认 Logo 图片路径（可选，如 `\"/images/logo-light.png\"`；留空则仅显示文字站名）。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "logo_dark": {
+      "default": null,
+      "description": "顶栏深色模式 Logo 图片路径（可选，如 `\"/images/logo-dark.png\"`；未配置时复用 `logo`）。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "logo_mobile": {
+      "default": null,
+      "description": "紧凑顶栏 / 窄屏独立品牌图标路径（可选，如 `\"/images/logo-mobile.png\"`）。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "logo_wordmark": {
+      "default": false,
+      "description": "`logo` / `logo_dark` 是否已内含站名文字（为 `true` 时横版 Logo 旁不再重复渲染文字站名）。",
+      "type": "boolean"
+    },
+    "manifest": {
+      "default": null,
+      "description": "Web App Manifest 路径（可选，如 `\"/images/site.webmanifest\"`）。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "moderation": {
+      "$ref": "#/$defs/ModerationSettings",
+      "default": {
+        "enabled": false,
+        "llm_review": false,
+        "on_llm_failure": "review",
+        "thresholds": null,
+        "url_blocklist": []
+      },
+      "description": "Phase 4.3：审核配置（独立于通用 `modules` 开关，因为还有 LLM 开关、\n阈值与链接黑名单）。\n默认 disabled → 整条流水线为空，提交直接通过，不调 LLM。\n由 `crates/modules/moderation::ModerationPipeline::from_site_config`\n读取并装载。"
+    },
+    "modules": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ModuleSettings"
+      },
+      "default": {},
+      "description": "模块开关：key = ModuleSpec.id，value = `{ enabled: true|false }`。\n`ModuleEngine::init` 读取该字段覆盖默认 enabled 状态。",
+      "type": "object"
+    },
+    "navigation": {
+      "default": [],
+      "description": "传统导航项配置（兼容旧版布局；当前主导航主要由 `modules` 控制）。",
+      "items": {
+        "$ref": "#/$defs/NavItem"
+      },
+      "type": "array"
+    },
+    "og_image": {
+      "default": "/images/og-default.jpg",
+      "description": "默认 Open Graph / Twitter 分享图路径（默认 `\"/images/og-default.jpg\"`）。",
+      "type": "string"
+    },
+    "site_description": {
+      "default": "",
+      "description": "站点一句话描述（注入首页默认 `<meta name=\"description\">` 与 RSS `<description>`）。",
+      "type": "string"
+    },
+    "site_name": {
+      "default": "DioxusPress",
+      "description": "站点名称（用于浏览器标题后缀、顶栏纯文字站名与页脚默认版权主体；留空回退 `\"DioxusPress\"`）。",
+      "type": "string"
+    },
+    "submit_case_url": {
+      "default": null,
+      "description": "案例页「提交案例」按钮外链（留空则隐藏提交按钮）。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "theme": {
+      "default": "ocean",
+      "description": "默认主题 id（见 [`crate::engines::theme::THEMES`]）；访客可用 cookie 覆盖。",
+      "enum": [
+        "ocean",
+        "sunset",
+        "catppuccin"
+      ],
+      "type": "string"
+    },
+    "twitter_handle": {
+      "default": null,
+      "description": "可选 X / Twitter 账号（如 `\"@yuxuetr\"`），非空时注入 `<meta name=\"twitter:site\">`。",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "SiteConfig",
+  "type": "object"
+}

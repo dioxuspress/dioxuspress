@@ -27,3 +27,4 @@ keywords: [Git 写作, MDX 渲染, 三级文档树, 博客系统, 课程系统]
 - **[博客与作者系统](/docs/content/blog)**：发布文章、配置多作者头像与社交资料。
 - **[实战课程模块](/docs/content/courses)**：编排免费与付费课节。
 - **[案例展示与播客](/docs/content/cases-and-podcast)**：搭建开源项目展示墙与技术播客专栏。
+- **[Frontmatter 字段字典](/docs/content/frontmatter-reference)**：五大内容模块全部 YAML 元数据字段与默认值速查。

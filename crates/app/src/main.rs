@@ -485,6 +485,12 @@ fn main() {
     let assets_root: &'static str = ASSETS_ROOT.get_or_init(|| {
       Box::leak(app_core::utils::get_asset_root().to_string_lossy().into_owned().into_boxed_str())
     });
+    let content_dir_opt =
+      std::env::var_os("CONTENT_DIR").filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    app_core::settings::log_startup_diagnostics(
+      std::path::Path::new(assets_root),
+      content_dir_opt.as_deref(),
+    );
 
     // S7（风险 R8）：router 组装拆到 server 子模块，main.rs 只留引导。
     // auth / pay / 静态资源 / SEO 各自一个 mount 函数，行为与拆分前一致。

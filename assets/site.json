@@ -1,4 +1,5 @@
 {
+  "$schema": "https://dioxuspress.dev/schemas/site.schema.json",
   "site_name": "DioxusPress",
   "site_description": "基于 Dioxus 0.7 的纯 Rust 全栈文档、博客、课程与社区引擎",
   "author": "yuxuetr",

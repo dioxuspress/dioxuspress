@@ -15,11 +15,13 @@ keywords: [知识付费, 课程模块, 付费墙鉴权, Pro 会员, 课节编排
 ```text
 assets/courses/
 └── rust-fullstack-in-action/
-    ├── course.yaml             # 课程级元数据：标题、定价、难度、简介、讲师
+    ├── course.yaml             # 课程级元数据：标题、定价（分）、难度、简介、access_tier
     ├── 01-foundations/
-    │   ├── chapter.yaml        # 章节标题与排序
-    │   ├── 01-setup.mdx        # 免费试读课节（free: true）
-    │   └── 02-ssr-hydration.mdx# 付费课节（free: false，服务端严格拦截未授权读取）
+    │   ├── _chapter.yaml       # 章节标题、简介与 order 排序
+    │   ├── 01-setup/
+    │   │   └── index.mdx       # 免费试读课节（Frontmatter 设 preview: true）
+    │   └── 02-ssr-hydration/
+    │       └── index.mdx       # 付费课节（preview: false，服务端严格拦截未授权读取）
     └── 02-production/
         └── ...
 ```
@@ -28,7 +30,7 @@ assets/courses/
 
 与纯静态站点只能靠前端 CSS 隐藏正文不同，DioxusPress 的课节内容读取完全在 Axum 服务端校验用户会话与数据库权益表（`user_course_entitlements` / Pro 会员有效期）：
 
-- **免费课节（`free: true`）**：未登录访客与搜索引擎爬虫均可完整阅读，承担自然流量获客入口；
-- **付费课节（`free: false`）**：未解锁用户调用接口时，服务端仅返回课程大纲元信息与购买引导，**绝不下发受保护的 Markdown 原文或课程静态附件**。
+- **免费试读课节（`preview: true`）**：未登录访客与搜索引擎爬虫均可完整阅读，承担自然流量获客入口；
+- **受保护课节（未设或 `preview: false`）**：未解锁用户调用接口时，服务端仅返回课程大纲元信息与购买引导，**绝不下发受保护的 Markdown 原文或课程静态附件**。
 
-管理员既可在 `/admin/entitlements` 后台手动为学员开通单课或 Pro 会员（`course` 档位），也可开启 `payments` 档位接入微信支付与支付宝实现自动回调发货。
+完整 `course.yaml`、`_chapter.yaml` 与课节 Frontmatter 字段定义请参见 [Frontmatter 字段字典](/docs/content/frontmatter-reference)。管理员既可在 `/admin/entitlements` 后台手动为学员开通单课或 Pro 会员（`course` 档位），也可开启 `payments` 档位接入微信支付、支付宝与 Stripe 实现自动回调发货。

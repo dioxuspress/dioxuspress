@@ -49,10 +49,17 @@ fn non_empty_str(opt: Option<&str>) -> Option<&str> {
   opt.map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// 官方 `site.json` JSON Schema 在线地址（用于 IDE 自动补全与字段校验）。
+pub const SITE_SCHEMA_URL: &str = "https://dioxuspress.dev/schemas/site.schema.json";
+
+/// DioxusPress 站点级非敏感配置文件（`assets/site.json`）根结构。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SiteConfig {
+  /// 站点名称（用于浏览器标题后缀、顶栏纯文字站名与页脚默认版权主体；留空回退 `"DioxusPress"`）。
   #[serde(default = "default_site_name")]
   pub site_name: String,
+  /// 站点一句话描述（注入首页默认 `<meta name="description">` 与 RSS `<description>`）。
   #[serde(default)]
   pub site_description: String,
   /// 默认主题 id（见 [`crate::engines::theme::THEMES`]）；访客可用 cookie 覆盖。
@@ -64,6 +71,7 @@ pub struct SiteConfig {
   /// 默认界面语言：`"zh"`（默认）或 `"en"`。无 `?lang=` 与 `site_lang` cookie 时生效。
   #[serde(default = "default_language")]
   pub default_language: String,
+  /// 站点默认作者署名（如 `"yuxuetr"`）。
   #[serde(default)]
   pub author: String,
   /// 站点图标路径（如 `"/images/favicon.ico"` 或 `"/images/favicon.svg"`）。
@@ -120,8 +128,10 @@ pub struct SiteConfig {
   /// 段落标注（Annotation）按资源类型的启用开关。
   #[serde(default)]
   pub annotations: AnnotationsSettings,
+  /// 传统导航项配置（兼容旧版布局；当前主导航主要由 `modules` 控制）。
   #[serde(default)]
   pub navigation: Vec<NavItem>,
+  /// OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应环境变量凭据）。
   #[serde(default)]
   pub auth: AuthSettings,
   /// 模块开关：key = ModuleSpec.id，value = `{ enabled: true|false }`。
@@ -139,14 +149,18 @@ pub struct SiteConfig {
 
 /// 顶部可关闭公告条配置（常用于版本发布或活动提示）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AnnouncementSettings {
   /// 公告唯一标识（访客关闭后以 `dp_ann_{id}` 写入 `localStorage`；变更 `id` 会重新展示）。
   #[serde(default)]
   pub id: String,
+  /// 公告正文（中文或单语默认文本；为空时不渲染公告条）。
   #[serde(default)]
   pub text: String,
+  /// 公告正文英文覆盖（可选；未配置时回退到 `text`）。
   #[serde(default)]
   pub text_en: Option<String>,
+  /// 点击公告条跳转链接（支持站内路由如 `"/docs/guide"` 或外部 URL）。
   #[serde(default)]
   pub href: Option<String>,
 }
@@ -176,49 +190,68 @@ impl AnnouncementSettings {
 
 /// 首页 Hero 区域自定义文案（留空时回退到 `i18n` 的 `hero.title` / `hero.subtitle`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct HeroSettings {
+  /// 首页主标题上方的胶囊徽章文案（中文）。
   #[serde(default)]
   pub badge: Option<String>,
+  /// 首页主标题上方的胶囊徽章文案（英文覆盖）。
   #[serde(default)]
   pub badge_en: Option<String>,
+  /// 首页 Hero 主标题（中文）。
   #[serde(default)]
   pub title: Option<String>,
+  /// 首页 Hero 主标题（英文覆盖）。
   #[serde(default)]
   pub title_en: Option<String>,
+  /// 首页 Hero 副标题描述（中文）。
   #[serde(default)]
   pub subtitle: Option<String>,
+  /// 首页 Hero 副标题描述（英文覆盖）。
   #[serde(default)]
   pub subtitle_en: Option<String>,
   /// 开源项目首页一键复制终端命令（如 `"git clone ..."` 或 `"cargo add ..."`）。
   #[serde(default)]
   pub install_command: Option<String>,
+  /// 主行动按钮文案（中文）。
   #[serde(default)]
   pub primary_cta_text: Option<String>,
+  /// 主行动按钮文案（英文覆盖）。
   #[serde(default)]
   pub primary_cta_text_en: Option<String>,
+  /// 主行动按钮跳转路径或 URL（留空时不展示主按钮）。
   #[serde(default)]
   pub primary_cta_href: Option<String>,
+  /// 次行动按钮文案（中文）。
   #[serde(default)]
   pub secondary_cta_text: Option<String>,
+  /// 次行动按钮文案（英文覆盖）。
   #[serde(default)]
   pub secondary_cta_text_en: Option<String>,
+  /// 次行动按钮跳转路径或 URL（留空时不展示次按钮）。
   #[serde(default)]
   pub secondary_cta_href: Option<String>,
 }
 
 /// 开源项目首页特性卡片（`active_layout = "docs"` 时渲染为 3 列栅格）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FeatureItem {
   /// 图标标识（支持内置 `"bolt"` / `"book"` / `"layers"` / `"search"` / `"shield"` / `"palette"` 或短字符）。
   #[serde(default)]
   pub icon: String,
+  /// 特性标题（中文或默认语言）。
   pub title: String,
+  /// 特性标题（英文覆盖）。
   #[serde(default)]
   pub title_en: Option<String>,
+  /// 特性详细说明（中文或默认语言）。
   #[serde(default)]
   pub description: String,
+  /// 特性详细说明（英文覆盖）。
   #[serde(default)]
   pub description_en: Option<String>,
+  /// 点击卡片跳转的目标路由或外链（可选）。
   #[serde(default)]
   pub href: Option<String>,
 }
@@ -245,6 +278,7 @@ impl FeatureItem {
 
 /// 页脚自定义信息（口号、版权、备案号、社交链接、多列分组）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FooterSettings {
   /// 页脚口号（中文）；未配置时回退到 `i18n` 的 `footer.tagline`。
   #[serde(default)]
@@ -271,10 +305,14 @@ pub struct FooterSettings {
 
 /// 多列结构化页脚单列配置。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FooterColumn {
+  /// 列分组标题（中文或默认语言）。
   pub title: String,
+  /// 列分组标题（英文覆盖）。
   #[serde(default)]
   pub title_en: Option<String>,
+  /// 该列包含的导航或外部链接列表。
   #[serde(default)]
   pub links: Vec<FooterLink>,
 }
@@ -290,10 +328,14 @@ impl FooterColumn {
 
 /// 多列页脚中的单条内外链。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct FooterLink {
+  /// 链接显示名称（中文或默认语言）。
   pub label: String,
+  /// 链接显示名称（英文覆盖）。
   #[serde(default)]
   pub label_en: Option<String>,
+  /// 跳转目标（以 `"/"` 开头走 SPA 站内路由，以 `"http"` 开头作为新标签外链打开）。
   pub href: String,
 }
 
@@ -308,18 +350,25 @@ impl FooterLink {
 
 /// 页脚外部社交或社区链接。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct SocialLink {
+  /// 平台名称（如 `"GitHub"`、`"Discord"`；包含 `"GitHub"` 时会自动提取为文档顶栏仓库图标链接）。
   pub label: String,
+  /// 完整外部链接地址。
   pub url: String,
 }
 
-/// 段落标注（Annotation）按资源类型的启用开关。
+/// 段落标注（Annotation）按资源类型的启用开关（需 `accounts` 特性档位）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AnnotationsSettings {
+  /// 是否在课程章节页开启段落划线标注（默认 `true`）。
   #[serde(default = "default_true")]
   pub course: bool,
+  /// 是否在文档详情页开启段落划线标注（默认 `true`）。
   #[serde(default = "default_true")]
   pub doc: bool,
+  /// 是否在博客文章页开启段落划线标注（默认 `false`）。
   #[serde(default)]
   pub blog: bool,
 }
@@ -345,6 +394,7 @@ impl AnnotationsSettings {
 /// 审核功能在 site.json 中的配置块。**默认 disabled**，意味着评论 / 话题 /
 /// 标注的提交路径不会调用任何 LLM。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ModerationSettings {
   /// 总开关。默认 `false`。
   #[serde(default)]
@@ -374,6 +424,7 @@ pub struct ModerationSettings {
 /// LLM 审核失败时的处理（SEC-12：不再放行）。没有「放行」选项：
 /// 开了 LLM 审核却在审核失败时放行，等于攻击者把审核打挂就能绕过。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum LlmFailureAction {
   /// 记为 Flag：先不公开，进审核队列等管理员通过后显示。
@@ -385,22 +436,33 @@ pub enum LlmFailureAction {
 
 /// `ModerationSettings::thresholds` 的可选覆盖。字段缺失时不影响其它字段。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct ModerationThresholdsConfig {
+  /// 风险分高于该阈值直接拦截（范围 `0.0..=1.0`，默认 `0.9`）。
   pub block_above: Option<f32>,
+  /// 风险分高于该阈值进入人工审核队列（范围 `0.0..=1.0`，默认 `0.5`）。
   pub flag_above: Option<f32>,
 }
 
+/// 自定义导航栏条目。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct NavItem {
+  /// 国际化词条 key 或字面显示文本。
   pub key: String,
+  /// 点击跳转路由路径（如 `"/docs"`）。
   pub route: String,
 }
 
-/// 授权登录配置
+/// OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应 `*_CLIENT_ID` / `*_CLIENT_SECRET` 环境变量）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct AuthSettings {
+  /// 是否开启用户登录入口。
+  #[serde(default)]
   pub enabled: bool,
-  /// 启用的内置 provider id（见 [`crate::auth::Provider`]），按登录弹窗显示顺序。
+  /// 启用的内置 provider id（`"github"` / `"google"` / `"discord"` / `"twitter"`），按登录弹窗显示顺序排列。
+  #[serde(default)]
   pub providers: Vec<String>,
 }
 
@@ -638,6 +700,321 @@ impl SiteConfig {
       DEFAULT_LAYOUT
     } else {
       self.active_layout.as_str()
+    }
+  }
+}
+
+/// `site.json` 静态体检告警项（纯数据返回，便于单测与后续 CLI 复用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigDiagnostic {
+  /// JSON 字段路径（如 `"layout"`、`"hero.titel"`、`"logo"`）。
+  pub field: String,
+  /// 排障说明文案。
+  pub message: String,
+}
+
+const KNOWN_ROOT_KEYS: &[&str] = &[
+  "$schema",
+  "site_name",
+  "site_description",
+  "theme",
+  "active_layout",
+  "default_language",
+  "author",
+  "favicon",
+  "favicon_16",
+  "favicon_32",
+  "apple_touch_icon",
+  "manifest",
+  "logo",
+  "logo_dark",
+  "logo_mobile",
+  "logo_wordmark",
+  "og_image",
+  "twitter_handle",
+  "submit_case_url",
+  "docs_edit_url_base",
+  "announcement",
+  "hero",
+  "features",
+  "footer",
+  "annotations",
+  "navigation",
+  "auth",
+  "modules",
+  "moderation",
+];
+
+const KNOWN_ANNOUNCEMENT_KEYS: &[&str] = &["id", "text", "text_en", "href"];
+const KNOWN_HERO_KEYS: &[&str] = &[
+  "badge",
+  "badge_en",
+  "title",
+  "title_en",
+  "subtitle",
+  "subtitle_en",
+  "install_command",
+  "primary_cta_text",
+  "primary_cta_text_en",
+  "primary_cta_href",
+  "secondary_cta_text",
+  "secondary_cta_text_en",
+  "secondary_cta_href",
+];
+const KNOWN_FEATURE_KEYS: &[&str] =
+  &["icon", "title", "title_en", "description", "description_en", "href"];
+const KNOWN_FOOTER_KEYS: &[&str] =
+  &["tagline", "tagline_en", "copyright", "icp", "icp_url", "social", "columns"];
+const KNOWN_SOCIAL_KEYS: &[&str] = &["label", "url"];
+const KNOWN_FOOTER_COL_KEYS: &[&str] = &["title", "title_en", "links"];
+const KNOWN_FOOTER_LINK_KEYS: &[&str] = &["label", "label_en", "href"];
+const KNOWN_ANNOTATIONS_KEYS: &[&str] = &["course", "doc", "blog"];
+const KNOWN_NAV_KEYS: &[&str] = &["key", "route"];
+const KNOWN_AUTH_KEYS: &[&str] = &["enabled", "providers"];
+const KNOWN_MODULE_KEYS: &[&str] = &["enabled"];
+const KNOWN_MODERATION_KEYS: &[&str] =
+  &["enabled", "llm_review", "on_llm_failure", "thresholds", "url_blocklist"];
+const KNOWN_THRESHOLDS_KEYS: &[&str] = &["block_above", "flag_above"];
+
+fn check_object_keys(
+  obj: &serde_json::Map<String, serde_json::Value>,
+  prefix: &str,
+  known: &[&str],
+  out: &mut Vec<ConfigDiagnostic>,
+) {
+  for key in obj.keys() {
+    if !known.contains(&key.as_str()) {
+      let field = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+      out.push(ConfigDiagnostic {
+        field,
+        message: "unknown field in site.json (ignored; check for typos)".to_string(),
+      });
+    }
+  }
+}
+
+/// 诊断一份 `site.json` 原始文本：检查未知/拼写错误字段、非法枚举值及缺失的本地 `/images/*` 资产。
+pub fn diagnose_site_json(
+  raw_json: &str,
+  asset_root: Option<&std::path::Path>,
+  content_root: Option<&std::path::Path>,
+) -> Vec<ConfigDiagnostic> {
+  let mut diags = Vec::new();
+  let val: serde_json::Value = match serde_json::from_str(raw_json) {
+    Ok(v) => v,
+    Err(err) => {
+      diags.push(ConfigDiagnostic {
+        field: "<root>".to_string(),
+        message: format!("invalid JSON syntax: {err}"),
+      });
+      return diags;
+    }
+  };
+
+  let Some(root_obj) = val.as_object() else {
+    diags.push(ConfigDiagnostic {
+      field: "<root>".to_string(),
+      message: "site.json root must be a JSON object".to_string(),
+    });
+    return diags;
+  };
+
+  check_object_keys(root_obj, "", KNOWN_ROOT_KEYS, &mut diags);
+
+  if let Some(ann) = root_obj.get("announcement").and_then(|v| v.as_object()) {
+    check_object_keys(ann, "announcement", KNOWN_ANNOUNCEMENT_KEYS, &mut diags);
+  }
+  if let Some(hero) = root_obj.get("hero").and_then(|v| v.as_object()) {
+    check_object_keys(hero, "hero", KNOWN_HERO_KEYS, &mut diags);
+  }
+  if let Some(features) = root_obj.get("features").and_then(|v| v.as_array()) {
+    for (idx, item) in features.iter().enumerate() {
+      if let Some(obj) = item.as_object() {
+        check_object_keys(obj, &format!("features[{idx}]"), KNOWN_FEATURE_KEYS, &mut diags);
+      }
+    }
+  }
+  if let Some(footer) = root_obj.get("footer").and_then(|v| v.as_object()) {
+    check_object_keys(footer, "footer", KNOWN_FOOTER_KEYS, &mut diags);
+    if let Some(social) = footer.get("social").and_then(|v| v.as_array()) {
+      for (idx, item) in social.iter().enumerate() {
+        if let Some(obj) = item.as_object() {
+          check_object_keys(obj, &format!("footer.social[{idx}]"), KNOWN_SOCIAL_KEYS, &mut diags);
+        }
+      }
+    }
+    if let Some(cols) = footer.get("columns").and_then(|v| v.as_array()) {
+      for (c_idx, col) in cols.iter().enumerate() {
+        if let Some(col_obj) = col.as_object() {
+          check_object_keys(
+            col_obj,
+            &format!("footer.columns[{c_idx}]"),
+            KNOWN_FOOTER_COL_KEYS,
+            &mut diags,
+          );
+          if let Some(links) = col_obj.get("links").and_then(|v| v.as_array()) {
+            for (l_idx, link) in links.iter().enumerate() {
+              if let Some(l_obj) = link.as_object() {
+                check_object_keys(
+                  l_obj,
+                  &format!("footer.columns[{c_idx}].links[{l_idx}]"),
+                  KNOWN_FOOTER_LINK_KEYS,
+                  &mut diags,
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  if let Some(ann_cfg) = root_obj.get("annotations").and_then(|v| v.as_object()) {
+    check_object_keys(ann_cfg, "annotations", KNOWN_ANNOTATIONS_KEYS, &mut diags);
+  }
+  if let Some(nav) = root_obj.get("navigation").and_then(|v| v.as_array()) {
+    for (idx, item) in nav.iter().enumerate() {
+      if let Some(obj) = item.as_object() {
+        check_object_keys(obj, &format!("navigation[{idx}]"), KNOWN_NAV_KEYS, &mut diags);
+      }
+    }
+  }
+  if let Some(auth) = root_obj.get("auth").and_then(|v| v.as_object()) {
+    check_object_keys(auth, "auth", KNOWN_AUTH_KEYS, &mut diags);
+  }
+  if let Some(modules) = root_obj.get("modules").and_then(|v| v.as_object()) {
+    for (mod_id, mod_val) in modules {
+      if let Some(mod_obj) = mod_val.as_object() {
+        check_object_keys(mod_obj, &format!("modules.{mod_id}"), KNOWN_MODULE_KEYS, &mut diags);
+      }
+    }
+  }
+  if let Some(moderation) = root_obj.get("moderation").and_then(|v| v.as_object()) {
+    check_object_keys(moderation, "moderation", KNOWN_MODERATION_KEYS, &mut diags);
+    if let Some(th) = moderation.get("thresholds").and_then(|v| v.as_object()) {
+      check_object_keys(th, "moderation.thresholds", KNOWN_THRESHOLDS_KEYS, &mut diags);
+    }
+  }
+
+  let cfg: SiteConfig = match serde_json::from_value(val) {
+    Ok(c) => c,
+    Err(err) => {
+      diags.push(ConfigDiagnostic {
+        field: "<schema>".to_string(),
+        message: format!("type mismatch against SiteConfig: {err}"),
+      });
+      return diags;
+    }
+  };
+
+  let layout = cfg.active_layout.trim();
+  if !layout.is_empty() && !matches!(layout, "classic" | "docs" | "minimal") {
+    diags.push(ConfigDiagnostic {
+      field: "active_layout".to_string(),
+      message: format!(
+        "unknown layout {layout:?} (expected \"classic\", \"docs\", or \"minimal\")"
+      ),
+    });
+  }
+
+  let lang = cfg.default_language.trim();
+  if !lang.is_empty() && !lang.eq_ignore_ascii_case("zh") && !lang.eq_ignore_ascii_case("en") {
+    diags.push(ConfigDiagnostic {
+      field: "default_language".to_string(),
+      message: format!(
+        "unknown language {lang:?} (expected \"zh\" or \"en\"; falling back to \"zh\")"
+      ),
+    });
+  }
+
+  let theme = cfg.theme.trim();
+  if !theme.is_empty() && crate::engines::theme::find_theme(theme).is_none() {
+    diags.push(ConfigDiagnostic {
+      field: "theme".to_string(),
+      message: format!(
+        "unknown builtin theme {theme:?} (falling back to {:?})",
+        crate::engines::theme::THEMES[0].id
+      ),
+    });
+  }
+
+  for provider in &cfg.auth.providers {
+    let trimmed = provider.trim();
+    if crate::auth::Provider::from_id(trimmed).is_none() {
+      diags.push(ConfigDiagnostic {
+        field: "auth.providers".to_string(),
+        message: format!("unknown OAuth provider {trimmed:?} (ignored)"),
+      });
+    }
+  }
+
+  if let Some(assets) = asset_root {
+    let image_fields: [(&str, Option<&str>); 9] = [
+      ("favicon", non_empty_str(Some(cfg.favicon.as_str()))),
+      ("favicon_16", cfg.favicon_16_url()),
+      ("favicon_32", cfg.favicon_32_url()),
+      ("apple_touch_icon", cfg.apple_touch_icon_url()),
+      ("manifest", cfg.manifest_url()),
+      ("logo", cfg.logo_url()),
+      ("logo_dark", cfg.logo_dark_url()),
+      ("logo_mobile", cfg.logo_mobile_url()),
+      ("og_image", non_empty_str(Some(cfg.og_image.as_str()))),
+    ];
+    for (field, url_opt) in image_fields {
+      let Some(url) = url_opt else { continue };
+      let clean = url.split(['?', '#']).next().unwrap_or(url);
+      if let Some(rel) = clean.strip_prefix("/images/") {
+        if rel.is_empty() || rel.contains("..") {
+          diags.push(ConfigDiagnostic {
+            field: field.to_string(),
+            message: format!("invalid /images/ path {url:?}"),
+          });
+          continue;
+        }
+        let in_assets = assets.join("images").join(rel).is_file();
+        let in_content = content_root.is_some_and(|c| c.join("images").join(rel).is_file());
+        if !in_assets && !in_content {
+          diags.push(ConfigDiagnostic {
+            field: field.to_string(),
+            message: format!(
+              "referenced file {url:?} not found under assets/images or CONTENT_DIR/images"
+            ),
+          });
+        }
+      }
+    }
+  }
+
+  diags
+}
+
+/// 启动期一次性读取生效的 `site.json` 并输出 `tracing::warn!` 体检告警（不阻塞启动）。
+pub fn log_startup_diagnostics(
+  asset_root: &std::path::Path,
+  content_root: Option<&std::path::Path>,
+) {
+  let site_path = content_root
+    .map(|c| c.join("site.json"))
+    .filter(|p| p.is_file())
+    .unwrap_or_else(|| asset_root.join("site.json"));
+
+  match std::fs::read_to_string(&site_path) {
+    Ok(raw) => {
+      let diags = diagnose_site_json(&raw, Some(asset_root), content_root);
+      for d in diags {
+        tracing::warn!(
+          path = %site_path.display(),
+          field = %d.field,
+          "startup config check: {}",
+          d.message
+        );
+      }
+    }
+    Err(err) => {
+      tracing::warn!(
+        path = %site_path.display(),
+        error = %err,
+        "startup config check: cannot read site.json, using embedded/default settings"
+      );
     }
   }
 }
@@ -990,5 +1367,139 @@ mod tests {
     assert_eq!(cfg.features[0].title_for(Language::En), "Zero-DB Basic Tier");
     assert_eq!(cfg.footer.columns[0].title_for(Language::En), "Docs");
     assert_eq!(cfg.footer.columns[0].links[0].label_for(Language::En), "Intro");
+  }
+
+  /// 生成官方 `assets/schemas/site.schema.json`，补充 `$id`、`$schema` 自引用字段及动态枚举约束。
+  fn build_site_schema_json() -> String {
+    let mut root = serde_json::to_value(schemars::schema_for!(SiteConfig)).expect("schema to json");
+    let obj = root.as_object_mut().expect("schema root object");
+    obj.insert("$id".to_string(), serde_json::json!(SITE_SCHEMA_URL));
+
+    if let Some(props) = obj.get_mut("properties").and_then(|v| v.as_object_mut()) {
+      props.insert(
+        "$schema".to_string(),
+        serde_json::json!({
+          "type": "string",
+          "description": "JSON Schema URI（用于 VS Code / Zed 等编辑器的字段悬停说明与自动补全）。"
+        }),
+      );
+      if let Some(layout_prop) = props.get_mut("active_layout").and_then(|v| v.as_object_mut()) {
+        layout_prop.insert("enum".to_string(), serde_json::json!(["classic", "docs", "minimal"]));
+      }
+      if let Some(lang_prop) = props.get_mut("default_language").and_then(|v| v.as_object_mut()) {
+        lang_prop.insert("enum".to_string(), serde_json::json!(["zh", "en"]));
+      }
+      if let Some(theme_prop) = props.get_mut("theme").and_then(|v| v.as_object_mut()) {
+        let theme_ids: Vec<&str> = crate::engines::theme::THEMES.iter().map(|t| t.id).collect();
+        theme_prop.insert("enum".to_string(), serde_json::json!(theme_ids));
+      }
+    }
+
+    // 为 AuthSettings.providers 数组元素注入内置 OAuth Provider 枚举
+    let provider_ids: Vec<&str> = crate::auth::Provider::ALL.into_iter().map(|p| p.id()).collect();
+    for defs_key in ["$defs", "definitions"] {
+      if let Some(items) = obj
+        .get_mut(defs_key)
+        .and_then(|d| d.get_mut("AuthSettings"))
+        .and_then(|a| a.get_mut("properties"))
+        .and_then(|p| p.get_mut("providers"))
+        .and_then(|pr| pr.get_mut("items"))
+        .and_then(|i| i.as_object_mut())
+      {
+        items.insert("enum".to_string(), serde_json::json!(provider_ids));
+      }
+    }
+
+    let mut out = serde_json::to_string_pretty(&root).expect("pretty schema");
+    out.push('\n');
+    out
+  }
+
+  /// 守卫测试：保证 `assets/schemas/site.schema.json` 与 `SiteConfig` Rust 定义严格一致。
+  /// 修改 `SiteConfig` 字段或注释后，运行 `UPDATE_SCHEMA=1 cargo test -p app-core` 自动更新。
+  #[test]
+  fn site_schema_json_is_up_to_date() {
+    let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("../../assets/schemas/site.schema.json");
+    let generated = build_site_schema_json();
+
+    if std::env::var("UPDATE_SCHEMA").as_deref() == Ok("1") {
+      if let Some(parent) = schema_path.parent() {
+        std::fs::create_dir_all(parent).expect("create schemas dir");
+      }
+      std::fs::write(&schema_path, &generated).expect("write site.schema.json");
+    }
+
+    let on_disk = std::fs::read_to_string(&schema_path).unwrap_or_else(|e| {
+      panic!(
+        "无法读取 {} ({e})；请运行 `UPDATE_SCHEMA=1 cargo test -p app-core` 生成",
+        schema_path.display()
+      )
+    });
+    assert_eq!(
+      on_disk, generated,
+      "assets/schemas/site.schema.json 与 SiteConfig 定义不一致，请运行 `UPDATE_SCHEMA=1 cargo test -p app-core` 同步"
+    );
+
+    // 确认带 "$schema" 的官方 assets/site.json 可正常解析
+    let embedded = SiteConfig::embedded();
+    assert_eq!(embedded.site_name_or_default(), "DioxusPress");
+
+    // 反向守卫：确认 KNOWN_ROOT_KEYS 与 SiteConfig 的 JSON Schema 顶层属性集合完全一致，防止新增字段漏加白名单
+    let schema_val: serde_json::Value = serde_json::from_str(&generated).expect("parse schema");
+    let schema_props =
+      schema_val.get("properties").and_then(|p| p.as_object()).expect("schema properties");
+    let mut expected_keys: Vec<&str> = schema_props.keys().map(String::as_str).collect();
+    expected_keys.sort_unstable();
+    let mut actual_keys: Vec<&str> = KNOWN_ROOT_KEYS.to_vec();
+    actual_keys.sort_unstable();
+    assert_eq!(actual_keys, expected_keys, "KNOWN_ROOT_KEYS 必须与 SiteConfig Schema 顶层字段同步");
+  }
+
+  #[test]
+  fn official_site_json_passes_diagnostics_with_zero_warnings() {
+    let assets_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    let raw = std::fs::read_to_string(assets_dir.join("site.json")).expect("read site.json");
+    let diags = diagnose_site_json(&raw, Some(&assets_dir), None);
+    assert!(diags.is_empty(), "官方 assets/site.json 不应产生体检告警: {diags:#?}");
+  }
+
+  #[test]
+  fn diagnose_site_json_catches_typos_invalid_enums_and_missing_assets() {
+    let assets_tmp = tempfile::tempdir().expect("assets tmp");
+    let content_tmp = tempfile::tempdir().expect("content tmp");
+    std::fs::create_dir_all(assets_tmp.path().join("images")).expect("mkdir assets/images");
+    std::fs::create_dir_all(content_tmp.path().join("images")).expect("mkdir content/images");
+    std::fs::write(assets_tmp.path().join("images/favicon.ico"), b"ico").expect("write favicon");
+    std::fs::write(content_tmp.path().join("images/override-logo.png"), b"png")
+      .expect("write content logo");
+
+    let raw = r#"{
+      "$schema": "https://dioxuspress.dev/schemas/site.schema.json",
+      "layout": "docs",
+      "active_layout": "docusaurus",
+      "default_language": "fr",
+      "theme": "neon",
+      "favicon": "/images/favicon.ico",
+      "logo": "/images/override-logo.png",
+      "og_image": "/images/missing-og.jpg",
+      "hero": { "titel": "拼写错误" },
+      "modules": { "blog": { "enable": false } },
+      "auth": { "enabled": true, "providers": ["github", "gitlab"] }
+    }"#;
+
+    let diags = diagnose_site_json(raw, Some(assets_tmp.path()), Some(content_tmp.path()));
+    let fields: Vec<&str> = diags.iter().map(|d| d.field.as_str()).collect();
+    assert!(fields.contains(&"layout"), "{diags:#?}");
+    assert!(fields.contains(&"hero.titel"), "{diags:#?}");
+    assert!(fields.contains(&"modules.blog.enable"), "{diags:#?}");
+    assert!(fields.contains(&"active_layout"), "{diags:#?}");
+    assert!(fields.contains(&"default_language"), "{diags:#?}");
+    assert!(fields.contains(&"theme"), "{diags:#?}");
+    assert!(fields.contains(&"auth.providers"), "{diags:#?}");
+    assert!(fields.contains(&"og_image"), "{diags:#?}");
+    // favicon 在 assets/images 命中、logo 在 content/images 命中，均不应报警
+    assert!(!fields.contains(&"favicon"), "{diags:#?}");
+    assert!(!fields.contains(&"logo"), "{diags:#?}");
   }
 }
