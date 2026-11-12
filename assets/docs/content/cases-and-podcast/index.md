@@ -17,7 +17,7 @@ keywords: [Showcase 案例墙, 技术播客, 音频播放器, 项目展示]
 ```text
 assets/cases/
 └── dioxus-fullstack-template/
-    ├── meta.json               # 名称、一句话简介、分类、仓库链接、线上网址、featured 标记
+    ├── case.yaml               # 名称、一句话简介、分类、仓库链接、线上网址、favorite 标记
     └── README.md               # 案例详细介绍正文
 ```
 
@@ -25,4 +25,4 @@ assets/cases/
 
 ## 播客专栏（`assets/podcasts/`）
 
-在 `assets/podcasts/` 下按单集存放元数据与节目文稿（Shownotes），配合 `assets/audio/`（或外部对象存储音频直链），即可生成带内嵌音频进度控制、嘉宾标签与分集检索的 `/podcast` 频道页，且支持在任意博客或文档中通过 `<PodcastCard id="..." />` 直接嵌入单集收听卡片。
+在 `assets/podcasts/<slug>/episode.yaml` 中维护单集元数据（`id`、`title`、`duration`、`date`、`audio_url`、`guest`、`tags`），配合 `assets/audio/`（或外部对象存储音频直链），即可生成带内嵌音频进度控制、嘉宾标签与分集检索的 `/podcast` 频道页，且支持在任意博客或文档中通过 `<PodcastCard id="1" />` 直接嵌入单集收听卡片。完整字段参见 [Frontmatter 字段字典](/docs/content/frontmatter-reference)。

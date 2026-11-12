@@ -23,3 +23,4 @@ DioxusPress 的生产部署遵循「小站点极简、大站点稳健」的原�
 - **[全栈生产部署与备份运维](/docs/operations/production-deploy)**：Docker Compose、外部私有内容挂载、健康检查与数据库备份。
 - **[Tantivy 搜索与全站 SEO](/docs/operations/search-and-seo)**：增量索引清单、GSC 站点地图提交与结构化数据。
 - **[引擎架构与新模块开发](/docs/operations/module-development)**：如何按高内聚低耦合规范为 DioxusPress 新增一个业务模块。
+- **[环境变量与网关配置字典](/docs/operations/env-reference)**：`.env` 全量运行参数、OAuth / 支付密钥与 Pingora 多域名 SNI 网关参考。
