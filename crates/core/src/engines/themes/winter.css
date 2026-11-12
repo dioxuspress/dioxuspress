@@ -1,0 +1,61 @@
+/* shadcn 语义 token（源自 dioxus-ui winter + night / Tokyo Night）：凛冬靛蓝与东京夜色主题。 */
+:root {
+  --background: #ffffff;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #4338ca;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #475569;
+  --accent: #eef2ff;
+  --accent-foreground: #312e81;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #4f46e5;
+  --sidebar: #f8fafc;
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #4338ca;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef2ff;
+  --sidebar-accent-foreground: #312e81;
+  --sidebar-border: #e2e8f0;
+  --sidebar-ring: #4f46e5;
+}
+
+.dark {
+  --background: #16161e;
+  --foreground: #c0caf5;
+  --card: #1a1b26;
+  --card-foreground: #c0caf5;
+  --popover: #1a1b26;
+  --popover-foreground: #c0caf5;
+  --primary: #7aa2f7;
+  --primary-foreground: #15161e;
+  --secondary: #24283b;
+  --secondary-foreground: #c0caf5;
+  --muted: #24283b;
+  --muted-foreground: #9aa5ce;
+  --accent: #24283b;
+  --accent-foreground: #c0caf5;
+  --border: #2f3549;
+  --input: #2f3549;
+  --ring: #7aa2f7;
+  --sidebar: #1a1b26;
+  --sidebar-foreground: #c0caf5;
+  --sidebar-primary: #7aa2f7;
+  --sidebar-primary-foreground: #15161e;
+  --sidebar-accent: #24283b;
+  --sidebar-accent-foreground: #c0caf5;
+  --sidebar-border: #2f3549;
+  --sidebar-ring: #7aa2f7;
+}
+
+body {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+}

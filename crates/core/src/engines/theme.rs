@@ -5,21 +5,141 @@
 //! 只认 [`THEMES`] 里的 id——cookie 由浏览器提交、可被任意改写（SEC-11），表外的值一律
 //! 忽略。主题 CSS 是作者写的受信内容，原样输出到页面 `<style>`。
 
-/// 一个内置主题。
+/// 一个内置双模（亮色 `:root` + 暗色 `.dark`）主题。
 #[derive(Debug, PartialEq, Eq)]
 pub struct Theme {
   /// site.json、cookie 与 `/api/theme/set` 用的 id。
   pub id: &'static str,
   /// 主题切换菜单里显示的名字。
   pub label: &'static str,
+  /// 风格定位简述（中文）。
+  pub description: &'static str,
+  /// 风格定位简述（英文）。
+  pub description_en: &'static str,
+  /// 亮色底色色值（用于色卡圆点与预览面板）。
+  pub light_bg: &'static str,
+  /// 亮色主色色值（用于色卡圆点与预览面板）。
+  pub light_primary: &'static str,
+  /// 暗色底色色值（用于色卡圆点与预览面板）。
+  pub dark_bg: &'static str,
+  /// 暗色主色色值（用于色卡圆点与预览面板）。
+  pub dark_primary: &'static str,
   pub css: &'static str,
 }
 
-/// 全部内置主题，顺序即切换菜单的顺序。第一个是 site.json 未配置 / 配错时的回退。
+/// 全部内置主题（打通 `dioxus-ui` 语义调色盘并合成亮暗双模），顺序即切换菜单默认顺序。
+/// 第一个是 `site.json` 未配置或配错时的安全回退。
 pub const THEMES: &[Theme] = &[
-  Theme { id: "ocean", label: "Ocean", css: include_str!("themes/ocean.css") },
-  Theme { id: "sunset", label: "Sunset", css: include_str!("themes/sunset.css") },
-  Theme { id: "catppuccin", label: "Catppuccin", css: include_str!("themes/catppuccin.css") },
+  Theme {
+    id: "ocean",
+    label: "Ocean",
+    description: "石墨中性底色配电光青蓝，现代开源工程默认风",
+    description_en: "Graphite zinc neutrals paired with electric cyan",
+    light_bg: "#ffffff",
+    light_primary: "#0e7490",
+    dark_bg: "#09090b",
+    dark_primary: "#22d3ee",
+    css: include_str!("themes/ocean.css"),
+  },
+  Theme {
+    id: "emerald",
+    label: "Emerald",
+    description: "清爽翡翠绿配深松炭黑，极适合开发者 SDK 与 API 文档站",
+    description_en: "Crisp emerald green paired with deep pine charcoal",
+    light_bg: "#ffffff",
+    light_primary: "#047857",
+    dark_bg: "#0b1310",
+    dark_primary: "#34d399",
+    css: include_str!("themes/emerald.css"),
+  },
+  Theme {
+    id: "nord",
+    label: "Nord",
+    description: "经典北欧极地冰蓝与霜雪灰，低眩光耐看护眼",
+    description_en: "Arctic frost blue on snow storm and polar night surfaces",
+    light_bg: "#f8fafc",
+    light_primary: "#3b6ea5",
+    dark_bg: "#242933",
+    dark_primary: "#88c0d0",
+    css: include_str!("themes/nord.css"),
+  },
+  Theme {
+    id: "corporate",
+    label: "Corporate",
+    description: "GitHub Primer 风格皇家工程蓝，稳重克制的企业与社区门户",
+    description_en: "GitHub-inspired engineering blue with high-clarity borders",
+    light_bg: "#ffffff",
+    light_primary: "#0969da",
+    dark_bg: "#0d1117",
+    dark_primary: "#58a6ff",
+    css: include_str!("themes/corporate.css"),
+  },
+  Theme {
+    id: "winter",
+    label: "Winter",
+    description: "凛冬靛蓝配 Tokyo Night 深夜底色，代码高亮层次极佳",
+    description_en: "Crisp cobalt indigo paired with Tokyo Night dark mode",
+    light_bg: "#ffffff",
+    light_primary: "#4338ca",
+    dark_bg: "#16161e",
+    dark_primary: "#7aa2f7",
+    css: include_str!("themes/winter.css"),
+  },
+  Theme {
+    id: "dracula",
+    label: "Dracula",
+    description: "轻盈薰衣草白配经典 Dracula 暗夜魅紫，鲜明极客辨识度",
+    description_en: "Alabaster violet light mode paired with classic Dracula dark",
+    light_bg: "#fcfbfe",
+    light_primary: "#6d28d9",
+    dark_bg: "#1e1f29",
+    dark_primary: "#bd93f9",
+    css: include_str!("themes/dracula.css"),
+  },
+  Theme {
+    id: "sunset",
+    label: "Sunset",
+    description: "暖米底色配落日琥珀橙，富有亲和力与温度感",
+    description_en: "Warm cream surfaces with vibrant amber terracotta accents",
+    light_bg: "#fffaf3",
+    light_primary: "#d97706",
+    dark_bg: "#1c0d05",
+    dark_primary: "#fb923c",
+    css: include_str!("themes/sunset.css"),
+  },
+  Theme {
+    id: "coffee",
+    label: "Coffee",
+    description: "复古羊皮纸配深烘浓缩咖啡，专为独立博客与长文沉浸阅读打造",
+    description_en: "Warm parchment paper and roasted espresso for long-form reading",
+    light_bg: "#fbf8f3",
+    light_primary: "#854d0e",
+    dark_bg: "#181310",
+    dark_primary: "#ddb892",
+    css: include_str!("themes/coffee.css"),
+  },
+  Theme {
+    id: "catppuccin",
+    label: "Catppuccin",
+    description: "柔和粉彩 Latte 与静谧 Macchiato 双态，舒缓视觉疲劳",
+    description_en: "Soothing pastel Catppuccin Latte and Macchiato palette",
+    light_bg: "#eff1f5",
+    light_primary: "#1e66f5",
+    dark_bg: "#24273a",
+    dark_primary: "#8aadf4",
+    css: include_str!("themes/catppuccin.css"),
+  },
+  Theme {
+    id: "silk",
+    label: "Silk",
+    description: "丝绸象牙白配 Rose Pine 玫瑰松针暗色，杂志级优雅排版感",
+    description_en: "Editorial warm ivory paired with Rose Pine velvet dark",
+    light_bg: "#faf8f6",
+    light_primary: "#be123c",
+    dark_bg: "#191724",
+    dark_primary: "#ebbcba",
+    css: include_str!("themes/silk.css"),
+  },
 ];
 
 pub fn find_theme(id: &str) -> Option<&'static Theme> {
@@ -65,11 +185,87 @@ mod tests {
 
   #[test]
   fn theme_ids_are_unique_and_every_theme_sets_light_and_dark_tokens() {
+    let required_tokens = [
+      "--background",
+      "--foreground",
+      "--card",
+      "--card-foreground",
+      "--popover",
+      "--popover-foreground",
+      "--primary",
+      "--primary-foreground",
+      "--secondary",
+      "--secondary-foreground",
+      "--muted",
+      "--muted-foreground",
+      "--accent",
+      "--accent-foreground",
+      "--border",
+      "--input",
+      "--ring",
+    ];
+    assert_eq!(THEMES.len(), 10);
     for (i, theme) in THEMES.iter().enumerate() {
       assert!(THEMES[..i].iter().all(|t| t.id != theme.id), "重复 id {}", theme.id);
+      assert!(!theme.description.is_empty() && !theme.description_en.is_empty());
+      assert!(theme.light_bg.starts_with('#') && theme.light_primary.starts_with('#'));
+      assert!(theme.dark_bg.starts_with('#') && theme.dark_primary.starts_with('#'));
       assert!(theme.css.contains(":root {"), "{} 缺少亮色 token", theme.id);
-      assert!(theme.css.contains(".dark {"), "{} 缺少暗色 token", theme.id);
+      let (light, dark) = theme.css.split_once(".dark {").expect(".dark block");
+      for tok in required_tokens {
+        assert!(!value_of(light, tok).is_empty(), "{} light 缺少 {tok}", theme.id);
+        assert!(!value_of(dark, tok).is_empty(), "{} dark 缺少 {tok}", theme.id);
+      }
+      // 校验十六进制前景/背景对满足 WCAG AA 4.5:1 对比度
+      for (mode, block) in [("light", light), ("dark", dark)] {
+        let bg = value_of(block, "--background");
+        let fg = value_of(block, "--foreground");
+        if let (Some(c1), Some(c2)) = (parse_hex(&bg), parse_hex(&fg)) {
+          let ratio = contrast_ratio(c1, c2);
+          assert!(ratio >= 4.5, "{} {mode} 正文对比度不足: {ratio:.2} ({fg} on {bg})", theme.id);
+        }
+        let p_bg = value_of(block, "--primary");
+        let p_fg = value_of(block, "--primary-foreground");
+        if let (Some(c1), Some(c2)) = (parse_hex(&p_bg), parse_hex(&p_fg)) {
+          let ratio = contrast_ratio(c1, c2);
+          assert!(
+            ratio >= 4.5,
+            "{} {mode} 主按钮对比度不足: {ratio:.2} ({p_fg} on {p_bg})",
+            theme.id
+          );
+        }
+      }
     }
+  }
+
+  fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
+    let hex = s.trim().strip_prefix('#')?;
+    if hex.len() != 6 {
+      return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+  }
+
+  fn rel_luminance((r, g, b): (u8, u8, u8)) -> f64 {
+    let chan = |v: u8| {
+      let c = f64::from(v) / 255.0;
+      if c <= 0.03928 {
+        c / 12.92
+      } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+      }
+    };
+    0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
+  }
+
+  fn contrast_ratio(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
+    let l1 = rel_luminance(a);
+    let l2 = rel_luminance(b);
+    let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    (hi + 0.05) / (lo + 0.05)
   }
 
   /// Tailwind v4 的 zinc 色阶。站点把手写的 `slate-*` 类映射到 zinc，

@@ -1,0 +1,61 @@
+/* shadcn 语义 token（源自 dioxus-ui caramellatte + coffee）：暖调羊皮纸与深烘咖啡阅读主题。 */
+:root {
+  --background: #fbf8f3;
+  --foreground: #2c1e16;
+  --card: #fffdf9;
+  --card-foreground: #2c1e16;
+  --popover: #fffdf9;
+  --popover-foreground: #2c1e16;
+  --primary: #854d0e;
+  --primary-foreground: #fffdf9;
+  --secondary: #f3ece1;
+  --secondary-foreground: #2c1e16;
+  --muted: #f3ece1;
+  --muted-foreground: #6b5344;
+  --accent: #ede2d2;
+  --accent-foreground: #2c1e16;
+  --border: #e4d5c1;
+  --input: #e4d5c1;
+  --ring: #a16207;
+  --sidebar: #f6f0e6;
+  --sidebar-foreground: #2c1e16;
+  --sidebar-primary: #854d0e;
+  --sidebar-primary-foreground: #fffdf9;
+  --sidebar-accent: #ede2d2;
+  --sidebar-accent-foreground: #2c1e16;
+  --sidebar-border: #e4d5c1;
+  --sidebar-ring: #a16207;
+}
+
+.dark {
+  --background: #181310;
+  --foreground: #ede0d4;
+  --card: #221b17;
+  --card-foreground: #ede0d4;
+  --popover: #221b17;
+  --popover-foreground: #ede0d4;
+  --primary: #ddb892;
+  --primary-foreground: #181310;
+  --secondary: #2f2520;
+  --secondary-foreground: #ede0d4;
+  --muted: #2f2520;
+  --muted-foreground: #b8a394;
+  --accent: #2f2520;
+  --accent-foreground: #ede0d4;
+  --border: #3d302a;
+  --input: #3d302a;
+  --ring: #ddb892;
+  --sidebar: #1d1714;
+  --sidebar-foreground: #ede0d4;
+  --sidebar-primary: #ddb892;
+  --sidebar-primary-foreground: #181310;
+  --sidebar-accent: #2f2520;
+  --sidebar-accent-foreground: #ede0d4;
+  --sidebar-border: #3d302a;
+  --sidebar-ring: #ddb892;
+}
+
+body {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+}

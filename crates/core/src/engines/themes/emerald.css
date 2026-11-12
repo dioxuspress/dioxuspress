@@ -1,0 +1,61 @@
+/* shadcn 语义 token（源自 dioxus-ui emerald + forest 双极配对）：清爽翡翠绿技术文档主题。 */
+:root {
+  --background: #ffffff;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #047857;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #475569;
+  --accent: #ecfdf5;
+  --accent-foreground: #064e3b;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #059669;
+  --sidebar: #f8fafc;
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #047857;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #ecfdf5;
+  --sidebar-accent-foreground: #064e3b;
+  --sidebar-border: #e2e8f0;
+  --sidebar-ring: #059669;
+}
+
+.dark {
+  --background: #0b1310;
+  --foreground: #ecfdf5;
+  --card: #121f1a;
+  --card-foreground: #ecfdf5;
+  --popover: #121f1a;
+  --popover-foreground: #ecfdf5;
+  --primary: #34d399;
+  --primary-foreground: #06281e;
+  --secondary: #1b2e27;
+  --secondary-foreground: #ecfdf5;
+  --muted: #1b2e27;
+  --muted-foreground: #94a3b8;
+  --accent: #1b2e27;
+  --accent-foreground: #ecfdf5;
+  --border: #233b32;
+  --input: #233b32;
+  --ring: #34d399;
+  --sidebar: #0e1814;
+  --sidebar-foreground: #ecfdf5;
+  --sidebar-primary: #34d399;
+  --sidebar-primary-foreground: #06281e;
+  --sidebar-accent: #1b2e27;
+  --sidebar-accent-foreground: #ecfdf5;
+  --sidebar-border: #233b32;
+  --sidebar-ring: #34d399;
+}
+
+body {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+}

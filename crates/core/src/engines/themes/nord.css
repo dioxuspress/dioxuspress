@@ -1,0 +1,61 @@
+/* shadcn 语义 token（源自 dioxus-ui nord + Polar Night 双极配对）：经典北欧极地冰蓝主题。 */
+:root {
+  --background: #f8fafc;
+  --foreground: #2e3440;
+  --card: #ffffff;
+  --card-foreground: #2e3440;
+  --popover: #ffffff;
+  --popover-foreground: #2e3440;
+  --primary: #3b6ea5;
+  --primary-foreground: #ffffff;
+  --secondary: #eceff4;
+  --secondary-foreground: #2e3440;
+  --muted: #eceff4;
+  --muted-foreground: #4c566a;
+  --accent: #e5e9f0;
+  --accent-foreground: #2e3440;
+  --border: #d8dee9;
+  --input: #d8dee9;
+  --ring: #5e81ac;
+  --sidebar: #f1f5f9;
+  --sidebar-foreground: #2e3440;
+  --sidebar-primary: #3b6ea5;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e5e9f0;
+  --sidebar-accent-foreground: #2e3440;
+  --sidebar-border: #d8dee9;
+  --sidebar-ring: #5e81ac;
+}
+
+.dark {
+  --background: #242933;
+  --foreground: #eceff4;
+  --card: #2e3440;
+  --card-foreground: #eceff4;
+  --popover: #2e3440;
+  --popover-foreground: #eceff4;
+  --primary: #88c0d0;
+  --primary-foreground: #1d212a;
+  --secondary: #3b4252;
+  --secondary-foreground: #eceff4;
+  --muted: #3b4252;
+  --muted-foreground: #b8c2d1;
+  --accent: #3b4252;
+  --accent-foreground: #eceff4;
+  --border: #434c5e;
+  --input: #434c5e;
+  --ring: #88c0d0;
+  --sidebar: #292e39;
+  --sidebar-foreground: #eceff4;
+  --sidebar-primary: #88c0d0;
+  --sidebar-primary-foreground: #1d212a;
+  --sidebar-accent: #3b4252;
+  --sidebar-accent-foreground: #eceff4;
+  --sidebar-border: #434c5e;
+  --sidebar-ring: #88c0d0;
+}
+
+body {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+}

@@ -708,8 +708,15 @@
       "description": "默认主题 id（见 [`crate::engines::theme::THEMES`]）；访客可用 cookie 覆盖。",
       "enum": [
         "ocean",
+        "emerald",
+        "nord",
+        "corporate",
+        "winter",
+        "dracula",
         "sunset",
-        "catppuccin"
+        "coffee",
+        "catppuccin",
+        "silk"
       ],
       "type": "string"
     },
