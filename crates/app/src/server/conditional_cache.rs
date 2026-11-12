@@ -261,6 +261,16 @@ fn probe_source_stamp(path: &str) -> u128 {
     } else {
       dir_stamp
     }
+  } else if path == "/about" {
+    let pages_dir = crate::server::active_about_pages_dir();
+    let dir_stamp = mtime_nanos(&pages_dir);
+    let leaf_stamp = max_mtime_in([
+      pages_dir.join("about.md"),
+      pages_dir.join("about.mdx"),
+      pages_dir.join("about.en.md"),
+      pages_dir.join("about.en.mdx"),
+    ]);
+    dir_stamp.wrapping_mul(1_000_003) ^ leaf_stamp
   } else {
     mtime_nanos(&docs_root).wrapping_mul(1_000_003) ^ mtime_nanos(&posts_root)
   };

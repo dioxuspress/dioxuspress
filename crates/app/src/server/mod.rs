@@ -370,19 +370,87 @@ pub async fn is_module_enabled(id: String) -> Result<bool, ServerFnError> {
 
 // ========== About ==========
 
-/// About 页正文（优先读 `$CONTENT_DIR/pages/about.md`，未提供时回退 `assets/pages/about.md`）。
+/// About 页服务端返回载荷（含双语伴生标记，用于输出 `hreflang` 与按语言区分的 `canonical`）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AboutPageResponse {
+  pub content: String,
+  #[serde(default)]
+  pub has_bilingual: bool,
+}
+
+#[cfg(feature = "server")]
+const ABOUT_ZH_CANDIDATES: &[&str] = &["about.mdx", "about.md"];
+#[cfg(feature = "server")]
+const ABOUT_EN_CANDIDATES: &[&str] = &["about.en.mdx", "about.en.md"];
+
+#[cfg(feature = "server")]
+fn find_first_file(dir: &std::path::Path, names: &[&str]) -> Option<std::path::PathBuf> {
+  names.iter().map(|n| dir.join(n)).find(|p| p.is_file())
+}
+
+/// 选取生效的 `pages/` 目录：若挂载目录（`$CONTENT_DIR/pages`）已自定义任何 `about*.{md,mdx}`，
+/// 则严格限定在该挂载目录内回退（防止挂载单语 `about.md` 的站点在英文模式下误回退到内置 DioxusPress 英文介绍）。
+#[cfg(feature = "server")]
+pub(crate) fn select_about_pages_dir(
+  content_pages: &std::path::Path,
+  asset_pages: &std::path::Path,
+) -> std::path::PathBuf {
+  if find_first_file(content_pages, ABOUT_ZH_CANDIDATES).is_some()
+    || find_first_file(content_pages, ABOUT_EN_CANDIDATES).is_some()
+  {
+    content_pages.to_path_buf()
+  } else {
+    asset_pages.to_path_buf()
+  }
+}
+
+#[cfg(feature = "server")]
+pub(crate) fn active_about_pages_dir() -> std::path::PathBuf {
+  select_about_pages_dir(&content_dir("pages"), &get_asset_root().join("pages"))
+}
+
+/// 在给定 `pages/` 目录中按目标语言解析 `about` 源文件及是否具备双语伴生文件。
+#[cfg(feature = "server")]
+pub(crate) fn resolve_about_file_in_dir(
+  pages_dir: &std::path::Path,
+  lang: app_core::i18n::Language,
+) -> Option<(std::path::PathBuf, bool)> {
+  let zh = find_first_file(pages_dir, ABOUT_ZH_CANDIDATES);
+  let en = find_first_file(pages_dir, ABOUT_EN_CANDIDATES);
+  let has_bilingual = zh.is_some() && en.is_some();
+  let chosen = match lang {
+    app_core::i18n::Language::En => en.or(zh),
+    app_core::i18n::Language::Zh => zh.or(en),
+  }?;
+  Some((chosen, has_bilingual))
+}
+
+/// 当前站点的 `/about` 是否同时拥有中英双语源文件（供 `sitemap.xml` 收录 `/about?lang=en` 使用）。
+#[cfg(feature = "server")]
+pub fn about_page_is_bilingual() -> bool {
+  let dir = active_about_pages_dir();
+  find_first_file(&dir, ABOUT_ZH_CANDIDATES).is_some()
+    && find_first_file(&dir, ABOUT_EN_CANDIDATES).is_some()
+}
+
+/// About 页正文（优先读 `$CONTENT_DIR/pages/about[.en].{mdx,md}`，未提供时回退 `assets/pages/`）。
 #[post("/api/pages/about")]
-pub async fn get_about_page() -> Result<Option<String>, ServerFnError> {
+pub async fn get_about_page(
+  lang: Option<String>,
+) -> Result<Option<AboutPageResponse>, ServerFnError> {
   #[cfg(feature = "server")]
   {
-    let content_about = content_dir("pages").join("about.md");
-    let target = if content_about.is_file() {
-      content_about
-    } else {
-      get_asset_root().join("pages").join("about.md")
+    let target_lang = match lang.as_deref() {
+      Some("en") => app_core::i18n::Language::En,
+      Some("zh") => app_core::i18n::Language::Zh,
+      _ => SiteConfig::active().default_language_enum(),
+    };
+    let pages_dir = active_about_pages_dir();
+    let Some((target, has_bilingual)) = resolve_about_file_in_dir(&pages_dir, target_lang) else {
+      return Ok(None);
     };
     match std::fs::read_to_string(target) {
-      Ok(content) => Ok(Some(content)),
+      Ok(content) => Ok(Some(AboutPageResponse { content, has_bilingual })),
       Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
       Err(e) => {
         tracing::warn!(error = %e, "about: read failed");
@@ -392,6 +460,7 @@ pub async fn get_about_page() -> Result<Option<String>, ServerFnError> {
   }
   #[cfg(not(feature = "server"))]
   {
+    let _ = lang;
     Ok(None)
   }
 }
@@ -411,5 +480,43 @@ pub async fn get_active_layout() -> Result<String, ServerFnError> {
   #[cfg(not(feature = "server"))]
   {
     Ok("classic".to_string())
+  }
+}
+
+#[cfg(all(test, feature = "server"))]
+mod tests {
+  use super::{resolve_about_file_in_dir, select_about_pages_dir};
+  use app_core::i18n::Language;
+
+  #[test]
+  fn about_bilingual_resolves_english_companion_and_falls_back_cleanly() {
+    let tmp = std::env::temp_dir().join(format!("dp-about-i18n-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let asset_pages = tmp.join("assets_pages");
+    let custom_pages = tmp.join("custom_pages");
+    std::fs::create_dir_all(&asset_pages).unwrap();
+    std::fs::create_dir_all(&custom_pages).unwrap();
+
+    std::fs::write(asset_pages.join("about.md"), "# 关于").unwrap();
+    std::fs::write(asset_pages.join("about.en.md"), "# About").unwrap();
+
+    // 1. 未挂载自定义 about 时使用内置双语目录
+    assert_eq!(select_about_pages_dir(&custom_pages, &asset_pages), asset_pages);
+    let (en_file, bi1) = resolve_about_file_in_dir(&asset_pages, Language::En).unwrap();
+    assert_eq!(en_file, asset_pages.join("about.en.md"));
+    assert!(bi1);
+    let (zh_file, bi2) = resolve_about_file_in_dir(&asset_pages, Language::Zh).unwrap();
+    assert_eq!(zh_file, asset_pages.join("about.md"));
+    assert!(bi2);
+
+    // 2. 挂载目录仅提供单语 about.md 时，英文请求必须回退到该挂载目录内的中文版，不得串读内置英文版
+    std::fs::write(custom_pages.join("about.md"), "# 我的站点").unwrap();
+    let chosen_dir = select_about_pages_dir(&custom_pages, &asset_pages);
+    assert_eq!(chosen_dir, custom_pages);
+    let (fallback, bi3) = resolve_about_file_in_dir(&chosen_dir, Language::En).unwrap();
+    assert_eq!(fallback, custom_pages.join("about.md"));
+    assert!(!bi3);
+
+    let _ = std::fs::remove_dir_all(&tmp);
   }
 }
