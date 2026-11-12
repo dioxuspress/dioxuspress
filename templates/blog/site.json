@@ -1,0 +1,54 @@
+{
+  "$schema": "https://dioxuspress.dev/schemas/site.schema.json",
+  "site_name": "DioxusPress Blog Starter",
+  "site_description": "DioxusPress Blog Starter — 专注深度技术写作、数学公式推导与数字花园笔记的极简独立博客",
+  "author": "Indie Author",
+  "default_language": "zh",
+  "active_layout": "minimal",
+  "theme": "coffee",
+  "available_themes": [
+    "coffee",
+    "silk",
+    "nord",
+    "ocean",
+    "catppuccin"
+  ],
+  "hero": {
+    "badge": "Minimal Layout · Warm Coffee Palette · Atom Feed",
+    "badge_en": "Minimal Layout · Warm Coffee Palette · Atom Feed",
+    "title": "DioxusPress Blog Starter",
+    "title_en": "DioxusPress Blog Starter",
+    "subtitle": "去除冗杂导航干扰，提供羊皮纸暖调护眼配色、服务端原生 MathML 数学公式、多语言代码对比与标准 Atom 订阅源。",
+    "subtitle_en": "Distraction-free minimal chrome with warm parchment colors, server-rendered MathML formulas, code tabs, and native Atom RSS.",
+    "primary_cta_text": "阅读专栏文章",
+    "primary_cta_text_en": "Read Essays",
+    "primary_cta_href": "/blog",
+    "secondary_cta_text": "RSS / Atom 订阅",
+    "secondary_cta_text_en": "Subscribe via Atom",
+    "secondary_cta_href": "/feed.xml"
+  },
+  "modules": {
+    "blog": { "enabled": true },
+    "docs": { "enabled": true },
+    "about": { "enabled": true },
+    "cases": { "enabled": false },
+    "podcast": { "enabled": false },
+    "embedded": { "enabled": false },
+    "ai": { "enabled": false },
+    "web3": { "enabled": false },
+    "wasm": { "enabled": false },
+    "cli": { "enabled": false },
+    "papers": { "enabled": false }
+  },
+  "footer": {
+    "tagline": "独立思考与系统工程笔记 · 支持 RSS 阅读器订阅 /feed.xml",
+    "tagline_en": "Independent essays & systems notes · Subscribe at /feed.xml",
+    "copyright": "DioxusPress Blog Starter",
+    "social": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/dioxuspress/dioxuspress"
+      }
+    ]
+  }
+}

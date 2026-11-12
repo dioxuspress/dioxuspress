@@ -111,6 +111,7 @@ COPY crates/widgets/src crates/widgets/src
 COPY crates/board/src crates/board/src
 COPY crates/migration/src crates/migration/src
 COPY crates/dioxuspress-cli/src crates/dioxuspress-cli/src
+COPY templates ./templates
 COPY crates/app/src crates/app/src
 COPY assets ./assets
 # `build.rs` 期望根 assets 同步到 crates/app/assets

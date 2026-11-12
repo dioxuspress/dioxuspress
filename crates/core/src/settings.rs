@@ -1528,6 +1528,22 @@ mod tests {
   }
 
   #[test]
+  fn starter_template_site_configs_deserialize_and_pass_diagnostics() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let assets_dir = repo_root.join("assets");
+    for preset in ["docs", "blog", "community", "portal"] {
+      let tpl_dir = repo_root.join("templates").join(preset);
+      let raw = std::fs::read_to_string(tpl_dir.join("site.json"))
+        .unwrap_or_else(|e| panic!("读取 templates/{preset}/site.json 失败: {e}"));
+      let cfg: SiteConfig = serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("反序列化 templates/{preset}/site.json 失败: {e}"));
+      assert!(!cfg.site_name.trim().is_empty());
+      let diags = diagnose_site_json(&raw, Some(&assets_dir), Some(&tpl_dir));
+      assert!(diags.is_empty(), "templates/{preset}/site.json 不应产生体检告警: {diags:#?}");
+    }
+  }
+
+  #[test]
   fn diagnose_site_json_catches_typos_invalid_enums_and_missing_assets() {
     let assets_tmp = tempfile::tempdir().expect("assets tmp");
     let content_tmp = tempfile::tempdir().expect("content tmp");

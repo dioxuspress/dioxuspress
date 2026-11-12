@@ -1,0 +1,15 @@
+services:
+  site:
+    image: ghcr.io/dioxuspress/dioxuspress-basic:latest
+    ports:
+      - "8080:8080"
+    environment:
+      BASE_URL: http://localhost:8080
+      SEARCH_INDEX_DIR: /app/data/search-index
+    volumes:
+      - ./:/app/content:ro
+      - search-index:/app/data/search-index
+    restart: unless-stopped
+
+volumes:
+  search-index:

@@ -56,3 +56,7 @@ docker-compose.yml
 *.log
 *.tmp
 *.bak
+
+# 官方 Starter 模板（供 crates/dioxuspress-cli 编译期 include_str! 内嵌）
+!templates
+!templates/**
