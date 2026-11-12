@@ -7,6 +7,8 @@ pub mod conditional_cache;
 #[cfg(feature = "server")]
 pub mod health;
 #[cfg(feature = "server")]
+pub mod hot_reload;
+#[cfg(feature = "server")]
 pub mod pay_routes;
 #[cfg(feature = "server")]
 pub mod rate_limit;

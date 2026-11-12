@@ -45,6 +45,12 @@ static LIST_CACHE: app_core::utils::DirListingCache<
   std::collections::BTreeMap<String, Vec<ArticleSummary>>,
 > = app_core::utils::DirListingCache::new();
 
+/// E5.3：清空全部领域板块文章目录缓存（供 `SIGHUP` 或内容热刷新调用）。
+#[cfg(feature = "server")]
+pub fn invalidate_board_cache() {
+  LIST_CACHE.invalidate();
+}
+
 #[cfg(feature = "server")]
 fn build_article_list(dir: &Path) -> Vec<ArticleSummary> {
   let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };

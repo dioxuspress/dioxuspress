@@ -492,18 +492,10 @@ impl SiteConfig {
   ///
   /// 缓存 key 为路径字符串；实际部署只有一个 site.json，表容量恒为 1。
   pub fn load_cached(path: &str) -> crate::error::AppResult<std::sync::Arc<Self>> {
-    use std::collections::HashMap as Map;
-    use std::sync::{Arc, Mutex, OnceLock};
-    use std::time::SystemTime;
-
-    struct Entry {
-      mtime: SystemTime,
-      cfg: Arc<SiteConfig>,
-    }
-    static CACHE: OnceLock<Mutex<Map<String, Entry>>> = OnceLock::new();
+    use std::sync::Arc;
 
     let mtime = std::fs::metadata(path)?.modified()?;
-    let cache = CACHE.get_or_init(|| Mutex::new(Map::new()));
+    let cache = site_config_cache();
 
     if let Ok(guard) = cache.lock() {
       if let Some(entry) = guard.get(path) {
@@ -516,9 +508,16 @@ impl SiteConfig {
     // 未命中 / mtime 变化 → 锁外重读，写回缓存（锁失败仅跳过本次缓存）。
     let cfg = Arc::new(Self::from_file(path)?);
     if let Ok(mut guard) = cache.lock() {
-      guard.insert(path.to_string(), Entry { mtime, cfg: cfg.clone() });
+      guard.insert(path.to_string(), CachedSiteConfigEntry { mtime, cfg: cfg.clone() });
     }
     Ok(cfg)
+  }
+
+  /// E5.3：显式清空 `site.json` 内存缓存（供 `SIGHUP` 内容热刷新或同秒覆盖写后强制重读）。
+  pub fn invalidate_cache() {
+    if let Ok(mut guard) = site_config_cache().lock() {
+      guard.clear();
+    }
   }
 
   /// 编译期内嵌的 `assets/site.json` 配置（回退基线与 Schema 对齐测试用）。
@@ -744,6 +743,19 @@ impl SiteConfig {
       self.active_layout.as_str()
     }
   }
+}
+
+struct CachedSiteConfigEntry {
+  mtime: std::time::SystemTime,
+  cfg: std::sync::Arc<SiteConfig>,
+}
+
+fn site_config_cache(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, CachedSiteConfigEntry>> {
+  use std::collections::HashMap;
+  use std::sync::{Mutex, OnceLock};
+  static CACHE: OnceLock<Mutex<HashMap<String, CachedSiteConfigEntry>>> = OnceLock::new();
+  CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// `site.json` 静态体检告警项（纯数据返回，便于单测与后续 CLI 复用）。

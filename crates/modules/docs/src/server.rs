@@ -441,6 +441,13 @@ static TREE_CACHE_ZH: app_core::utils::DirListingCache<Vec<DocTreeNode>> =
 static TREE_CACHE_EN: app_core::utils::DirListingCache<Vec<DocTreeNode>> =
   app_core::utils::DirListingCache::new();
 
+/// E5.3：清空文档中英双目录树缓存（供 `SIGHUP` 或内容热刷新调用）。
+#[cfg(feature = "server")]
+pub fn invalidate_doc_caches() {
+  TREE_CACHE_ZH.invalidate();
+  TREE_CACHE_EN.invalidate();
+}
+
 #[cfg(feature = "server")]
 fn cached_tree_for_lang(lang: app_core::i18n::Language) -> std::sync::Arc<Vec<DocTreeNode>> {
   let docs_dir = app_core::utils::content_dir("docs");

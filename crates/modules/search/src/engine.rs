@@ -420,9 +420,14 @@ fn engine_slot() -> &'static Mutex<Option<Arc<SearchEngine>>> {
 /// 第二个失败 `LockBusy` 的问题。该锁仅在引擎尚未就绪时短暂持有；一旦就绪，
 /// 后续查询走 [`engine_slot`] 快路径，不再加锁、也不再创建 writer。
 static INIT_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+static WRITE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 fn init_lock() -> &'static tokio::sync::Mutex<()> {
   INIT_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn write_lock() -> &'static tokio::sync::Mutex<()> {
+  WRITE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 /// 获取当前引擎；若未初始化则在默认目录上 [`init_or_load`]。
@@ -482,6 +487,7 @@ pub async fn init_or_load(dir: &Path) -> Result<Arc<SearchEngine>, String> {
 
 /// 强制全量重建当前引擎的索引（保持持久化目录），并同步刷新 manifest。
 pub async fn rebuild() -> Result<Arc<SearchEngine>, String> {
+  let _write_guard = write_lock().lock().await;
   let engine = match engine_slot().lock() {
     Ok(g) => g.as_ref().cloned(),
     Err(e) => return Err(format!("search lock poisoned: {}", e)),
@@ -508,25 +514,35 @@ pub struct IncrementalReport {
 ///
 /// 文件来源按 mtime 跳过未变文档；动态来源（cases / topics）全量 upsert，
 /// 但通过 manifest 检测删除。比 [`rebuild`] 显著更快，适合频繁调用。
+/// E5.3：通过异步 `WRITE_LOCK` 串行化写入端并将同步磁盘扫描 / Tantivy 段合并卸载到
+/// `spawn_blocking`，确保热刷新期间高并发读取请求零阻塞、零 `LockBusy`。
 pub async fn reindex_incremental() -> Result<IncrementalReport, String> {
   use std::time::Instant;
 
   let engine = get_or_build().await?;
+  let _write_guard = write_lock().lock().await;
   let started = Instant::now();
-  let prev = IndexManifest::load(&engine.dir);
-
-  let file_docs = collect_file_documents();
   let dyn_docs = collect_dyn_documents().await;
   let enabled = app_core::engines::module::default_module_engine().enabled_ids();
-  let file_docs = filter_versioned_by_enabled(file_docs, &enabled);
-  let dyn_docs = crate::indexer::filter_documents_by_enabled(dyn_docs, &enabled);
 
-  let diff = diff_for_reindex(&prev, file_docs, dyn_docs);
-  let upserts = diff.upserts.len();
-  let deletes = diff.deletes.len();
-  engine.upsert_documents(&diff.upserts)?;
-  engine.delete_documents(&diff.deletes)?;
-  diff.next.save(&engine.dir)?;
+  let engine_for_block = engine.clone();
+  let (upserts, deletes) =
+    tokio::task::spawn_blocking(move || -> Result<(usize, usize), String> {
+      let prev = IndexManifest::load(&engine_for_block.dir);
+      let file_docs = collect_file_documents();
+      let file_docs = filter_versioned_by_enabled(file_docs, &enabled);
+      let dyn_docs = crate::indexer::filter_documents_by_enabled(dyn_docs, &enabled);
+
+      let diff = diff_for_reindex(&prev, file_docs, dyn_docs);
+      let upserts = diff.upserts.len();
+      let deletes = diff.deletes.len();
+      engine_for_block.upsert_documents(&diff.upserts)?;
+      engine_for_block.delete_documents(&diff.deletes)?;
+      diff.next.save(&engine_for_block.dir)?;
+      Ok((upserts, deletes))
+    })
+    .await
+    .map_err(|e| format!("search: blocking reindex task failed: {}", e))??;
 
   let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
   tracing::info!(

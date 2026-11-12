@@ -46,7 +46,6 @@ pub fn current_content_epoch() -> u64 {
 }
 
 /// 原子递增内容纪元并清空已缓存的 `ETag` 元数据表（供热刷新与测试调用）。
-#[cfg(test)]
 pub fn bump_content_epoch() -> u64 {
   let next = CONTENT_EPOCH.fetch_add(1, Ordering::AcqRel) + 1;
   if let Ok(mut guard) = etag_table().write() {
