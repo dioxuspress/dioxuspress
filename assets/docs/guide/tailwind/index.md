@@ -8,7 +8,7 @@ keywords: [Tailwind CSS v4, dioxus-shadcn, tw-sources, RSX 样式构建]
 
 # Tailwind CSS v4 工作流
 
-DioxusPress 使用 **Tailwind CSS v4** 搭配自研组件库 [`dioxus-shadcn`](https://github.com/yuxuetr/dioxus-ui)，所有色彩均收敛至 `--background`、`--foreground`、`--primary`、`--muted` 等语义化设计令牌。
+DioxusPress 使用 **Tailwind CSS v4** 搭配自研组件库 [`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui)，所有色彩均收敛至 `--background`、`--foreground`、`--primary`、`--muted` 等语义化设计令牌。
 
 ## 自动源扫描机制
 

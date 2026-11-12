@@ -1,6 +1,6 @@
 # dioxus-ui 迁移计划
 
-> 分支：`feat/dioxus-ui-migration`。组件库：[`dioxus-shadcn`](https://github.com/yuxuetr/dioxus-ui) 0.6（自研，crates.io 已发布）。
+> 分支：`feat/dioxus-ui-migration`。组件库：[`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 0.6（自研，crates.io 已发布）。
 > 迁移中遇到的组件库问题记入 [`DIOXUS_UI_FEEDBACK.md`](DIOXUS_UI_FEEDBACK.md)，作为 dioxus-ui 的实践检验回流上游。
 
 ## 1. 目标与非目标
