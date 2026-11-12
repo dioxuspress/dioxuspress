@@ -5,7 +5,7 @@ description: 基于 Dioxus 0.7 与 Axum 构建的开源全栈 Rust 文档、内�
 
 # 关于 DioxusPress
 
-**DioxusPress** 是一个开源的纯 Rust 全栈知识出版与社区引擎，基于 [Dioxus 0.7](https://dioxuslabs.com)（服务端渲染 SSR + 客户端 WebAssembly 水合）与 [`dioxus-shadcn`](https://github.com/yuxuetr/dioxus-ui) 组件库构建。
+**DioxusPress** 是一个开源的纯 Rust 全栈知识出版与社区引擎，基于 [Dioxus 0.7](https://dioxuslabs.com)（服务端渲染 SSR + 客户端 WebAssembly 水合）与 [`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 组件库构建。
 
 ## 我们的设计理念
 

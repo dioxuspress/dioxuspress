@@ -178,6 +178,11 @@
             "href": "https://rustineverything.app"
           },
           {
+            "label": "dioxus-shadcn 组件库",
+            "label_en": "dioxus-shadcn UI",
+            "href": "https://github.com/dioxuspress/dioxus-ui"
+          },
+          {
             "label": "GitHub 源码",
             "label_en": "GitHub",
             "href": "https://github.com/dioxuspress/dioxuspress"

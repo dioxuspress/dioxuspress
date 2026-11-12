@@ -1,6 +1,6 @@
 # dioxus-ui 实践反馈记录
 
-> 在 rustineverything.app 迁移到 [`dioxus-shadcn`](https://github.com/yuxuetr/dioxus-ui) 的过程中（计划见 [`DIOXUS_UI_MIGRATION.md`](DIOXUS_UI_MIGRATION.md)），
+> 在 rustineverything.app 迁移到 [`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 的过程中（计划见 [`DIOXUS_UI_MIGRATION.md`](DIOXUS_UI_MIGRATION.md)），
 > 记录组件库本身的问题与改进点，之后整理成 dioxus-ui 的 issue / RFC。
 
 ## 汇总（2026-10-09，本站使用 dioxus-shadcn 0.6.3）
