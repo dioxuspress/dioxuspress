@@ -30,7 +30,7 @@ keywords: [site.json, 站点配置, Logo 配置, 公告栏, 多列页脚]
   "logo_mobile": "/images/logo-mobile.png",
   "logo_wordmark": true,
   "og_image": "/images/og-default.jpg",
-  "docs_edit_url_base": "https://github.com/yuxuetr/DioxusPress/edit/main/assets/docs",
+  "docs_edit_url_base": "https://github.com/dioxuspress/dioxuspress/edit/main/assets/docs",
   "announcement": {
     "id": "v07-docs-layout",
     "text": "🎉 DioxusPress 现已内置类 Docusaurus 文档布局与零数据库部署模式",
@@ -44,13 +44,13 @@ keywords: [site.json, 站点配置, Logo 配置, 公告栏, 多列页脚]
     "title_en": "Build Blazing-Fast Docs & Communities in Pure Rust",
     "subtitle": "SSR 首屏直出 + WASM 无刷新导航 + Tantivy 全文检索，单套代码从零数据库文档站平滑扩展至全栈付费社区。",
     "subtitle_en": "SSR + WASM hydration + Tantivy search. Scale from a zero-database docs site to a fullstack community.",
-    "install_command": "git clone https://github.com/yuxuetr/DioxusPress.git",
+    "install_command": "git clone https://github.com/dioxuspress/dioxuspress.git",
     "primary_cta_text": "5 分钟快速开始",
     "primary_cta_text_en": "Get Started",
     "primary_cta_href": "/docs/guide/quickstart",
     "secondary_cta_text": "GitHub 源码",
     "secondary_cta_text_en": "GitHub",
-    "secondary_cta_href": "https://github.com/yuxuetr/DioxusPress"
+    "secondary_cta_href": "https://github.com/dioxuspress/dioxuspress"
   }
 }
 ```

@@ -24,8 +24,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use pingora_core::apps::HttpServerOptions;
+use pingora_core::listeners::TlsAccept;
+use pingora_core::protocols::tls::TlsRef;
 use pingora_core::server::configuration::{Opt, ServerConf};
 use pingora_core::server::Server;
+use pingora_core::tls::ext::{ssl_add_chain_cert, ssl_use_certificate, ssl_use_private_key};
+use pingora_core::tls::pkey::{PKey, Private};
+use pingora_core::tls::ssl::NameType;
+use pingora_core::tls::x509::X509;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -54,6 +60,7 @@ fn cap_keepalive(session: &mut Session) {
 struct AppGateway {
   default_upstream: String,
   host_upstreams: HashMap<String, String>,
+  host_redirects: HashMap<String, String>,
 }
 
 impl AppGateway {
@@ -65,7 +72,9 @@ impl AppGateway {
       .unwrap_or_else(|| UPSTREAM_ADDR.to_string());
     let host_upstreams =
       std::env::var("HOST_UPSTREAMS").ok().map(|s| parse_host_upstreams(&s)).unwrap_or_default();
-    Self { default_upstream, host_upstreams }
+    let host_redirects =
+      std::env::var("HOST_REDIRECTS").ok().map(|s| parse_host_redirects(&s)).unwrap_or_default();
+    Self { default_upstream, host_upstreams, host_redirects }
   }
 
   fn select_upstream(&self, req: &RequestHeader) -> &str {
@@ -77,6 +86,150 @@ impl AppGateway {
       }
     }
     &self.default_upstream
+  }
+
+  fn select_redirect_location(&self, req: &RequestHeader) -> Option<String> {
+    if self.host_redirects.is_empty() {
+      return None;
+    }
+    let host = extract_request_host(req)?;
+    let target_base = self.host_redirects.get(&host)?;
+    let path = req.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    if path.starts_with('/') {
+      Some(format!("{target_base}{path}"))
+    } else {
+      Some(format!("{target_base}/{path}"))
+    }
+  }
+}
+
+/// 解析 `HOST_REDIRECTS` 环境变量（格式：`old.example.com=https://new.dev,www.new.dev=https://new.dev`）。
+fn parse_host_redirects(raw: &str) -> HashMap<String, String> {
+  let mut map = HashMap::new();
+  for pair in raw.split(',') {
+    let Some((host, target)) = pair.trim().split_once('=') else {
+      continue;
+    };
+    let Some(host) = normalize_host(host) else {
+      continue;
+    };
+    let target = target.trim().trim_end_matches('/');
+    if target.starts_with("https://") || target.starts_with("http://") {
+      map.insert(host, target.to_string());
+    }
+  }
+  map
+}
+
+struct CertBundle {
+  leaf: X509,
+  intermediates: Vec<X509>,
+  key: PKey<Private>,
+}
+
+impl CertBundle {
+  fn from_pem(cert_pem: &[u8], key_pem: &[u8]) -> std::result::Result<Self, String> {
+    let mut chain =
+      X509::stack_from_pem(cert_pem).map_err(|e| format!("parse cert chain PEM failed: {e}"))?;
+    if chain.is_empty() {
+      return Err("certificate PEM contains no X509 certificates".to_string());
+    }
+    let leaf = chain.remove(0);
+    let key = PKey::private_key_from_pem(key_pem)
+      .map_err(|e| format!("parse private key PEM failed: {e}"))?;
+    Ok(Self { leaf, intermediates: chain, key })
+  }
+
+  fn load(cert_path: &str, key_path: &str) -> std::result::Result<Self, String> {
+    let cert_pem =
+      std::fs::read(cert_path).map_err(|e| format!("read cert {cert_path} failed: {e}"))?;
+    let key_pem =
+      std::fs::read(key_path).map_err(|e| format!("read key {key_path} failed: {e}"))?;
+    Self::from_pem(&cert_pem, &key_pem)
+  }
+}
+
+/// 解析 `SNI_CERTS` 环境变量（格式：`domain1=/certs/d1/fullchain.pem:/certs/d1/privkey.pem,...`）。
+fn parse_sni_cert_specs(raw: &str) -> Vec<(String, String, String)> {
+  let mut specs = Vec::new();
+  for entry in raw.split(',') {
+    let Some((domain, paths)) = entry.trim().split_once('=') else {
+      continue;
+    };
+    let Some(domain) = normalize_host(domain.trim_start_matches("*.")) else {
+      continue;
+    };
+    let Some((cert_path, key_path)) = paths.trim().split_once(':') else {
+      continue;
+    };
+    let cert_path = cert_path.trim();
+    let key_path = key_path.trim();
+    if !cert_path.is_empty() && !key_path.is_empty() {
+      specs.push((domain, cert_path.to_string(), key_path.to_string()));
+    }
+  }
+  // 更具体的子域名优先匹配（如 api.dioxuspress.dev 优先于 dioxuspress.dev）
+  specs.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
+  specs
+}
+
+fn host_matches_domain(sni_host: &str, domain: &str) -> bool {
+  sni_host == domain || sni_host.strip_suffix(domain).is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+struct SniCertResolver {
+  default_bundle: CertBundle,
+  routes: Vec<(String, CertBundle)>,
+}
+
+impl SniCertResolver {
+  fn load(
+    default_cert: &str,
+    default_key: &str,
+    sni_raw: &str,
+  ) -> std::result::Result<Option<Self>, String> {
+    let specs = parse_sni_cert_specs(sni_raw);
+    if specs.is_empty() {
+      return Ok(None);
+    }
+    let default_bundle = CertBundle::load(default_cert, default_key)?;
+    let mut routes = Vec::with_capacity(specs.len());
+    for (domain, cert_path, key_path) in specs {
+      let bundle = CertBundle::load(&cert_path, &key_path)?;
+      routes.push((domain, bundle));
+    }
+    Ok(Some(Self { default_bundle, routes }))
+  }
+
+  fn select_bundle(&self, sni_raw: Option<&str>) -> &CertBundle {
+    if let Some(host) = sni_raw.and_then(normalize_host) {
+      for (domain, bundle) in &self.routes {
+        if host_matches_domain(&host, domain) {
+          return bundle;
+        }
+      }
+    }
+    &self.default_bundle
+  }
+}
+
+#[async_trait]
+impl TlsAccept for SniCertResolver {
+  async fn certificate_callback(&self, ssl: &mut TlsRef) {
+    let bundle = self.select_bundle(ssl.servername(NameType::HOST_NAME));
+    if let Err(e) = ssl_use_certificate(ssl, &bundle.leaf) {
+      log::error!("SNI ssl_use_certificate failed: {e}");
+      return;
+    }
+    for inter in &bundle.intermediates {
+      if let Err(e) = ssl_add_chain_cert(ssl, inter) {
+        log::error!("SNI ssl_add_chain_cert failed: {e}");
+        return;
+      }
+    }
+    if let Err(e) = ssl_use_private_key(ssl, &bundle.key) {
+      log::error!("SNI ssl_use_private_key failed: {e}");
+    }
   }
 }
 
@@ -137,6 +290,21 @@ impl ProxyHttp for AppGateway {
   async fn early_request_filter(&self, session: &mut Session, _ctx: &mut ()) -> Result<()> {
     cap_keepalive(session);
     Ok(())
+  }
+
+  /// 域名级 301 重定向（如将旧演示二级域名或 `www.` 统一归并到主域名）。
+  async fn request_filter(&self, session: &mut Session, _ctx: &mut ()) -> Result<bool> {
+    if let Some(location) = self.select_redirect_location(session.req_header()) {
+      let mut resp = ResponseHeader::build(301, None)
+        .map_err(|_| pingora_core::Error::new_str("failed to build 301 response header"))?;
+      resp.insert_header("Location", location).ok();
+      resp.insert_header("Strict-Transport-Security", HSTS_VALUE).ok();
+      resp.insert_header("Server", "rie-gateway").ok();
+      resp.insert_header("Content-Length", "0").ok();
+      session.write_response_header_ref(&resp, true).await.ok();
+      return Ok(true);
+    }
+    Ok(false)
   }
 
   /// 选定上游：优先匹配 `HOST_UPSTREAMS` 子域名路由，否则走默认 `default_upstream`。
@@ -282,15 +450,40 @@ fn main() {
   let mut server = Server::new_with_opt_and_conf(None::<Opt>, conf);
   server.bootstrap();
 
-  // 443: TLS 终止 + 反代到 app（支持 HOST_UPSTREAMS 按域名路由）
+  // 443: TLS 终止 + 反代到 app（支持 SNI 多域名证书、HOST_REDIRECTS 301 与 HOST_UPSTREAMS 路由）
   let gateway = AppGateway::from_env();
   let default_upstream_log = gateway.default_upstream.clone();
   let host_routes_log = gateway.host_upstreams.len();
+  let host_redirects_log = gateway.host_redirects.len();
   let mut proxy = http_proxy_service(&server.configuration, gateway);
-  let cert = std::env::var("TLS_CERT_PATH").expect("TLS_CERT_PATH 未配置：指向 fullchain.pem 路径");
-  let key = std::env::var("TLS_KEY_PATH").expect("TLS_KEY_PATH 未配置：指向 privkey.pem 路径");
-  let mut tls = pingora_core::listeners::tls::TlsSettings::intermediate(&cert, &key)
-    .expect("加载 TLS 证书 / 私钥失败：检查路径与权限");
+  let Ok(cert) = std::env::var("TLS_CERT_PATH") else {
+    eprintln!("rie-gateway: TLS_CERT_PATH 未配置（指向默认 fullchain.pem 路径）");
+    std::process::exit(1);
+  };
+  let Ok(key) = std::env::var("TLS_KEY_PATH") else {
+    eprintln!("rie-gateway: TLS_KEY_PATH 未配置（指向默认 privkey.pem 路径）");
+    std::process::exit(1);
+  };
+  let sni_raw = std::env::var("SNI_CERTS").unwrap_or_default();
+  let sni_resolver = match SniCertResolver::load(&cert, &key, &sni_raw) {
+    Ok(r) => r,
+    Err(e) => {
+      eprintln!("rie-gateway: 加载 SNI_CERTS 失败：{e}");
+      std::process::exit(1);
+    }
+  };
+  let sni_certs_log = sni_resolver.as_ref().map_or(0, |r| r.routes.len());
+  let tls_res = match sni_resolver {
+    Some(resolver) => pingora_core::listeners::tls::TlsSettings::with_callbacks(Box::new(resolver)),
+    None => pingora_core::listeners::tls::TlsSettings::intermediate(&cert, &key),
+  };
+  let mut tls = match tls_res {
+    Ok(t) => t,
+    Err(e) => {
+      eprintln!("rie-gateway: 初始化 TLS 失败：{e}");
+      std::process::exit(1);
+    }
+  };
   tls.enable_h2();
   proxy.add_tls_with_settings(HTTPS_BIND, None, tls);
   let mut opts = HttpServerOptions::default();
@@ -307,12 +500,14 @@ fn main() {
   server.add_service(redirect);
 
   log::info!(
-    "rie-gateway: HTTPS={} (TLS={}), HTTP={} → 301 https; default_upstream={}, host_routes={}",
+    "rie-gateway: HTTPS={} (default_tls={}, sni_certs={}), HTTP={} → 301 https; default_upstream={}, host_routes={}, host_redirects={}",
     HTTPS_BIND,
     cert,
+    sni_certs_log,
     HTTP_BIND,
     default_upstream_log,
-    host_routes_log
+    host_routes_log,
+    host_redirects_log
   );
   server.run_forever();
 }
@@ -386,15 +581,28 @@ mod tests {
     let gw = AppGateway {
       default_upstream: "127.0.0.1:8080".to_string(),
       host_upstreams: parse_host_upstreams(
-        " dioxuspress.rustineverything.app = 127.0.0.1:8081 , docs.example.com.=127.0.0.1:8082 , malformed ",
+        " dioxuspress.dev = 127.0.0.1:8081 , docs.example.com.=127.0.0.1:8082 , malformed ",
+      ),
+      host_redirects: parse_host_redirects(
+        " dioxuspress.rustineverything.app = https://dioxuspress.dev/ , www.dioxuspress.dev=https://dioxuspress.dev ",
       ),
     };
     assert_eq!(gw.host_upstreams.len(), 2);
+    assert_eq!(gw.host_redirects.len(), 2);
 
     // HTTP/1.1 Host header with port & uppercase
     let mut h1 = RequestHeader::build("GET", b"/docs/guide/intro", None).unwrap();
-    h1.insert_header("Host", "DioxusPress.RustInEverything.app:443").unwrap();
+    h1.insert_header("Host", "DioxusPress.DEV:443").unwrap();
     assert_eq!(gw.select_upstream(&h1), "127.0.0.1:8081");
+    assert_eq!(gw.select_redirect_location(&h1), None);
+
+    // 301 redirect preserves path and query
+    let mut old_sub = RequestHeader::build("GET", b"/docs/guide/quickstart?lang=en", None).unwrap();
+    old_sub.insert_header("Host", "dioxuspress.rustineverything.app").unwrap();
+    assert_eq!(
+      gw.select_redirect_location(&old_sub).as_deref(),
+      Some("https://dioxuspress.dev/docs/guide/quickstart?lang=en")
+    );
 
     // HTTP/2 :authority stored in req.uri without Host header
     let mut h2 = RequestHeader::build("GET", b"/docs", None).unwrap();
@@ -405,5 +613,22 @@ mod tests {
     let mut main_req = RequestHeader::build("GET", b"/", None).unwrap();
     main_req.insert_header("Host", "rustineverything.app").unwrap();
     assert_eq!(gw.select_upstream(&main_req), "127.0.0.1:8080");
+  }
+
+  #[test]
+  fn sni_domain_matching_handles_exact_and_wildcard_subdomains_safely() {
+    let specs = parse_sni_cert_specs(
+      " *.dioxuspress.dev = /certs/dp/full.pem:/certs/dp/key.pem , api.dioxuspress.dev=/certs/api/full.pem:/certs/api/key.pem ",
+    );
+    assert_eq!(specs.len(), 2);
+    // Longer domain sorted first
+    assert_eq!(specs[0].0, "api.dioxuspress.dev");
+    assert_eq!(specs[1].0, "dioxuspress.dev");
+
+    assert!(host_matches_domain("dioxuspress.dev", "dioxuspress.dev"));
+    assert!(host_matches_domain("www.dioxuspress.dev", "dioxuspress.dev"));
+    // Suffix collision without dot boundary must NOT match
+    assert!(!host_matches_domain("fakedioxuspress.dev", "dioxuspress.dev"));
+    assert!(!host_matches_domain("rustineverything.app", "dioxuspress.dev"));
   }
 }

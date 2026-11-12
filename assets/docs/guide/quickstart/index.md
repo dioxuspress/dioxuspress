@@ -30,8 +30,8 @@ DioxusPress 支持两种典型本地启动路径：**零数据库文档站模式
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/yuxuetr/DioxusPress.git
-cd DioxusPress
+git clone https://github.com/dioxuspress/dioxuspress.git
+cd dioxuspress
 
 # 2. 仅需指定站点基础 URL，直接以 basic 档位启动
 cd crates/app

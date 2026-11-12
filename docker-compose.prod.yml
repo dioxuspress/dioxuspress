@@ -18,13 +18,13 @@ services:
 
   app:
     build: !reset null
-    image: ghcr.io/yuxuetr/dioxuspress-app:${RIE_TAG:-latest}
+    image: ghcr.io/dioxuspress/dioxuspress-app:${RIE_TAG:-latest}
     mem_limit: 768m
     volumes:
       - ${CONTENT_HOST_DIR:?CONTENT_HOST_DIR 必须指向内容仓库}:/app/content:ro
 
   gateway:
-    image: ghcr.io/yuxuetr/dioxuspress-gateway:${RIE_TAG:-latest}
+    image: ghcr.io/dioxuspress/dioxuspress-gateway:${RIE_TAG:-latest}
     container_name: dioxuspress-gateway
     restart: unless-stopped
     network_mode: host
@@ -39,7 +39,9 @@ services:
     environment:
       TLS_CERT_PATH: /certs/fullchain.pem
       TLS_KEY_PATH: /certs/privkey.pem
+      SNI_CERTS: ${SNI_CERTS:-}
       HOST_UPSTREAMS: ${HOST_UPSTREAMS:-}
+      HOST_REDIRECTS: ${HOST_REDIRECTS:-}
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - ${CERT_HOST_DIR:-/data/rie/certs}:/certs:ro
