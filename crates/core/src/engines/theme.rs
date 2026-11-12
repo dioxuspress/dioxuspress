@@ -146,18 +146,67 @@ pub fn find_theme(id: &str) -> Option<&'static Theme> {
   THEMES.iter().find(|t| t.id == id)
 }
 
-/// 本次请求生效的主题：合法的 cookie 覆盖 > site.json 默认 > 第一个内置主题。
-pub fn resolve_theme(site_default: &str, cookie: Option<&str>) -> &'static Theme {
+/// 解析站点在顶栏主题切换器中开放的主题列表：
+/// - `available` 为空时默认开放全部 [`THEMES`]（按内置顺序）；
+/// - `available` 非空时按配置顺序过滤合法内置主题并去重，同时确保站点默认主题始终包含在内（若漏配则置于首位）。
+pub fn resolve_available_themes(site_default: &str, available: &[String]) -> Vec<&'static Theme> {
+  if available.is_empty() {
+    return THEMES.iter().collect();
+  }
+
+  let default_theme = find_theme(site_default.trim()).unwrap_or_else(|| {
+    tracing::warn!(theme = %site_default, "theme: unknown site.json theme, using default");
+    &THEMES[0]
+  });
+
+  let mut out: Vec<&'static Theme> = Vec::with_capacity(available.len() + 1);
+  for raw in available {
+    let id = raw.trim();
+    if id.is_empty() {
+      continue;
+    }
+    if let Some(theme) = find_theme(id) {
+      if !out.iter().any(|existing| existing.id == theme.id) {
+        out.push(theme);
+      }
+    }
+  }
+
+  if !out.iter().any(|existing| existing.id == default_theme.id) {
+    out.insert(0, default_theme);
+  }
+  out
+}
+
+/// 本次请求生效的主题（考虑 `site.json` 的 `available_themes` 白名单约束）：
+/// 白名单内合法的 cookie 覆盖 > site.json 默认 > 第一个内置主题。
+pub fn resolve_theme_for_site(
+  site_default: &str,
+  available: &[String],
+  cookie: Option<&str>,
+) -> &'static Theme {
+  let allowed = resolve_available_themes(site_default, available);
   if let Some(raw) = cookie.map(str::trim).filter(|s| !s.is_empty()) {
     match find_theme(raw) {
-      Some(theme) => return theme,
+      Some(theme) if allowed.iter().any(|t| t.id == theme.id) => return theme,
+      Some(theme) => {
+        tracing::warn!(
+          cookie = %theme.id,
+          "theme: cookie theme is not in site.json available_themes, falling back"
+        );
+      }
       None => tracing::warn!(cookie = %raw.escape_debug(), "theme: unknown cookie theme, ignoring"),
     }
   }
-  find_theme(site_default).unwrap_or_else(|| {
+  find_theme(site_default.trim()).unwrap_or_else(|| {
     tracing::warn!(theme = %site_default, "theme: unknown site.json theme, using default");
     &THEMES[0]
   })
+}
+
+/// 本次请求生效的主题（无白名单限制）：合法的 cookie 覆盖 > site.json 默认 > 第一个内置主题。
+pub fn resolve_theme(site_default: &str, cookie: Option<&str>) -> &'static Theme {
+  resolve_theme_for_site(site_default, &[], cookie)
 }
 
 #[cfg(test)]
@@ -181,6 +230,33 @@ mod tests {
   fn unknown_site_default_falls_back_to_first_theme() {
     assert_eq!(resolve_theme("theme_ocean_plugin.wasm", None).id, THEMES[0].id);
     assert_eq!(resolve_theme("", Some("catppuccin")).id, "catppuccin");
+  }
+
+  #[test]
+  fn available_themes_filters_deduplicates_and_keeps_default() {
+    let all = resolve_available_themes("ocean", &[]);
+    assert_eq!(all.len(), THEMES.len());
+
+    // 自定义顺序 + 去重 + 过滤未知 id，且漏配的默认主题自动补在首位
+    let allow = vec![
+      "nord".to_string(),
+      "emerald".to_string(),
+      "nord".to_string(),
+      "unknown_theme".to_string(),
+    ];
+    let resolved: Vec<&str> =
+      resolve_available_themes("ocean", &allow).into_iter().map(|t| t.id).collect();
+    assert_eq!(resolved, vec!["ocean", "nord", "emerald"]);
+
+    // 若默认主题已在白名单中，保持用户配置的顺序
+    let allow_ordered = vec!["emerald".to_string(), "ocean".to_string(), "dracula".to_string()];
+    let ordered: Vec<&str> =
+      resolve_available_themes("ocean", &allow_ordered).into_iter().map(|t| t.id).collect();
+    assert_eq!(ordered, vec!["emerald", "ocean", "dracula"]);
+
+    // Cookie 若不在白名单内，自动回退到站点默认主题
+    assert_eq!(resolve_theme_for_site("ocean", &allow_ordered, Some("dracula")).id, "dracula");
+    assert_eq!(resolve_theme_for_site("ocean", &allow_ordered, Some("sunset")).id, "ocean");
   }
 
   #[test]
