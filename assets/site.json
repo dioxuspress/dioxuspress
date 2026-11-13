@@ -215,6 +215,11 @@
     {
       "key": "nav.templates",
       "route": "/templates"
+    },
+    {
+      "key": "nav.components",
+      "route": "https://ui.dioxuspress.dev/",
+      "new_tab": false
     }
   ],
   "modules": {

@@ -42,7 +42,7 @@ tower-http = { version = "0.6", features = ["fs", "compression-gzip", "compressi
 tower = { version = "0.5", features = ["util"], optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, optional = true }
-migration = { path = "../migration", optional = true }
+migration = { path = "../migration", default-features = false, optional = true }
 
 [features]
 default = ["web", "payments", "papers"]
@@ -52,7 +52,7 @@ mobile = ["dioxus/mobile"]
 # 功能分层（docs/FEATURE_TIERS.md）：默认 = 完整站点。
 # 账号层：登录、论坛、博客评论、图片上传、管理后台；需要 Postgres 与 JWT_SECRET。
 # 关闭时（basic）不连库、不要求 JWT_SECRET，相关路由 404。
-accounts = ["dep:module-forum", "dep:module-comments", "dep:module-admin", "dep:module-uploads"]
+accounts = ["dep:module-forum", "dep:module-comments", "dep:module-admin", "dep:module-uploads", "dep:migration"]
 # 课程层：课程 / 课时 / 标注 / 权益后台 / Pro 会员。关闭时课程路由 404。
 course = ["accounts", "dep:module-course"]
 # 在线支付（PM4，默认开）：级联 module-course/payments。关闭时 /api/pay/* 不注册、
@@ -88,7 +88,7 @@ server = [
     "dep:tower-http",
     "dep:tower",
     "dep:tracing-subscriber",
-    "dep:migration",
+    "migration?/server",
 ]
 
 [dev-dependencies]

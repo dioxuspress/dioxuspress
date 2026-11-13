@@ -15,6 +15,8 @@ use crate::i18n::init_i18n;
 use crate::routes::Route;
 use crate::server::get_aggregated_theme_css;
 use app_core::session::SessionUser;
+#[cfg(all(feature = "accounts", not(feature = "server")))]
+use migration as _;
 use module_search::search::{use_search_open_provider, SearchModal};
 
 /// Static assets used by the application.
