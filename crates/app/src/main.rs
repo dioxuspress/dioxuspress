@@ -190,6 +190,7 @@ fn lang_boot_script() -> String {
   };
   format!(
     "(function(){{try{{var d='{default_lang}';var q=new URLSearchParams(location.search).get('lang');\
+if(q==='en'||q==='zh'){{document.cookie='site_lang='+q+'; path=/; max-age=31536000; samesite=lax';}}\
 var c=(document.cookie.match(/(?:^|; )site_lang=([^;]*)/)||[])[1];\
 var l=(q==='en'||q==='zh')?q:((c==='en'||c==='zh')?c:d);\
 document.documentElement.lang=(l==='en')?'en':'zh-CN';}}catch(e){{}}}})();"
