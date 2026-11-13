@@ -448,8 +448,16 @@
           "description": "国际化词条 key 或字面显示文本。",
           "type": "string"
         },
+        "new_tab": {
+          "default": null,
+          "description": "是否在新标签页打开（未设置时：`http(s)://` 外链默认新开标签页，设为 `false` 可同标签页直达兄弟站点）。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "route": {
-          "description": "点击跳转路由路径（如 `\"/docs\"`）。",
+          "description": "点击跳转路由路径或外部 URL（如 `\"/templates\"` 或 `\"https://ui.dioxuspress.dev/\"`）。",
           "type": "string"
         }
       },

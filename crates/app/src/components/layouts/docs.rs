@@ -187,10 +187,13 @@ pub fn DocsShell() -> Element {
                     a {
                       key: "custom-nav-{nav_idx}",
                       href: "{item.route}",
-                      target: if item.route.starts_with("http") { "_blank" },
-                      rel: if item.route.starts_with("http") { "noopener noreferrer" },
-                      class: "px-2.5 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white transition-colors h-14 inline-flex items-center",
+                      target: if item.opens_in_new_tab() { "_blank" },
+                      rel: if item.opens_in_new_tab() { "noopener noreferrer" },
+                      class: "px-2.5 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white transition-colors h-14 inline-flex items-center gap-1",
                       "{t(lang(), &item.key)}"
+                      if item.opens_in_new_tab() {
+                        span { class: "text-xs opacity-60", "aria-hidden": "true", "↗" }
+                      }
                     }
                   } else {
                     Link {
@@ -308,11 +311,14 @@ pub fn DocsShell() -> Element {
                   a {
                     key: "mobile-custom-nav-{nav_idx}",
                     href: "{item.route}",
-                    target: if item.route.starts_with("http") { "_blank" },
-                    rel: if item.route.starts_with("http") { "noopener noreferrer" },
-                    class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200",
+                    target: if item.opens_in_new_tab() { "_blank" },
+                    rel: if item.opens_in_new_tab() { "noopener noreferrer" },
+                    class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 inline-flex items-center justify-between",
                     onclick: move |_| show_mobile_menu.set(false),
                     "{t(lang(), &item.key)}"
+                    if item.opens_in_new_tab() {
+                      span { class: "text-xs opacity-60", "aria-hidden": "true", "↗" }
+                    }
                   }
                 } else {
                   Link {

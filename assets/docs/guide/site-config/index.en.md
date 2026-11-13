@@ -137,7 +137,7 @@ Unset text fields fall back to `hero.*` keys in `assets/i18n/{zh,en}.ftl`:
 | `footer.icp_url` | `string \| null` | `"https://beian.miit.gov.cn/"` | Regulatory link URL |
 | `footer.social` | `array` | `[]` | Array of `{ "label": "GitHub", "url": "https://..." }`; the first GitHub URL also populates the top-right GitHub icon in `docs` layout |
 | `footer.columns` | `array` | `[]` | Multi-column link groups with `title`, `title_en`, and `links: [{ "label", "label_en", "href" }]` |
-| `navigation` | `array` | `[]` | Custom topbar links in `docs` layout: `{ "key": "nav.templates or literal label", "route": "/templates" }` (internal routes are automatically added to `/sitemap.xml`) |
+| `navigation` | `array` | `[]` | Custom topbar links in `docs` layout: `{ "key": "nav.templates or literal label", "route": "/templates", "new_tab": false }` (`http(s)://` opens in a new tab by default; set `new_tab: false` for same-tab sibling domains; internal routes are automatically added to `/sitemap.xml`) |
 
 ---
 

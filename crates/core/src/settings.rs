@@ -453,8 +453,20 @@ pub struct ModerationThresholdsConfig {
 pub struct NavItem {
   /// 国际化词条 key 或字面显示文本。
   pub key: String,
-  /// 点击跳转路由路径（如 `"/docs"`）。
+  /// 点击跳转路由路径或外部 URL（如 `"/templates"` 或 `"https://ui.dioxuspress.dev/"`）。
   pub route: String,
+  /// 是否在新标签页打开（未设置时：`http(s)://` 外链默认新开标签页，设为 `false` 可同标签页直达兄弟站点）。
+  #[serde(default)]
+  pub new_tab: Option<bool>,
+}
+
+impl NavItem {
+  /// 判断该导航项是否应以 `target="_blank"` 在新标签页打开。
+  pub fn opens_in_new_tab(&self) -> bool {
+    self
+      .new_tab
+      .unwrap_or_else(|| self.route.starts_with("http://") || self.route.starts_with("https://"))
+  }
 }
 
 /// OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应 `*_CLIENT_ID` / `*_CLIENT_SECRET` 环境变量）。
@@ -824,7 +836,7 @@ const KNOWN_SOCIAL_KEYS: &[&str] = &["label", "url"];
 const KNOWN_FOOTER_COL_KEYS: &[&str] = &["title", "title_en", "links"];
 const KNOWN_FOOTER_LINK_KEYS: &[&str] = &["label", "label_en", "href"];
 const KNOWN_ANNOTATIONS_KEYS: &[&str] = &["course", "doc", "blog"];
-const KNOWN_NAV_KEYS: &[&str] = &["key", "route"];
+const KNOWN_NAV_KEYS: &[&str] = &["key", "route", "new_tab"];
 const KNOWN_AUTH_KEYS: &[&str] = &["enabled", "providers"];
 const KNOWN_MODULE_KEYS: &[&str] = &["enabled"];
 const KNOWN_MODERATION_KEYS: &[&str] =
