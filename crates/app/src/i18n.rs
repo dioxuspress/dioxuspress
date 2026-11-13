@@ -40,10 +40,11 @@ fn initial_language() -> Language {
   }
   #[cfg(not(feature = "server"))]
   {
-    pick_language(
-      widgets::browser::query_param("lang").as_deref(),
-      widgets::browser::cookie(LANG_COOKIE).as_deref(),
-    )
+    let query = widgets::browser::query_param("lang");
+    if let Some(code @ ("en" | "zh")) = query.as_deref() {
+      widgets::browser::set_cookie(LANG_COOKIE, code, 31_536_000);
+    }
+    pick_language(query.as_deref(), widgets::browser::cookie(LANG_COOKIE).as_deref())
   }
 }
 

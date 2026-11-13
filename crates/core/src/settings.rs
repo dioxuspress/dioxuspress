@@ -467,6 +467,31 @@ impl NavItem {
       .new_tab
       .unwrap_or_else(|| self.route.starts_with("http://") || self.route.starts_with("https://"))
   }
+
+  /// 生成导航跳转目标：当条目是显式配置为同标签页直达的兄弟外链（`http(s)://` 且 `new_tab == Some(false)`）时，
+  /// 自动附带当前界面语言 `?lang=zh|en`（若原链接尚未声明 `lang` 参数），实现跨站点语言无缝延续。
+  pub fn resolved_href(&self, lang: Language) -> String {
+    let is_http = self.route.starts_with("http://") || self.route.starts_with("https://");
+    if !is_http || self.new_tab != Some(false) {
+      return self.route.clone();
+    }
+    let (without_frag, frag) = match self.route.split_once('#') {
+      Some((base, f)) => (base, Some(f)),
+      None => (self.route.as_str(), None),
+    };
+    let has_lang_param = without_frag
+      .split_once('?')
+      .is_some_and(|(_, q)| q.split('&').any(|kv| kv == "lang" || kv.starts_with("lang=")));
+    if has_lang_param {
+      return self.route.clone();
+    }
+    let sep = if without_frag.contains('?') { '&' } else { '?' };
+    let code = lang.pick("zh", "en");
+    match frag {
+      Some(f) => format!("{without_frag}{sep}lang={code}#{f}"),
+      None => format!("{without_frag}{sep}lang={code}"),
+    }
+  }
 }
 
 /// OAuth 第三方授权登录配置（需 `accounts` 特性档位与对应 `*_CLIENT_ID` / `*_CLIENT_SECRET` 环境变量）。
@@ -1606,5 +1631,45 @@ mod tests {
     // favicon 在 assets/images 命中、logo 在 content/images 命中，均不应报警
     assert!(!fields.contains(&"favicon"), "{diags:#?}");
     assert!(!fields.contains(&"logo"), "{diags:#?}");
+  }
+
+  #[test]
+  fn sibling_same_tab_nav_item_propagates_current_language() {
+    let sibling = NavItem {
+      key: "nav.components".to_string(),
+      route: "https://ui.dioxuspress.dev/".to_string(),
+      new_tab: Some(false),
+    };
+    assert!(!sibling.opens_in_new_tab());
+    assert_eq!(sibling.resolved_href(Language::Zh), "https://ui.dioxuspress.dev/?lang=zh");
+    assert_eq!(sibling.resolved_href(Language::En), "https://ui.dioxuspress.dev/?lang=en");
+
+    let with_query_and_hash = NavItem {
+      key: "nav.components".to_string(),
+      route: "https://ui.dioxuspress.dev/?from=docs#button".to_string(),
+      new_tab: Some(false),
+    };
+    assert_eq!(
+      with_query_and_hash.resolved_href(Language::En),
+      "https://ui.dioxuspress.dev/?from=docs&lang=en#button"
+    );
+
+    let preset_lang = NavItem {
+      key: "nav.components".to_string(),
+      route: "https://ui.dioxuspress.dev/?lang=zh".to_string(),
+      new_tab: Some(false),
+    };
+    assert_eq!(preset_lang.resolved_href(Language::En), "https://ui.dioxuspress.dev/?lang=zh");
+
+    let external_new_tab = NavItem {
+      key: "nav.github".to_string(),
+      route: "https://github.com/dioxuspress/dioxuspress".to_string(),
+      new_tab: None,
+    };
+    assert!(external_new_tab.opens_in_new_tab());
+    assert_eq!(
+      external_new_tab.resolved_href(Language::En),
+      "https://github.com/dioxuspress/dioxuspress"
+    );
   }
 }

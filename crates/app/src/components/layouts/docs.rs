@@ -186,7 +186,7 @@ pub fn DocsShell() -> Element {
                   if is_external_or_raw_href(&item.route) {
                     a {
                       key: "custom-nav-{nav_idx}",
-                      href: "{item.route}",
+                      href: "{item.resolved_href(lang())}",
                       target: if item.opens_in_new_tab() { "_blank" },
                       rel: if item.opens_in_new_tab() { "noopener noreferrer" },
                       class: "px-2.5 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white transition-colors h-14 inline-flex items-center gap-1",
@@ -310,7 +310,7 @@ pub fn DocsShell() -> Element {
                 if is_external_or_raw_href(&item.route) {
                   a {
                     key: "mobile-custom-nav-{nav_idx}",
-                    href: "{item.route}",
+                    href: "{item.resolved_href(lang())}",
                     target: if item.opens_in_new_tab() { "_blank" },
                     rel: if item.opens_in_new_tab() { "noopener noreferrer" },
                     class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 inline-flex items-center justify-between",
