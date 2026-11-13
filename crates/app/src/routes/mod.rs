@@ -177,10 +177,16 @@ fn course_showcase() -> Element {
   }
 }
 
-/// Application routes
-#[derive(Debug, Clone, Routable, PartialEq)]
-#[rustfmt::skip]
-pub enum Route {
+// `dioxus-router-macro` 在 `/:..path` 等不可失败 catch-all 分支后仍生成兜底错误返回，
+// Rust 1.100+ 会将其判定为 `unreachable_code`；收窄到独立子模块内豁免。
+#[allow(unreachable_code)]
+mod route_def {
+  use super::*;
+
+  /// Application routes
+  #[derive(Debug, Clone, Routable, PartialEq)]
+  #[rustfmt::skip]
+  pub enum Route {
     #[layout(Navbar)]
         #[route("/")]
         Home {},
@@ -288,7 +294,9 @@ pub enum Route {
         AdminModeration {},
         #[route("/admin/moderation/settings")]
         AdminModerationSettings {},
+  }
 }
+pub use route_def::Route;
 
 /// Home page
 #[component]
