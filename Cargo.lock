@@ -4636,10 +4636,13 @@ version = "0.1.0"
 dependencies = [
  "app-core",
  "board",
+ "chrono",
  "dioxus",
  "dioxus-shadcn",
  "dioxus-ssr",
+ "llm",
  "reqwest",
+ "sea-orm",
  "serde",
  "serde_json",
  "serde_yaml",

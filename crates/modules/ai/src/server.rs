@@ -516,6 +516,16 @@ mod imp {
   }
 }
 
+/// 服务端内部直接调用的上游蓝图拉取入口（供管理员在线收录模型时复用）。
+#[cfg(feature = "server")]
+pub async fn resolve_model_blueprint_server(
+  raw_repo: &str,
+  raw_source: &str,
+  raw_revision: &str,
+) -> Result<ModelBlueprint, String> {
+  imp::resolve_model_blueprint(raw_repo, raw_source, raw_revision).await
+}
+
 /// Dioxus Server Function：按 HuggingFace / ModelScope 仓库标识实时解析模型架构与 Safetensors 元数据。
 #[server]
 pub async fn fetch_model_blueprint(

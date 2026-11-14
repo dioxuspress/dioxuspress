@@ -76,7 +76,7 @@ async fn collect_detail_paths(is_on: impl Fn(&str) -> bool) -> Vec<(String, Opti
     paths.extend(cases.into_iter().map(|c| (format!("/case/{}", c.slug), None)));
   }
   if is_on("ai") {
-    let models = module_ai::atlas::scan_curated_models();
+    let models = module_ai::atlas_store::list_curated_models_merged().await;
     paths.extend(models.into_iter().map(|m| (format!("/models/{}", m.slug), None)));
   }
   #[cfg(feature = "course")]

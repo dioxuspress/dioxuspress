@@ -39,6 +39,7 @@ mod m20261020_000009_order_product;
 mod m20261029_000010_pending_review;
 mod m20261029_000011_papers;
 mod m20261104_000012_paper_topics;
+mod m20261114_000013_curated_models;
 
 pub struct Migrator;
 
@@ -58,6 +59,7 @@ impl MigratorTrait for Migrator {
       Box::new(m20261029_000010_pending_review::Migration),
       Box::new(m20261029_000011_papers::Migration),
       Box::new(m20261104_000012_paper_topics::Migration),
+      Box::new(m20261114_000013_curated_models::Migration),
     ]
   }
 }
@@ -84,6 +86,7 @@ mod tests {
         "m20261029_000010_pending_review".to_string(),
         "m20261029_000011_papers".to_string(),
         "m20261104_000012_paper_topics".to_string(),
+        "m20261114_000013_curated_models".to_string(),
       ]
     );
   }

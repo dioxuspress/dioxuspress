@@ -8,6 +8,7 @@
 
 pub mod arch;
 pub mod atlas;
+pub mod atlas_store;
 pub mod diagram;
 pub mod safetensors_meta;
 pub mod server;

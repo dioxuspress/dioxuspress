@@ -1,6 +1,7 @@
 pub mod annotation;
 pub mod comment;
 pub mod course_progress;
+pub mod curated_model;
 pub mod entitlement;
 pub mod membership;
 pub mod moderation_queue;
