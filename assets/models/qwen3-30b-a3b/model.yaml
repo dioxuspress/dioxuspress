@@ -1,0 +1,23 @@
+slug: qwen3-30b-a3b
+name: Qwen3-30B-A3B
+vendor: Alibaba Qwen
+series: qwen
+release_date: "2025-04"
+hf_repo: Qwen/Qwen3-30B-A3B
+ms_repo: Qwen/Qwen3-30B-A3B
+featured: true
+order: 21
+summary: 30.5B 总参数仅激活 3.3B（单卡消费级显卡可跑），采用全细粒度 128 路由专家选 Top-8（无共享专家）+ 解耦 128 维注意力头与每头 QK-Norm。
+summary_en: 30.5B total parameters with only 3.3B active per token, featuring fine-grained Top-8/128 Sparse MoE, decoupled head_dim=128, and per-head QK-Norm.
+tags:
+  - moe
+  - qk-norm
+  - gqa
+highlights:
+  - "极致激活稀疏比：48 层全部采用 128 个细粒度专家（I=768）每次激活 Top-8，无常驻共享专家，单 Token 仅激活约 10.9% 参数（3.3B）。"
+  - "显式解耦注意力维度：hidden_size=2048，但 32 个 Query 头显式扩展为 head_dim=128（q_out=4096 > hidden_size），配合 4 个 KV 头实现 8:1 GQA 压缩。"
+  - "训练稳定性升级：移除 Qwen2 时代的 QKV 偏置（attention_bias=false），全面引入每头 RMSNorm（q_norm / k_norm）。"
+highlights_en:
+  - "High Sparsity Ratio: All 48 layers deploy 128 fine-grained experts (I=768) with Top-8 routing and zero shared experts (~3.3B active/token)."
+  - "Decoupled Attention Projection: Expands hidden_size=2048 to q_out=4096 (32 heads x 128d) with 4 KV heads (8x GQA compression)."
+  - "Per-Head QK-Norm: Drops legacy QKV bias in favor of per-head RMSNorm (q_norm / k_norm) for stable FP8/BF16 scaling."

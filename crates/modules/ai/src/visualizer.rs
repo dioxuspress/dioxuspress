@@ -151,12 +151,16 @@ pub fn AiVisualizerPage() -> Element {
         // 页面头部
         div { class: "mb-6 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4",
           div {
-            div { class: "inline-flex items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 mb-2",
-              Link { to: "/ai", class: "hover:underline",
-                {lang.pick("← 返回 AI 工程板块", "← Back to Rust AI")}
+            div { class: "inline-flex flex-wrap items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 mb-2",
+              Link { to: "/models", class: "hover:underline",
+                {lang.pick("← 模型架构图鉴", "← Model Atlas")}
+              }
+              span { class: "text-slate-300 dark:text-slate-700", "·" }
+              Link { to: "/ai", class: "hover:underline text-slate-500 dark:text-slate-400",
+                {lang.pick("AI 工程板块", "Rust AI")}
               }
               span { class: "text-slate-300 dark:text-slate-700", "/" }
-              span { "L1 Config + L2 Safetensors Inspector" }
+              span { "L1 Config + L2 Safetensors Live Sandbox" }
             }
             h1 { class: "text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white",
               "{title}"
@@ -633,6 +637,18 @@ pub fn ModelVisualizerWorkbench(
               }
               // 快捷切换子模块焦点按钮
               div { class: "flex flex-wrap gap-1",
+                if blueprint.vision.is_some() {
+                  button {
+                    r#type: "button",
+                    class: if focus() == InspectorFocus::Vision {
+                      "px-2.5 py-1 rounded-md text-xs font-semibold bg-fuchsia-600 text-white cursor-pointer"
+                    } else {
+                      "px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                    },
+                    onclick: move |_| focus.set(InspectorFocus::Vision),
+                    "Vision"
+                  }
+                }
                 for (f_opt, f_label) in [
                   (InspectorFocus::Embedding, "Embed"),
                   (InspectorFocus::Attention, "Attention"),
@@ -979,6 +995,7 @@ fn HyperKv(k: String, v: String) -> Element {
 fn ParamStackedBar(params: crate::arch::ParamBreakdown) -> Element {
   let tot = params.total_params.max(1) as f64;
   let slices = [
+    ("Vision", params.vision_encoder, "bg-fuchsia-500"),
     ("Embedding", params.embedding, "bg-emerald-500"),
     ("Attention", params.attention, "bg-indigo-500"),
     ("Dense FFN", params.dense_ffn, "bg-sky-500"),

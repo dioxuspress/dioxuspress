@@ -12,6 +12,7 @@ dioxus-shadcn = { workspace = true, features = ["badge", "button", "card", "inpu
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_yaml = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"], optional = true }
 tracing.workspace = true
 widgets = { path = "../../widgets" }
@@ -24,6 +25,7 @@ server = [
   "app-core/server",
   "board/server",
   "dep:reqwest",
+  "dep:serde_yaml",
   "dep:tokio",
   "dioxus/server",
   "widgets/server",

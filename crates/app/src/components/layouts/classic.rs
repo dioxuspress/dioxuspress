@@ -47,6 +47,7 @@ pub fn ClassicShell() -> Element {
   let on_blog = enabled.iter().any(|s| s == "blog");
   let on_podcast = enabled.iter().any(|s| s == "podcast");
   let on_cases = enabled.iter().any(|s| s == "cases");
+  let on_ai = enabled.iter().any(|s| s == "ai");
   let on_course = enabled.iter().any(|s| s == "course");
   let on_forum = enabled.iter().any(|s| s == "forum");
   let on_docs = enabled.iter().any(|s| s == "docs");
@@ -75,6 +76,7 @@ pub fn ClassicShell() -> Element {
       (Route::EmbeddedArticle { .. }, Route::Embedded {}) => true,
       (Route::AiArticle { .. }, Route::Ai {}) => true,
       (Route::AiVisualizer {}, Route::Ai {}) => true,
+      (Route::ModelDetail { .. }, Route::Models {}) => true,
       (Route::Web3Article { .. }, Route::Web3 {}) => true,
       (Route::WasmArticle { .. }, Route::Wasm {}) => true,
       (Route::CliArticle { .. }, Route::Cli {}) => true,
@@ -121,6 +123,9 @@ pub fn ClassicShell() -> Element {
                           nav { class: "hidden lg:flex items-center gap-1 text-sm font-medium",
                               for eco in ecosystems() {
                                   EcosystemMenu { key: "{eco.id}", eco: eco.clone(), enabled: enabled.clone() }
+                              }
+                              if on_ai {
+                                  Link { to: Route::Models {}, class: link_class(Route::Models {}), "{t(lang(), \"nav.models\")}" }
                               }
                               if on_cases {
                                   Link { to: Route::Cases {}, class: link_class(Route::Cases {}), "{t(lang(), \"nav.cases\")}" }
@@ -295,6 +300,9 @@ pub fn ClassicShell() -> Element {
                       div {
                           p { class: "text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3", "{t(lang(), \"footer.col.content\")}" }
                           div { class: "flex flex-col gap-2 text-slate-600 dark:text-slate-300",
+                              if on_ai {
+                                  Link { to: Route::Models {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.models\")}" }
+                              }
                               if on_cases {
                                   Link { to: Route::Cases {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.cases\")}" }
                               }

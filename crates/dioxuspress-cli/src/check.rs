@@ -116,8 +116,9 @@ pub fn resolve_target_root(input: &Path) -> Result<PathBuf, String> {
   {
     return Ok(assets);
   }
-  let has_direct_content =
-    ["site.json", "docs", "posts", "courses", "cases"].iter().any(|name| input.join(name).exists());
+  let has_direct_content = ["site.json", "docs", "posts", "courses", "cases", "models"]
+    .iter()
+    .any(|name| input.join(name).exists());
   if has_direct_content {
     return Ok(input.to_path_buf());
   }
@@ -243,6 +244,80 @@ pub fn check_site(input: &Path) -> Result<CheckSummary, String> {
         &mut internal_links_checked,
         &mut diagnostics,
       );
+    }
+  }
+
+  let models_dir = root.join("models");
+  if models_dir.is_dir() {
+    if let Ok(entries) = fs::read_dir(&models_dir) {
+      let mut dirs: Vec<PathBuf> =
+        entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+      dirs.sort();
+      for dir in dirs {
+        let slug = dir.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+        if slug.starts_with('.') || slug.starts_with('_') {
+          continue;
+        }
+        if !is_safe_slug(slug) {
+          diagnostics.push(Diagnostic {
+            file: dir.clone(),
+            line: 1,
+            message: format!(
+              "model directory '{slug}' is not a valid URL slug (only ASCII [A-Za-z0-9_-] allowed)"
+            ),
+          });
+        }
+        let yaml_path = if dir.join("model.yaml").is_file() {
+          Some(dir.join("model.yaml"))
+        } else if dir.join("model.yml").is_file() {
+          Some(dir.join("model.yml"))
+        } else {
+          None
+        };
+        match yaml_path {
+          Some(yf) => {
+            files_checked += 1;
+            check_yaml_file(&yf, &mut diagnostics);
+          }
+          None => diagnostics.push(Diagnostic {
+            file: dir.clone(),
+            line: 1,
+            message: "curated model directory is missing model.yaml".to_string(),
+          }),
+        }
+        let cfg_path = dir.join("config.json");
+        if cfg_path.is_file() {
+          files_checked += 1;
+          match fs::read_to_string(&cfg_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+          {
+            Some(v) if v.is_object() => {}
+            _ => diagnostics.push(Diagnostic {
+              file: cfg_path,
+              line: 1,
+              message: "invalid model config.json (must be a valid JSON object)".to_string(),
+            }),
+          }
+        } else {
+          diagnostics.push(Diagnostic {
+            file: dir.clone(),
+            line: 1,
+            message: "curated model directory is missing config.json".to_string(),
+          });
+        }
+        let readme = dir.join("README.md");
+        if readme.is_file() {
+          files_checked += 1;
+          check_markdown_file(
+            &readme,
+            &root,
+            ContentKind::FreePage,
+            &mut internal_links_checked,
+            &mut diagnostics,
+          );
+        }
+      }
     }
   }
 
@@ -1054,6 +1129,20 @@ fn verify_target_url(
         return Some(format!(
           "broken case link '{raw_url}': expected {}/case.yaml",
           case_dir.display()
+        ));
+      }
+    }
+    return None;
+  }
+
+  if let Some(slug) = without_frag.strip_prefix("/models/") {
+    if root.join("models").is_dir() {
+      *internal_links_checked += 1;
+      let model_dir = root.join("models").join(slug);
+      if !model_dir.join("model.yaml").is_file() && !model_dir.join("model.yml").is_file() {
+        return Some(format!(
+          "broken model link '{raw_url}': expected {}/model.yaml",
+          model_dir.display()
         ));
       }
     }

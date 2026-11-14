@@ -7,16 +7,18 @@ use std::time::SystemTime;
 /// 自动探测资产根目录。
 ///
 /// 启动方式不同（cargo run / dx serve / cargo test），运行目录可能是
-/// 项目根目录（`./assets` 存在）或 crate 子目录（需上溯 `../../assets`）。
-/// 调用方无需关心：本函数会先查相对路径 `assets`，否则退回到 `../../assets`。
+/// 项目根目录（`./assets` 存在）、二级子目录（`../../assets`）或模块三级子目录（`../../../assets`）。
+/// 调用方无需关心：本函数会依次探测上述相对路径，若均不存在则回退到 `../../assets`。
 ///
 /// 返回的 `PathBuf` 不保证存在；调用方需根据上下文做存在性检查。
 pub fn get_asset_root() -> PathBuf {
-  let mut path = PathBuf::from("assets");
-  if !path.exists() {
-    path = PathBuf::from("../../assets");
+  for candidate in ["assets", "../../assets", "../../../assets"] {
+    let p = PathBuf::from(candidate);
+    if p.exists() {
+      return p;
+    }
   }
-  path
+  PathBuf::from("../../assets")
 }
 
 /// 容器默认内容挂载路径：用户执行 `docker run -v ./my-site:/app/content:ro ...`
@@ -258,11 +260,10 @@ mod tests {
 
   #[test]
   fn returns_a_path_buf() {
-    // 不能假设具体内容（依赖运行目录），只验证返回 PathBuf 即可
+    // 不能假设具体内容（依赖运行目录），只验证返回已知相对路径之一
     let p = get_asset_root();
-    // 一定是 "assets" 或 "../../assets" 之一
     let s = p.to_string_lossy();
-    assert!(s == "assets" || s == "../../assets");
+    assert!(s == "assets" || s == "../../assets" || s == "../../../assets");
   }
 
   /// 基本命中 / 未命中：同 fingerprint 复用，变了才重建。

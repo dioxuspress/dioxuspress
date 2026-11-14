@@ -8,6 +8,7 @@ nav.forum = 论坛
 nav.menu = 导航菜单
 nav.toggle_dark = 切换暗色模式
 nav.cases = 案例
+nav.models = 模型图鉴
 nav.start = 开始学习
 nav.embedded = 嵌入式
 nav.course = 课程

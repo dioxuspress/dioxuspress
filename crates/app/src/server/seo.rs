@@ -75,6 +75,10 @@ async fn collect_detail_paths(is_on: impl Fn(&str) -> bool) -> Vec<(String, Opti
     let cases = module_cases::server::list_cases(None, None, None).await.unwrap_or_default();
     paths.extend(cases.into_iter().map(|c| (format!("/case/{}", c.slug), None)));
   }
+  if is_on("ai") {
+    let models = module_ai::atlas::scan_curated_models();
+    paths.extend(models.into_iter().map(|m| (format!("/models/{}", m.slug), None)));
+  }
   #[cfg(feature = "course")]
   if is_on("course") {
     let courses = module_course::server::list_courses().await.unwrap_or_default();
@@ -148,6 +152,7 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
   }
   if is_on("ai") {
     static_paths.push("/ai/visualizer".to_string());
+    static_paths.push("/models".to_string());
   }
   // G6：生态落地页不是模块，不在 ModuleSpec 里；仅在该生态下至少有一个领域板块启用时收录。
   static_paths.extend(
@@ -429,8 +434,15 @@ mod tests {
     assert!(paths.iter().filter(|(p, _)| p.starts_with("/docs/")).all(|(_, m)| m.is_some()));
     assert_eq!(
       paths.len(),
-      docs + en_docs + en_index_entry + count_dirs("cases") + courses + open_lessons
+      docs
+        + en_docs
+        + en_index_entry
+        + count_dirs("cases")
+        + count_dirs("models")
+        + courses
+        + open_lessons
     );
+    assert!(paths.iter().any(|(x, _)| x == "/models/deepseek-v3"));
     // G6：示例付费课程只有第一课是试看。
     if cfg!(feature = "course") {
       let has = |p: &str| paths.iter().any(|(x, _)| x == p);
