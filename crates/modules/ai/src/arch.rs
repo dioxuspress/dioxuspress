@@ -16,14 +16,22 @@ use crate::safetensors_meta::{SafetensorsSummary, TensorPatternEntry};
 /// 识别出的模型架构家族。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ArchFamily {
-  /// Llama / Mistral / Gemma 等标准 Pre-Norm + RoPE + GQA + SwiGLU 架构
+  /// Llama / Mistral 等标准 Pre-Norm + RoPE + GQA + SwiGLU 架构
   LlamaDense,
+  /// Llama-4 iRoPE（RoPE/NoPE 交替）+ 共享专家稀疏 MoE（含多模态视觉融合）
+  Llama4Moe,
   /// Qwen2 / Qwen2.5 / Qwen3 稠密架构（含 QK-Norm 或 QKV Bias 细节）
   QwenDense,
-  /// Qwen2-MoE / Qwen3-MoE / Mixtral 稀疏混合专家架构
+  /// Qwen2-MoE / Qwen3-MoE 稀疏混合专家架构
   QwenMoe,
+  /// Mixtral 经典 Top-K 稀疏混合专家架构（无共享专家）
+  MixtralMoe,
   /// DeepSeek-V2 / V3 / R1：MLA 多头潜在注意力 + 混合 Dense/DeepSeekMoE (+ MTP)
   DeepSeekMla,
+  /// Gemma-2 / Gemma-3：Local SWA + Global 全注意力交替层栈 + Pre/Post 四重 RMSNorm + GeGLU
+  GemmaHybrid,
+  /// GLM-4 系列：高压缩比 MQA/GQA + Partial RoPE + 融合 gate_up_proj FFN
+  GlmGqa,
   /// 其它标准 Decoder-Only Transformer
   GenericTransformer,
   /// 未提供标准 Transformer 超参、仅由 Safetensors 权重树还原的自定义模型
@@ -34,19 +42,36 @@ impl ArchFamily {
   pub fn badge_label(&self) -> &'static str {
     match self {
       Self::LlamaDense => "Llama / GQA Dense",
+      Self::Llama4Moe => "Llama-4 iRoPE + MoE",
       Self::QwenDense => "Qwen Dense (GQA)",
-      Self::QwenMoe => "Qwen / Sparse MoE",
+      Self::QwenMoe => "Qwen Sparse MoE",
+      Self::MixtralMoe => "Mixtral Sparse MoE",
       Self::DeepSeekMla => "DeepSeek MLA + MoE",
+      Self::GemmaHybrid => "Gemma Hybrid SWA",
+      Self::GlmGqa => "GLM Extreme GQA",
       Self::GenericTransformer => "Transformer Decoder",
       Self::SafetensorsTree => "Safetensors Weight Tree",
     }
   }
 }
 
+/// 多模态视觉编码器（Vision Tower + Projector）规格。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VisionSpec {
+  pub model_type: String,
+  pub hidden_size: u64,
+  pub num_hidden_layers: u64,
+  pub num_attention_heads: u64,
+  pub intermediate_size: u64,
+  pub image_size: Option<u64>,
+  pub patch_size: Option<u64>,
+  pub estimated_params: u64,
+}
+
 /// 注意力子层精确规格。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AttentionSpec {
-  /// 标准 MHA / MQA / GQA（含可选每头 QK-Norm 与滑动窗口 SWA）
+  /// 标准 MHA / MQA / GQA（含可选每头 QK-Norm、滑动窗口 SWA 及交替层调度）
   StandardGqa {
     num_q_heads: u64,
     num_kv_heads: u64,
@@ -55,6 +80,12 @@ pub enum AttentionSpec {
     o_bias: bool,
     qk_norm: bool,
     sliding_window: Option<u64>,
+    /// 如 Gemma-3 的 `6`：每 6 层中前 5 层用 `sliding_window` 局部注意力，第 6 层用全局全注意力
+    #[serde(default)]
+    sliding_window_pattern: Option<u64>,
+    /// 如 Llama-4 的 `4`（iRoPE）：每 4 层中 3 层启用 RoPE，第 4 层为无位置编码 NoPE 全局层
+    #[serde(default)]
+    nope_layer_interval: Option<u64>,
   },
   /// DeepSeek Multi-head Latent Attention (MLA)：低秩联合压缩 KV + 解耦 RoPE
   DeepSeekMla {
@@ -72,7 +103,16 @@ impl AttentionSpec {
   /// 简短机制名称（用于架构图节点副标题）。
   pub fn short_label(&self) -> String {
     match self {
-      Self::StandardGqa { num_q_heads, num_kv_heads, head_dim, qk_norm, .. } => {
+      Self::StandardGqa {
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+        qk_norm,
+        sliding_window,
+        sliding_window_pattern,
+        nope_layer_interval,
+        ..
+      } => {
         let kind = if *num_q_heads == *num_kv_heads {
           "MHA"
         } else if *num_kv_heads == 1 {
@@ -81,7 +121,16 @@ impl AttentionSpec {
           "GQA"
         };
         let norm_tag = if *qk_norm { " + QK-Norm" } else { "" };
-        format!("{kind} ({num_q_heads}Q : {num_kv_heads}KV × {head_dim}d{norm_tag})")
+        let extra = if let (Some(w), Some(pat)) = (sliding_window, sliding_window_pattern) {
+          format!(" · {}:1 SWA({w})", pat.saturating_sub(1))
+        } else if let Some(iv) = nope_layer_interval {
+          format!(" · iRoPE({}:1)", iv.saturating_sub(1))
+        } else if let Some(w) = sliding_window {
+          format!(" · SWA({w})")
+        } else {
+          String::new()
+        };
+        format!("{kind} ({num_q_heads}Q:{num_kv_heads}KV × {head_dim}d{norm_tag}{extra})")
       }
       Self::DeepSeekMla { num_heads, kv_lora_rank, qk_rope_head_dim, .. } => {
         format!("MLA ({num_heads}H, c_KV={kv_lora_rank}d + k_R={qk_rope_head_dim}d)")
@@ -160,8 +209,14 @@ impl AttentionSpec {
 /// 前馈网络（Dense FFN 或 Sparse MoE）子层精确规格。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FfnSpec {
-  /// 稠密门控前馈网络（SwiGLU / GeGLU：`gate_proj`, `up_proj`, `down_proj`）
-  DenseGated { intermediate_size: u64, act_fn: String, bias: bool },
+  /// 稠密门控前馈网络（SwiGLU / GeGLU：支持标准三矩阵或 GLM-4 融合 `gate_up_proj`）
+  DenseGated {
+    intermediate_size: u64,
+    act_fn: String,
+    bias: bool,
+    #[serde(default)]
+    fused_gate_up: bool,
+  },
   /// 稀疏混合专家（支持 Routed Top-K Experts + 可选常驻 Shared Experts + 分组路由）
   SparseMoe {
     num_routed_experts: u64,
@@ -180,8 +235,12 @@ pub enum FfnSpec {
 impl FfnSpec {
   pub fn short_label(&self) -> String {
     match self {
-      Self::DenseGated { intermediate_size, act_fn, .. } => {
-        format!("Dense FFN ({act_fn}, I={intermediate_size})")
+      Self::DenseGated { intermediate_size, act_fn, fused_gate_up, .. } => {
+        if *fused_gate_up {
+          format!("Fused GateUp FFN ({act_fn}, I={intermediate_size})")
+        } else {
+          format!("Dense FFN ({act_fn}, I={intermediate_size})")
+        }
       }
       Self::SparseMoe {
         num_routed_experts,
@@ -238,7 +297,11 @@ impl FfnSpec {
   }
 }
 
-/// 连续同构的 Transformer 层区间（精确表达如 DeepSeek-V3 的 `Layers 0..2 Dense` + `Layers 3..60 MoE`）。
+fn default_norms_per_layer() -> u64 {
+  2
+}
+
+/// 连续同构（或周期性交替）的 Transformer 层区间（精确表达如 DeepSeek-V3 的 `Layers 0..2 Dense` + `Layers 3..60 MoE`）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LayerSegment {
   /// 起始层号（含，0-based）
@@ -249,6 +312,12 @@ pub struct LayerSegment {
   pub title: String,
   pub attention: AttentionSpec,
   pub ffn: FfnSpec,
+  /// 每层 RMSNorm 数量：标准 Pre-Norm 为 `2`，Gemma-2/3 与 GLM-4（Pre + Post 双重归一化）为 `4`
+  #[serde(default = "default_norms_per_layer")]
+  pub norms_per_layer: u64,
+  /// 周期性混合层调度说明（如 Gemma-3 的 `5:1 Local SWA / Global` 或 Llama-4 的 `3:1 iRoPE`）
+  #[serde(default)]
+  pub schedule_note: Option<String>,
 }
 
 impl LayerSegment {
@@ -268,6 +337,8 @@ impl LayerSegment {
 /// 参数量分项统计（单位：参数个数）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ParamBreakdown {
+  #[serde(default)]
+  pub vision_encoder: u64,
   pub embedding: u64,
   pub attention: u64,
   pub dense_ffn: u64,
@@ -276,7 +347,7 @@ pub struct ParamBreakdown {
   pub norms_and_routers: u64,
   pub lm_head: u64,
   pub mtp_head: u64,
-  /// 模型总参数量（主干 + Embedding + LM Head，不含训练辅助 MTP 时可对照 `mtp_head`）
+  /// 模型总参数量（主干 + Embedding + LM Head + 多模态视觉编码器，不含训练辅助 MTP 时可对照 `mtp_head`）
   pub total_params: u64,
   /// 每个 Token 前向推理实际激活的参数量
   pub active_params: u64,
@@ -285,6 +356,7 @@ pub struct ParamBreakdown {
 /// 架构图中可点击检视的模块焦点。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum InspectorFocus {
+  Vision,
   Embedding,
   #[default]
   Attention,
@@ -297,6 +369,7 @@ pub enum InspectorFocus {
 impl InspectorFocus {
   pub fn from_attr(raw: &str) -> Self {
     match raw.trim().to_ascii_lowercase().as_str() {
+      "vision" | "vit" | "siglip" => Self::Vision,
       "embed" | "embedding" => Self::Embedding,
       "attn" | "attention" | "mla" | "gqa" => Self::Attention,
       "ffn" | "mlp" | "moe" | "experts" => Self::FfnOrMoe,
@@ -309,6 +382,7 @@ impl InspectorFocus {
 
   pub fn stage_filter(&self) -> &'static str {
     match self {
+      Self::Vision => "vision",
       Self::Embedding => "embedding",
       Self::Attention => "attention",
       Self::FfnOrMoe => "ffn_or_moe",
@@ -329,8 +403,10 @@ pub struct ModelBlueprint {
   pub model_type: String,
   pub torch_dtype: String,
   pub quantization_summary: Option<String>,
-  /// 若外层为多模态 VLM（`vision_config` 存在），记录视觉编码器摘要提示
+  /// 若外层为多模态 VLM（`vision_config` 存在），记录视觉编码器摘要提示与精确规格
   pub multimodal_note: Option<String>,
+  #[serde(default)]
+  pub vision: Option<VisionSpec>,
 
   pub vocab_size: u64,
   pub hidden_size: u64,
@@ -376,7 +452,9 @@ impl ModelBlueprint {
   /// 默认推荐高亮聚焦的子模块：DeepSeek 聚焦 MLA，纯 MoE 聚焦 MoE，其余聚焦 Attention。
   pub fn default_focus(&self) -> InspectorFocus {
     match self.family {
-      ArchFamily::QwenMoe => InspectorFocus::FfnOrMoe,
+      ArchFamily::QwenMoe | ArchFamily::MixtralMoe | ArchFamily::Llama4Moe => {
+        InspectorFocus::FfnOrMoe
+      }
       _ => InspectorFocus::Attention,
     }
   }
@@ -474,15 +552,28 @@ impl ModelBlueprint {
     let mut mha_elems_total: f64 = 0.0;
 
     for seg in &self.segments {
-      let layers = seg.layer_count() as f64;
-      let eff_ctx = match seg.attention {
-        AttentionSpec::StandardGqa { sliding_window: Some(w), .. } if w > 0 => {
-          context_len.min(w) as f64
+      let n_layers = seg.layer_count();
+      let elems_per_tok = seg.attention.cached_elements_per_token() as f64;
+      match seg.attention {
+        AttentionSpec::StandardGqa {
+          sliding_window: Some(w),
+          sliding_window_pattern: Some(pat),
+          ..
+        } if w > 0 && pat > 1 => {
+          let global_layers = (n_layers / pat) as f64;
+          let local_layers = (n_layers.saturating_sub(n_layers / pat)) as f64;
+          let local_ctx = context_len.min(w) as f64;
+          kv_elems_total +=
+            b * elems_per_tok * (global_layers * (context_len as f64) + local_layers * local_ctx);
         }
-        _ => context_len as f64,
-      };
-      kv_elems_total += layers * b * eff_ctx * (seg.attention.cached_elements_per_token() as f64);
-      mha_elems_total += layers
+        AttentionSpec::StandardGqa { sliding_window: Some(w), .. } if w > 0 => {
+          kv_elems_total += (n_layers as f64) * b * (context_len.min(w) as f64) * elems_per_tok;
+        }
+        _ => {
+          kv_elems_total += (n_layers as f64) * b * (context_len as f64) * elems_per_tok;
+        }
+      }
+      mha_elems_total += (n_layers as f64)
         * b
         * (context_len as f64)
         * (seg.attention.mha_baseline_elements_per_token() as f64);
@@ -580,11 +671,13 @@ pub fn build_model_blueprint(
 
   // 兼容多模态 VLM 外壳：若顶层没有 `hidden_size`，自动下钻 `text_config` 或 `llm_config`
   let mut multimodal_note: Option<String> = None;
+  let vision_cfg_obj = root_obj.get("vision_config").and_then(Value::as_object);
   let cfg_obj = if root_obj.contains_key("hidden_size") || root_obj.contains_key("n_embd") {
-    if let Some(vc) = root_obj.get("vision_config").and_then(Value::as_object) {
+    if let Some(vc) = vision_cfg_obj {
       let vt = vc.get("model_type").and_then(Value::as_str).unwrap_or("vision_tower");
       let vd = vc.get("hidden_size").and_then(Value::as_u64).unwrap_or(0);
-      multimodal_note = Some(format!("内含多模态视觉编码器 ({vt}, hidden={vd})，当前展示语言主干"));
+      multimodal_note =
+        Some(format!("内含多模态视觉编码器 ({vt}, hidden={vd})，支持点击展开视觉支路"));
     }
     root_obj
   } else if let Some(sub) = root_obj
@@ -593,13 +686,13 @@ pub fn build_model_blueprint(
     .or_else(|| root_obj.get("language_config"))
     .and_then(Value::as_object)
   {
-    let vision_tag = root_obj
-      .get("vision_config")
+    let vision_tag = vision_cfg_obj
       .and_then(|v| v.get("model_type"))
       .and_then(Value::as_str)
       .unwrap_or("Vision Encoder");
-    multimodal_note =
-      Some(format!("多模态复合架构（外层含 {vision_tag}），已自动提取 text_config 语言主干"));
+    multimodal_note = Some(format!(
+      "多模态复合架构（含 {vision_tag} 视觉编码器 + 语言主干），可点击视觉支路展开细节"
+    ));
     sub
   } else {
     root_obj
@@ -659,17 +752,31 @@ pub fn build_model_blueprint(
     return Err("hidden_size 与 num_hidden_layers 必须大于 0".to_string());
   }
 
-  let vocab_size = u64_any(cfg_obj, &["vocab_size"]).or(tok_vocab).unwrap_or(32000);
+  let vision = vision_cfg_obj.and_then(|vc| parse_vision_spec(vc, hidden_size));
+
+  let arch_joined = format!("{} {}", architectures.join(" "), model_type).to_ascii_lowercase();
+  let is_llama4 = arch_joined.contains("llama4");
+  let is_gemma_any = arch_joined.contains("gemma");
+  let is_gemma2_or_3 = arch_joined.contains("gemma2") || arch_joined.contains("gemma3");
+  let is_glm = arch_joined.contains("glm") || arch_joined.contains("chatglm");
+  let is_mixtral = arch_joined.contains("mixtral");
+
+  let vocab_size =
+    u64_any(cfg_obj, &["padded_vocab_size", "vocab_size"]).or(tok_vocab).unwrap_or(32000);
   let max_position_embeddings =
     u64_any(cfg_obj, &["max_position_embeddings", "n_positions", "seq_length"]).unwrap_or(4096);
-  let rms_norm_eps = f64_any(cfg_obj, &["rms_norm_eps", "layer_norm_eps", "layer_norm_epsilon"]);
+  let rms_norm_eps = f64_any(
+    cfg_obj,
+    &["rms_norm_eps", "layernorm_epsilon", "layer_norm_eps", "layer_norm_epsilon"],
+  );
   let tie_word_embeddings = cfg_obj
     .get("tie_word_embeddings")
     .or_else(|| root_obj.get("tie_word_embeddings"))
     .and_then(Value::as_bool)
-    .unwrap_or(false);
+    .unwrap_or(is_gemma_any);
   let hidden_act = cfg_obj
     .get("hidden_act")
+    .or_else(|| cfg_obj.get("hidden_activation"))
     .or_else(|| cfg_obj.get("activation_function"))
     .and_then(Value::as_str)
     .unwrap_or("silu")
@@ -682,8 +789,6 @@ pub fn build_model_blueprint(
     u64_any(cfg_obj, &["num_key_value_heads", "num_kv_heads", "multi_query_group_num"])
       .unwrap_or(num_q_heads)
       .max(1);
-
-  let arch_joined = format!("{} {}", architectures.join(" "), model_type).to_ascii_lowercase();
 
   // 1. 识别 Attention 形态（MLA vs Standard GQA）
   let kv_lora_rank = u64_any(cfg_obj, &["kv_lora_rank"]);
@@ -705,15 +810,21 @@ pub fn build_model_blueprint(
       v_head_dim,
     }
   } else {
-    let head_dim = u64_any(cfg_obj, &["head_dim"]).unwrap_or(hidden_size / num_q_heads).max(1);
-    let default_qkv_bias = arch_joined.contains("qwen2");
+    let head_dim =
+      u64_any(cfg_obj, &["head_dim", "kv_channels"]).unwrap_or(hidden_size / num_q_heads).max(1);
+    let default_qkv_bias = arch_joined.contains("qwen2") || arch_joined.contains("chatglm");
     let qkv_bias = cfg_obj
       .get("attention_bias")
       .or_else(|| cfg_obj.get("qkv_bias"))
+      .or_else(|| cfg_obj.get("add_qkv_bias"))
       .and_then(Value::as_bool)
       .or_else(|| safetensors.as_ref().map(|s| s.has_attn_bias))
       .unwrap_or(default_qkv_bias);
-    let o_bias = cfg_obj.get("attention_bias").and_then(Value::as_bool).unwrap_or(false);
+    let o_bias = cfg_obj
+      .get("attention_bias")
+      .or_else(|| cfg_obj.get("add_bias_linear"))
+      .and_then(Value::as_bool)
+      .unwrap_or(false);
     let qk_norm = cfg_obj
       .get("qk_norm")
       .or_else(|| cfg_obj.get("use_qk_norm"))
@@ -724,6 +835,12 @@ pub fn build_model_blueprint(
           || safetensors.as_ref().is_some_and(|s| s.has_qk_norm)
       });
     let sliding_window = cfg_obj.get("sliding_window").and_then(Value::as_u64).filter(|&w| w > 0);
+    let sliding_window_pattern = u64_any(cfg_obj, &["sliding_window_pattern"])
+      .or(if arch_joined.contains("gemma3") && sliding_window.is_some() { Some(6) } else { None })
+      .filter(|&p| p > 1);
+    let nope_layer_interval = u64_any(cfg_obj, &["nope_layer_interval"])
+      .or_else(|| detect_nope_interval(cfg_obj))
+      .filter(|&iv| iv > 1);
 
     AttentionSpec::StandardGqa {
       num_q_heads,
@@ -733,13 +850,21 @@ pub fn build_model_blueprint(
       o_bias,
       qk_norm,
       sliding_window,
+      sliding_window_pattern,
+      nope_layer_interval,
     }
   };
 
   // 2. 识别 FFN / MoE 与纵向分层区间
   let intermediate_size = u64_any(cfg_obj, &["intermediate_size", "ffn_hidden_size", "n_inner"])
     .unwrap_or(hidden_size * 4);
-  let mlp_bias = cfg_obj.get("mlp_bias").and_then(Value::as_bool).unwrap_or(false);
+  let dense_mlp_inter = u64_any(cfg_obj, &["intermediate_size_mlp"]).unwrap_or(intermediate_size);
+  let mlp_bias = cfg_obj
+    .get("mlp_bias")
+    .or_else(|| cfg_obj.get("add_bias_linear"))
+    .and_then(Value::as_bool)
+    .unwrap_or(false);
+  let norms_per_layer = if is_gemma2_or_3 || arch_joined.contains("glm4") { 4 } else { 2 };
 
   let num_routed_experts =
     u64_any(cfg_obj, &["n_routed_experts", "num_experts", "num_local_experts"]).unwrap_or(0);
@@ -747,8 +872,16 @@ pub fn build_model_blueprint(
 
   let family = if is_mla {
     ArchFamily::DeepSeekMla
+  } else if is_llama4 && is_moe {
+    ArchFamily::Llama4Moe
+  } else if is_mixtral && is_moe {
+    ArchFamily::MixtralMoe
   } else if is_moe {
     ArchFamily::QwenMoe
+  } else if is_gemma2_or_3 {
+    ArchFamily::GemmaHybrid
+  } else if is_glm {
+    ArchFamily::GlmGqa
   } else if arch_joined.contains("qwen") {
     ArchFamily::QwenDense
   } else if arch_joined.contains("llama")
@@ -760,8 +893,14 @@ pub fn build_model_blueprint(
     ArchFamily::GenericTransformer
   };
 
-  let dense_ffn =
-    FfnSpec::DenseGated { intermediate_size, act_fn: hidden_act.clone(), bias: mlp_bias };
+  let schedule_note = build_schedule_note(&attention, cfg_obj);
+
+  let dense_ffn = FfnSpec::DenseGated {
+    intermediate_size: dense_mlp_inter,
+    act_fn: hidden_act.clone(),
+    bias: mlp_bias,
+    fused_gate_up: is_glm,
+  };
 
   let segments = if is_moe {
     let top_k = u64_any(cfg_obj, &["num_experts_per_tok", "num_selected_experts"]).unwrap_or(2);
@@ -772,6 +911,9 @@ pub fn build_model_blueprint(
       (n_shared_cfg, n_shared_cfg * moe_inter, false)
     } else if shared_inter_cfg > 0 {
       (1, shared_inter_cfg, arch_joined.contains("qwen2_moe") || arch_joined.contains("qwen2moe"))
+    } else if is_llama4 {
+      // Llama-4 (Scout / Maverick) 固定内置 1 个常驻 Shared Expert（维度与单专家 intermediate_size 相同）
+      (1, moe_inter, false)
     } else {
       (0, 0, false)
     };
@@ -779,8 +921,11 @@ pub fn build_model_blueprint(
       (Some(ng), Some(tg)) if ng > 0 && tg > 0 => Some((ng, tg)),
       _ => None,
     };
-    let scoring_func =
-      cfg_obj.get("scoring_func").and_then(Value::as_str).unwrap_or("softmax").to_string();
+    let scoring_func = cfg_obj
+      .get("scoring_func")
+      .and_then(Value::as_str)
+      .unwrap_or(if is_llama4 { "sigmoid" } else { "softmax" })
+      .to_string();
 
     let moe_ffn = FfnSpec::SparseMoe {
       num_routed_experts,
@@ -794,29 +939,62 @@ pub fn build_model_blueprint(
       act_fn: hidden_act.clone(),
     };
 
+    let moe_step = u64_any(cfg_obj, &["interleave_moe_layer_step"]).unwrap_or(1).max(1);
     let first_k_dense = u64_any(cfg_obj, &["first_k_dense_replace"])
       .or_else(|| safetensors.as_ref().and_then(|s| s.detected_first_moe_layer))
       .unwrap_or(0)
       .min(num_hidden_layers);
 
     let mut segs = Vec::new();
-    if first_k_dense > 0 {
-      segs.push(LayerSegment {
-        start_layer: 0,
-        end_layer: first_k_dense - 1,
-        title: "前置稠密预热层 (Dense SwiGLU)".to_string(),
-        attention: attention.clone(),
-        ffn: dense_ffn.clone(),
-      });
-    }
-    if first_k_dense < num_hidden_layers {
-      segs.push(LayerSegment {
-        start_layer: first_k_dense,
-        end_layer: num_hidden_layers - 1,
-        title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
-        attention: attention.clone(),
-        ffn: moe_ffn,
-      });
+    if moe_step > 1 && first_k_dense == 0 {
+      // 如 Llama-4 Maverick：Dense 层与 MoE 层按周期交替堆叠
+      let moe_layers = num_hidden_layers / moe_step;
+      let dense_layers = num_hidden_layers.saturating_sub(moe_layers);
+      if dense_layers > 0 {
+        segs.push(LayerSegment {
+          start_layer: 0,
+          end_layer: dense_layers - 1,
+          title: format!("交替稠密层组 (Interleaved Dense ×{dense_layers})"),
+          attention: attention.clone(),
+          ffn: dense_ffn.clone(),
+          norms_per_layer,
+          schedule_note: Some(format!("与稀疏 MoE 按 step={moe_step} 逐层交替堆叠（偶/奇层分流）")),
+        });
+      }
+      if moe_layers > 0 {
+        segs.push(LayerSegment {
+          start_layer: dense_layers,
+          end_layer: num_hidden_layers - 1,
+          title: format!("交替稀疏专家层组 (Interleaved MoE ×{moe_layers})"),
+          attention: attention.clone(),
+          ffn: moe_ffn,
+          norms_per_layer,
+          schedule_note: schedule_note.clone(),
+        });
+      }
+    } else {
+      if first_k_dense > 0 {
+        segs.push(LayerSegment {
+          start_layer: 0,
+          end_layer: first_k_dense - 1,
+          title: "前置稠密预热层 (Dense SwiGLU)".to_string(),
+          attention: attention.clone(),
+          ffn: dense_ffn.clone(),
+          norms_per_layer,
+          schedule_note: None,
+        });
+      }
+      if first_k_dense < num_hidden_layers {
+        segs.push(LayerSegment {
+          start_layer: first_k_dense,
+          end_layer: num_hidden_layers - 1,
+          title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
+          attention: attention.clone(),
+          ffn: moe_ffn,
+          norms_per_layer,
+          schedule_note: schedule_note.clone(),
+        });
+      }
     }
     segs
   } else {
@@ -826,10 +1004,14 @@ pub fn build_model_blueprint(
       title: "Transformer 解码器层栈 (Decoder Stack)".to_string(),
       attention,
       ffn: dense_ffn,
+      norms_per_layer,
+      schedule_note,
     }]
   };
 
+  let vision_params = vision.as_ref().map(|v| v.estimated_params).unwrap_or(0);
   let params = compute_param_breakdown(
+    vision_params,
     vocab_size,
     hidden_size,
     tie_word_embeddings,
@@ -846,6 +1028,7 @@ pub fn build_model_blueprint(
     torch_dtype,
     quantization_summary,
     multimodal_note,
+    vision,
     vocab_size,
     hidden_size,
     num_hidden_layers,
@@ -865,7 +1048,78 @@ pub fn build_model_blueprint(
   })
 }
 
+fn parse_vision_spec(vc: &serde_json::Map<String, Value>, text_hidden: u64) -> Option<VisionSpec> {
+  let hidden_size = u64_any(vc, &["hidden_size", "embed_dim", "vision_width"])?;
+  if hidden_size == 0 {
+    return None;
+  }
+  let num_hidden_layers = u64_any(vc, &["num_hidden_layers", "depth"]).unwrap_or(24).max(1);
+  let num_attention_heads = u64_any(vc, &["num_attention_heads", "num_heads"]).unwrap_or(16).max(1);
+  let intermediate_size = u64_any(vc, &["intermediate_size", "mlp_dim"]).unwrap_or(hidden_size * 4);
+  let image_size = u64_any(vc, &["image_size"]);
+  let patch_size = u64_any(vc, &["patch_size"]);
+  let model_type = vc.get("model_type").and_then(Value::as_str).unwrap_or("vision_encoder");
+
+  let patch = patch_size.unwrap_or(14);
+  let patch_embed = 3 * patch * patch * hidden_size;
+  let per_layer = 4 * hidden_size * hidden_size + 2 * hidden_size * intermediate_size;
+  let projector = hidden_size * text_hidden * 2;
+  let estimated_params = patch_embed + num_hidden_layers * per_layer + projector;
+
+  Some(VisionSpec {
+    model_type: model_type.to_string(),
+    hidden_size,
+    num_hidden_layers,
+    num_attention_heads,
+    intermediate_size,
+    image_size,
+    patch_size,
+    estimated_params,
+  })
+}
+
+fn detect_nope_interval(cfg: &serde_json::Map<String, Value>) -> Option<u64> {
+  let arr = cfg.get("no_rope_layers")?.as_array()?;
+  if arr.len() < 4 {
+    return None;
+  }
+  // HuggingFace Llama4TextConfig 中 `no_rope_layers` 取 0 表示禁用 RoPE (NoPE)，1 表示启用 RoPE
+  let zeros = arr.iter().filter(|v| v.as_u64() == Some(0) || v.as_bool() == Some(false)).count();
+  if zeros == 0 || zeros == arr.len() {
+    return None;
+  }
+  Some((arr.len() / zeros).max(2) as u64)
+}
+
+fn build_schedule_note(
+  attn: &AttentionSpec,
+  cfg: &serde_json::Map<String, Value>,
+) -> Option<String> {
+  match attn {
+    AttentionSpec::StandardGqa {
+      sliding_window: Some(w),
+      sliding_window_pattern: Some(pat),
+      ..
+    } => {
+      let local_n = pat.saturating_sub(1);
+      Some(format!(
+        "每 {pat} 层含 {local_n} 层局部滑动窗口注意力 (SWA W={w}) + 1 层全局全注意力，大幅削减长文本 KV 显存"
+      ))
+    }
+    AttentionSpec::StandardGqa { nope_layer_interval: Some(iv), .. } => {
+      let rope_n = iv.saturating_sub(1);
+      let temp_tuning = cfg.get("attn_temperature_tuning").and_then(Value::as_bool).unwrap_or(true);
+      let extra = if temp_tuning { "（带注意力温度自适应缩放）" } else { "" };
+      Some(format!(
+        "iRoPE 混合位置架构：每 {iv} 层含 {rope_n} 层 RoPE 局部旋转层 + 1 层 NoPE 无位置编码全局层{extra}"
+      ))
+    }
+    _ => None,
+  }
+}
+
 fn compute_param_breakdown(
+  vision_encoder: u64,
   vocab_size: u64,
   hidden_size: u64,
   tie_word_embeddings: bool,
@@ -885,7 +1139,7 @@ fn compute_param_breakdown(
   for seg in segments {
     let count = seg.layer_count();
     let attn_one = seg.attention.params_per_layer(hidden_size);
-    let norms_one = 2 * hidden_size; // input_layernorm + post_attention_layernorm
+    let norms_one = seg.norms_per_layer.max(2) * hidden_size;
     attention += count * attn_one;
     norms_and_routers += count * norms_one;
     active_trunk += count * (attn_one + norms_one);
@@ -943,11 +1197,18 @@ fn compute_param_breakdown(
     0
   };
 
-  let total_params =
-    embedding + attention + dense_ffn + moe_routed + moe_shared + norms_and_routers + lm_head;
-  let active_params = embedding + active_trunk + lm_head;
+  let total_params = vision_encoder
+    + embedding
+    + attention
+    + dense_ffn
+    + moe_routed
+    + moe_shared
+    + norms_and_routers
+    + lm_head;
+  let active_params = vision_encoder + embedding + active_trunk + lm_head;
 
   ParamBreakdown {
+    vision_encoder,
     embedding,
     attention,
     dense_ffn,
@@ -986,6 +1247,7 @@ fn build_safetensors_fallback_blueprint(
     torch_dtype,
     quantization_summary,
     multimodal_note: None,
+    vision: None,
     vocab_size: 0,
     hidden_size: 0,
     num_hidden_layers: layers,
@@ -1027,6 +1289,11 @@ fn extract_rope_summary(cfg: &serde_json::Map<String, Value>) -> String {
     format!("{theta:.0}")
   };
 
+  let partial = f64_any(cfg, &["partial_rotary_factor", "rotary_percent"])
+    .filter(|&p| p > 0.0 && p < 0.999)
+    .map(|p| format!(" · {:.0}%d", p * 100.0))
+    .unwrap_or_default();
+
   if let Some(scaling) = cfg.get("rope_scaling").and_then(Value::as_object) {
     let rtype = scaling
       .get("rope_type")
@@ -1035,11 +1302,11 @@ fn extract_rope_summary(cfg: &serde_json::Map<String, Value>) -> String {
       .unwrap_or("scaled");
     let factor = scaling.get("factor").and_then(Value::as_f64);
     match factor {
-      Some(f) => format!("RoPE θ={theta_str} ({rtype} ×{f:.1})"),
-      None => format!("RoPE θ={theta_str} ({rtype})"),
+      Some(f) => format!("RoPE θ={theta_str}{partial} ({rtype} ×{f:.1})"),
+      None => format!("RoPE θ={theta_str}{partial} ({rtype})"),
     }
   } else {
-    format!("RoPE θ={theta_str}")
+    format!("RoPE θ={theta_str}{partial}")
   }
 }
 
@@ -2097,5 +2364,111 @@ mod tests {
     assert_eq!(bp.hidden_size, 3584);
     assert_eq!(bp.num_hidden_layers, 28);
     assert!(bp.multimodal_note.is_some());
+    assert!(bp.vision.is_some());
+  }
+
+  #[test]
+  fn parses_llama4_scout_irope_vision_and_shared_expert() {
+    let cfg = r#"{
+      "architectures": ["Llama4ForConditionalGeneration"],
+      "model_type": "llama4",
+      "vision_config": {
+        "model_type": "llama4_vision_model",
+        "hidden_size": 1408,
+        "intermediate_size": 5632,
+        "num_hidden_layers": 34,
+        "num_attention_heads": 16,
+        "image_size": 336,
+        "patch_size": 14
+      },
+      "text_config": {
+        "model_type": "llama4_text",
+        "vocab_size": 202048,
+        "hidden_size": 5120,
+        "intermediate_size": 8192,
+        "intermediate_size_mlp": 16384,
+        "num_hidden_layers": 48,
+        "num_attention_heads": 40,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "num_local_experts": 16,
+        "num_experts_per_tok": 1,
+        "interleave_moe_layer_step": 1,
+        "use_qk_norm": true,
+        "no_rope_layers": [1, 1, 1, 0, 1, 1, 1, 0]
+      }
+    }"#;
+    let bp = build_model_blueprint("meta-llama/Llama-4-Scout-17B-16E", "HF", cfg, None, None, None)
+      .unwrap();
+    assert_eq!(bp.family, ArchFamily::Llama4Moe);
+    assert!(bp.vision.is_some());
+    assert!(bp.params.total_params > 107_000_000_000 && bp.params.total_params < 110_000_000_000);
+    assert!(bp.params.active_params > 17_000_000_000 && bp.params.active_params < 19_000_000_000);
+    match &bp.segments[0].attention {
+      AttentionSpec::StandardGqa { nope_layer_interval, qk_norm, .. } => {
+        assert_eq!(*nope_layer_interval, Some(4));
+        assert!(*qk_norm);
+      }
+      other => panic!("unexpected attention: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_gemma3_27b_hybrid_swa_and_glm4_9b_extreme_gqa() {
+    let gemma_cfg = r#"{
+      "architectures": ["Gemma3ForConditionalGeneration"],
+      "model_type": "gemma3",
+      "vision_config": {
+        "model_type": "siglip_vision_model",
+        "hidden_size": 1152,
+        "intermediate_size": 4304,
+        "num_hidden_layers": 27,
+        "num_attention_heads": 16,
+        "image_size": 896,
+        "patch_size": 14
+      },
+      "text_config": {
+        "model_type": "gemma3_text",
+        "vocab_size": 262208,
+        "hidden_size": 5376,
+        "intermediate_size": 21504,
+        "num_hidden_layers": 62,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 16,
+        "head_dim": 128,
+        "sliding_window": 1024,
+        "sliding_window_pattern": 6,
+        "hidden_activation": "gelu_pytorch_tanh"
+      }
+    }"#;
+    let g =
+      build_model_blueprint("google/gemma-3-27b-it", "HF", gemma_cfg, None, None, None).unwrap();
+    assert_eq!(g.family, ArchFamily::GemmaHybrid);
+    assert!(g.tie_word_embeddings);
+    assert_eq!(g.segments[0].norms_per_layer, 4);
+    assert!(g.params.total_params > 27_000_000_000 && g.params.total_params < 28_000_000_000);
+    // At 128K context, 5/6 layers cap KV cache at W=1024, saving huge VRAM vs non-windowed GQA!
+    let est = g.estimate_vram(PrecisionPreset::Bf16, 131_072, 1);
+    assert!(est.kv_cache_bytes < est.mha_baseline_kv_bytes * 0.15);
+
+    let glm_cfg = r#"{
+      "architectures": ["ChatGLMModel"],
+      "model_type": "chatglm",
+      "padded_vocab_size": 151552,
+      "hidden_size": 4096,
+      "ffn_hidden_size": 13696,
+      "num_layers": 40,
+      "num_attention_heads": 32,
+      "multi_query_group_num": 2,
+      "kv_channels": 128,
+      "add_qkv_bias": true,
+      "rotary_percent": 0.5,
+      "tie_word_embeddings": false
+    }"#;
+    let glm =
+      build_model_blueprint("THUDM/glm-4-9b-chat", "HF", glm_cfg, None, None, None).unwrap();
+    assert_eq!(glm.family, ArchFamily::GlmGqa);
+    assert!(glm.params.total_params > 9_300_000_000 && glm.params.total_params < 9_500_000_000);
+    assert!((glm.segments[0].attention.kv_compression_ratio() - 16.0).abs() < 1e-6);
   }
 }

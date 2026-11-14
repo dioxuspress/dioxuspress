@@ -8,6 +8,7 @@ nav.forum = Forum
 nav.menu = Navigation menu
 nav.toggle_dark = Toggle dark mode
 nav.cases = Cases
+nav.models = Model Atlas
 nav.start = Get Started
 nav.embedded = Embedded
 nav.course = Courses

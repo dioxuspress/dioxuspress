@@ -7,6 +7,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod arch;
+pub mod atlas;
 pub mod diagram;
 pub mod safetensors_meta;
 pub mod server;
@@ -16,6 +17,7 @@ use app_core::i18n::Language;
 use board::{Board, BoardArticle, BoardIndex, FeaturedCrate};
 use dioxus::prelude::*;
 
+pub use atlas::{ModelDetailPage, ModelsAtlasPage};
 pub use visualizer::AiVisualizerPage;
 
 pub const BOARD: Board = Board {
@@ -42,27 +44,50 @@ pub fn AiIndexPage() -> Element {
   let lang = try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default();
   rsx! {
     div { class: "bg-white dark:bg-slate-950 pt-8",
-      div { class: "max-w-6xl mx-auto px-4 sm:px-6",
+      div { class: "max-w-6xl mx-auto px-4 sm:px-6 grid grid-cols-1 md:grid-cols-2 gap-4",
         Link {
-          to: "/ai/visualizer",
-          class: "group flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-indigo-200 dark:border-indigo-900/70 bg-linear-to-r from-indigo-50/90 via-white to-sky-50/80 dark:from-indigo-950/50 dark:via-slate-900 dark:to-slate-900 p-5 hover:border-indigo-400 dark:hover:border-indigo-600 transition-all shadow-xs",
+          to: "/models",
+          class: "group flex flex-col justify-between gap-4 rounded-2xl border border-indigo-200 dark:border-indigo-900/70 bg-linear-to-r from-indigo-50/90 via-white to-violet-50/80 dark:from-indigo-950/50 dark:via-slate-900 dark:to-slate-900 p-5 hover:border-indigo-400 dark:hover:border-indigo-600 transition-all shadow-xs",
           div {
             div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400",
-              span { class: "px-2 py-0.5 rounded-full bg-indigo-600 text-white text-[10px]", "Interactive Tool" }
-              span { "HuggingFace · ModelScope · Safetensors" }
+              span { class: "px-2 py-0.5 rounded-full bg-indigo-600 text-white text-[10px]", "Model Atlas" }
+              span { "DeepSeek · Qwen3 · Llama 4 · Gemma 3" }
             }
             h2 { class: "mt-1.5 text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors",
-              {lang.pick("LLM 模型架构与 KV Cache 显存可视化器", "LLM Architecture & KV Cache Visualizer")}
+              {lang.pick("主流大模型架构图鉴（支持折叠/展开观察）", "Flagship LLM Architecture Atlas")}
             }
             p { class: "mt-1 text-sm text-slate-600 dark:text-slate-400",
               {lang.pick(
-                "输入任意 HuggingFace / ModelScope 模型仓库（Llama / Qwen3 / DeepSeek-V3），零权重下载解析 MLA、稀疏 MoE、算子级张量维度与真实 Safetensors 结构。",
-                "Inspect Llama, Qwen3, and DeepSeek-V3 (MLA / Sparse MoE) operator graphs, exact tensor shapes, and Safetensors layouts without downloading weights."
+                "精选主流开源旗舰模型官方配置，支持多尺度收起与展开层段、视觉塔、稀疏专家簇与内部算子矩阵。",
+                "Curated flagship open-weight models with multi-scale collapsible layer stacks, vision towers, and MoE subgraphs."
               )}
             }
           }
-          span { class: "shrink-0 inline-flex items-center gap-1 px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold group-hover:bg-indigo-700 transition-colors",
-            {lang.pick("进入可视化工作台 →", "Open Visualizer →")}
+          span { class: "inline-flex items-center gap-1 text-xs font-bold text-indigo-600 dark:text-indigo-400",
+            {lang.pick("浏览模型图鉴 →", "Browse Model Atlas →")}
+          }
+        }
+
+        Link {
+          to: "/ai/visualizer",
+          class: "group flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-linear-to-r from-slate-50/90 via-white to-sky-50/80 dark:from-slate-900 dark:via-slate-900 dark:to-sky-950/30 p-5 hover:border-indigo-400 dark:hover:border-indigo-600 transition-all shadow-xs",
+          div {
+            div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400",
+              span { class: "px-2 py-0.5 rounded-full bg-sky-600 text-white text-[10px]", "Live Sandbox" }
+              span { "HuggingFace · ModelScope · Safetensors" }
+            }
+            h2 { class: "mt-1.5 text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors",
+              {lang.pick("任意仓库实时架构与显存解析器", "Live Repo Architecture & VRAM Inspector")}
+            }
+            p { class: "mt-1 text-sm text-slate-600 dark:text-slate-400",
+              {lang.pick(
+                "输入任意 HuggingFace / ModelScope 模型仓库或粘贴本地 config.json，零权重下载解析张量结构。",
+                "Enter any HuggingFace / ModelScope repo ID or paste local config.json to inspect tensor shapes live."
+              )}
+            }
+          }
+          span { class: "inline-flex items-center gap-1 text-xs font-bold text-sky-600 dark:text-sky-400",
+            {lang.pick("打开实时解析沙盒 →", "Open Live Visualizer →")}
           }
         }
       }

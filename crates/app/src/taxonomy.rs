@@ -77,6 +77,7 @@ pub fn ecosystems() -> Vec<Ecosystem> {
       // M3 前 AI 子领域的标签筛选尚未就绪，这些条目先统一指向 `/ai` 索引；
       // 标签本身已体现分类法，待 M3 再改成 `/ai?d=<id>` 之类的筛选视图。
       domains: vec![
+        Domain { id: "models", label_key: "nav.models", route: Route::Models {}, module_id: "ai" },
         Domain { id: "llm", label_key: "nav.ai.llm", route: Route::Ai {}, module_id: "ai" },
         Domain {
           id: "inference",

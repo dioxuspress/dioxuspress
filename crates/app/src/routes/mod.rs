@@ -18,7 +18,7 @@ use crate::components::nav::Navbar;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n, Language};
 use crate::server::get_about_page;
-use module_ai::{AiArticlePage, AiIndexPage, AiVisualizerPage};
+use module_ai::{AiArticlePage, AiIndexPage, AiVisualizerPage, ModelDetailPage, ModelsAtlasPage};
 use module_blog::server::{get_blog_content, list_blog_page};
 use module_cases::cases::{CaseDetailPage, CasesIndexPage};
 use module_cli::{CliArticlePage, CliIndexPage};
@@ -240,6 +240,12 @@ mod route_def {
         AiVisualizer {},
         #[route("/ai/:slug")]
         AiArticle { slug: String },
+
+        // 指定旗舰模型架构图鉴（含多尺度收起/展开拓扑图）
+        #[route("/models")]
+        Models {},
+        #[route("/models/:slug")]
+        ModelDetail { slug: String },
 
         #[route("/web3")]
         Web3 {},
@@ -734,6 +740,16 @@ pub fn AiVisualizer() -> Element {
 #[component]
 pub fn AiArticle(slug: String) -> Element {
   rsx! { ModuleGate { id: "ai".to_string(), AiArticlePage { slug } } }
+}
+
+#[component]
+pub fn Models() -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), ModelsAtlasPage {} } }
+}
+
+#[component]
+pub fn ModelDetail(slug: String) -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), ModelDetailPage { slug } } }
 }
 
 #[component]

@@ -1,0 +1,24 @@
+slug: deepseek-v3
+name: DeepSeek-V3 (671B)
+vendor: DeepSeek
+series: deepseek
+release_date: "2024-12"
+hf_repo: deepseek-ai/DeepSeek-V3
+ms_repo: deepseek-ai/DeepSeek-V3
+featured: true
+order: 10
+summary: 采用 Multi-head Latent Attention (MLA) 潜空间低秩压缩与异构前 3 层 Dense + 后 58 层无辅助损失负载均衡 DeepSeekMoE，外加原生 MTP 投机预测头。
+summary_en: Combines Multi-head Latent Attention (MLA) KV compression with a 3-layer Dense + 58-layer Aux-Loss-Free DeepSeekMoE stack and native Multi-Token Prediction (MTP).
+tags:
+  - mla
+  - moe
+  - fp8
+  - mtp
+highlights:
+  - "MLA 潜空间压缩：单层单 Token 仅缓存 c_KV(512) + k_R(64) = 576 个标量，相比同规格 128 头 MHA 节省 98.2% (56.9×) KV 显存。"
+  - "异构层栈设计：Layers 0–2 采用 18432 维稠密 SwiGLU 保证浅层表征饱满，Layers 3–60 切换为 1 共享专家 + 256 路由专家选 Top-8（8 组选 4 组节点受限路由）。"
+  - "原生 FP8 块量化与 MTP 头：内置 1 层 Multi-Token Prediction 模块，训练增强多步语义规划，推理直接作为原生投机解码草稿头。"
+highlights_en:
+  - "MLA Latent Cache: Caches only 576 elements/token/layer (512d latent + 64d decoupled RoPE), achieving a 56.9x KV cache reduction vs MHA."
+  - "Heterogeneous Stack: Layers 0-2 use dense SwiGLU (I=18432), while Layers 3-60 deploy 1 shared + Top-8 of 256 routed experts with 8-group node-limited routing."
+  - "Native FP8 & MTP: Ships with 128x128 block-wise FP8 weights and a 1-layer Multi-Token Prediction head for speculative decoding."
