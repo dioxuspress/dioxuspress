@@ -24,6 +24,7 @@ pub fn register_default_components() {
   register(Box::new(UnderlineComponent));
   register(Box::new(StrikethroughComponent));
   register(Box::new(AudioPlayerComponent));
+  register(Box::new(VocabCardComponent));
 
   // 5 种 Mac Preview 风格高亮色。
   for (name, color) in COLOR_COMPONENTS {
@@ -174,6 +175,138 @@ impl MdxComponent for AudioPlayerComponent {
   }
 }
 
+// ────────────────────────────────────────────────────────────
+// 英语词汇卡片：单词 / 词组 / 音标 / 释义 / 例句 / 发音
+// ────────────────────────────────────────────────────────────
+
+/// 校验词汇卡片音频地址，仅放行 `https://` 与站内绝对路径 `/...`（排除协议相对 `//`）。
+fn safe_audio_src(raw: Option<&String>) -> Option<String> {
+  let src = raw?.trim();
+  if src.starts_with("https://") || (src.starts_with('/') && !src.starts_with("//")) {
+    Some(src.to_string())
+  } else {
+    None
+  }
+}
+
+/// 按 `|` 切分高频词组/搭配，去除空白项。
+fn parse_phrases(raw: Option<&String>) -> Vec<String> {
+  raw
+    .map(|s| {
+      s.split('|').map(str::trim).filter(|item| !item.is_empty()).map(str::to_string).collect()
+    })
+    .unwrap_or_default()
+}
+
+/// `<VocabCard word="..." phonetic="..." pos="..." meaning="..." phrase="a|b" example="..." translation="..." audio="..." revealed="true" />`
+struct VocabCardComponent;
+impl MdxComponent for VocabCardComponent {
+  fn name(&self) -> &'static str {
+    "VocabCard"
+  }
+
+  fn render(&self, attrs: &HashMap<String, String>) -> Element {
+    let word = attrs.get("word").map(|s| s.trim().to_string()).unwrap_or_default();
+    if word.is_empty() {
+      return rsx! {};
+    }
+    let phonetic = attrs.get("phonetic").map(|s| s.trim().to_string()).unwrap_or_default();
+    let pos = attrs.get("pos").map(|s| s.trim().to_string()).unwrap_or_default();
+    let meaning = attrs.get("meaning").map(|s| s.trim().to_string()).unwrap_or_default();
+    let phrases = parse_phrases(attrs.get("phrase"));
+    let example = attrs.get("example").map(|s| s.trim().to_string()).unwrap_or_default();
+    let translation = attrs.get("translation").map(|s| s.trim().to_string()).unwrap_or_default();
+    let audio = safe_audio_src(attrs.get("audio")).unwrap_or_default();
+    let default_revealed = !matches!(attrs.get("revealed").map(|s| s.trim()), Some("false" | "0"));
+
+    rsx! {
+        VocabCardView {
+            word,
+            phonetic,
+            pos,
+            meaning,
+            phrases,
+            example,
+            translation,
+            audio,
+            default_revealed,
+        }
+    }
+  }
+}
+
+#[component]
+fn VocabCardView(
+  word: String,
+  phonetic: String,
+  pos: String,
+  meaning: String,
+  phrases: Vec<String>,
+  example: String,
+  translation: String,
+  audio: String,
+  default_revealed: bool,
+) -> Element {
+  let mut revealed = use_signal(|| default_revealed);
+  let has_details =
+    !meaning.is_empty() || !phrases.is_empty() || !example.is_empty() || !translation.is_empty();
+
+  rsx! {
+      article {
+          class: "not-prose my-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/70 p-5 shadow-sm",
+          "data-vocab-card": "{word}",
+          div { class: "flex flex-wrap items-center justify-between gap-3",
+              div { class: "flex flex-wrap items-baseline gap-2.5",
+                  h4 { class: "text-xl font-bold tracking-tight text-slate-900 dark:text-slate-50 m-0", "{word}" }
+                  if !phonetic.is_empty() {
+                      span { class: "font-mono text-sm text-slate-500 dark:text-slate-400", "{phonetic}" }
+                  }
+                  if !pos.is_empty() {
+                      span { class: "inline-flex items-center rounded-full bg-sky-500/10 px-2.5 py-0.5 text-xs font-semibold text-sky-700 dark:text-sky-300", "{pos}" }
+                  }
+              }
+              if has_details {
+                  button {
+                      r#type: "button",
+                      class: "inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer",
+                      "aria-expanded": if revealed() { "true" } else { "false" },
+                      onclick: move |_| revealed.toggle(),
+                      if revealed() { "隐藏释义" } else { "查看释义" }
+                  }
+              }
+          }
+          if !audio.is_empty() {
+              div { class: "mt-3",
+                  audio { class: "w-full h-9", controls: true, preload: "none", src: "{audio}" }
+              }
+          }
+          if has_details && revealed() {
+              div { class: "mt-4 pt-4 border-t border-slate-100 dark:border-slate-800 space-y-3",
+                  if !meaning.is_empty() {
+                      p { class: "text-sm font-medium text-slate-800 dark:text-slate-100 m-0", "{meaning}" }
+                  }
+                  if !phrases.is_empty() {
+                      div { class: "flex flex-wrap items-center gap-2",
+                          span { class: "text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500", "Phrases" }
+                          for item in phrases {
+                              span { class: "rounded-md bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-xs font-medium text-slate-700 dark:text-slate-300", "{item}" }
+                          }
+                      }
+                  }
+                  if !example.is_empty() {
+                      blockquote { class: "border-l-2 border-sky-500/50 pl-3 text-sm text-slate-700 dark:text-slate-300 m-0",
+                          p { class: "italic m-0", "{example}" }
+                          if !translation.is_empty() {
+                              p { class: "mt-1 text-xs text-slate-500 dark:text-slate-400 m-0", "{translation}" }
+                          }
+                      }
+                  }
+              }
+          }
+      }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -210,6 +343,7 @@ mod tests {
       "Purple",
       "Strikethrough",
       "Underline",
+      "VocabCard",
       "Yellow",
       "YouTube",
     ] {
@@ -220,8 +354,8 @@ mod tests {
         names
       );
     }
-    // 至少 10 个：5 颜色 + 2 视频 + 2 装饰 + 音频
-    assert!(registered_count() >= 10);
+    // 至少 11 个：5 颜色 + 2 视频 + 2 装饰 + 音频 + 词汇卡片
+    assert!(registered_count() >= 11);
   }
 
   #[test]
@@ -248,5 +382,72 @@ mod tests {
     register_default_components();
     // 任意未注册的名字
     assert!(crate::registry::render("NonexistentTag", &HashMap::new()).is_none());
+  }
+
+  #[test]
+  fn vocab_card_audio_and_phrases_sanitize_inputs() {
+    let ok_https = "https://cdn.example.com/word.mp3".to_string();
+    let ok_local = "/audio/ubiquitous.mp3".to_string();
+    let bad_http = "http://cdn.example.com/word.mp3".to_string();
+    let bad_proto_rel = "//evil.example.com/word.mp3".to_string();
+    let bad_js = "javascript:alert(1)".to_string();
+
+    assert_eq!(
+      safe_audio_src(Some(&ok_https)).as_deref(),
+      Some("https://cdn.example.com/word.mp3")
+    );
+    assert_eq!(safe_audio_src(Some(&ok_local)).as_deref(), Some("/audio/ubiquitous.mp3"));
+    assert_eq!(safe_audio_src(Some(&bad_http)), None);
+    assert_eq!(safe_audio_src(Some(&bad_proto_rel)), None);
+    assert_eq!(safe_audio_src(Some(&bad_js)), None);
+    assert_eq!(safe_audio_src(None), None);
+
+    let phrases = " become ubiquitous | in daily life || ".to_string();
+    assert_eq!(
+      parse_phrases(Some(&phrases)),
+      vec!["become ubiquitous".to_string(), "in daily life".to_string()]
+    );
+    assert!(parse_phrases(None).is_empty());
+  }
+
+  #[test]
+  fn vocab_card_renders_and_respects_revealed_flag() {
+    clear_for_tests();
+    register_default_components();
+
+    let empty_el = crate::registry::render("VocabCard", &HashMap::new());
+    assert!(empty_el.is_some());
+    assert!(
+      !dioxus_ssr::render_element(empty_el.unwrap_or_else(|| rsx! {})).contains("data-vocab-card")
+    );
+
+    let full_attrs = HashMap::from([
+      ("word".to_string(), "ubiquitous".to_string()),
+      ("phonetic".to_string(), "/juːˈbɪk.wɪ.təs/".to_string()),
+      ("pos".to_string(), "adj.".to_string()),
+      ("meaning".to_string(), "无处不在的".to_string()),
+      ("phrase".to_string(), "become ubiquitous|ubiquitous presence".to_string()),
+      ("example".to_string(), "Smartphones are ubiquitous.".to_string()),
+      ("translation".to_string(), "智能手机无处不在。".to_string()),
+      ("audio".to_string(), "https://example.com/u.mp3".to_string()),
+    ]);
+    let html = dioxus_ssr::render_element(
+      crate::registry::render("VocabCard", &full_attrs).unwrap_or_else(|| rsx! {}),
+    );
+    assert!(html.contains("ubiquitous"));
+    assert!(html.contains("/juːˈbɪk.wɪ.təs/"));
+    assert!(html.contains("无处不在的"));
+    assert!(html.contains("become ubiquitous"));
+    assert!(html.contains("Smartphones are ubiquitous."));
+    assert!(html.contains("https://example.com/u.mp3"));
+
+    let mut hidden_attrs = full_attrs;
+    hidden_attrs.insert("revealed".to_string(), "false".to_string());
+    let hidden_html = dioxus_ssr::render_element(
+      crate::registry::render("VocabCard", &hidden_attrs).unwrap_or_else(|| rsx! {}),
+    );
+    assert!(hidden_html.contains("ubiquitous"));
+    assert!(hidden_html.contains("查看释义"));
+    assert!(!hidden_html.contains("无处不在的"));
   }
 }
