@@ -74,6 +74,7 @@ pub fn ClassicShell() -> Element {
       (Route::CaseDetail { .. }, Route::Cases {}) => true,
       (Route::EmbeddedArticle { .. }, Route::Embedded {}) => true,
       (Route::AiArticle { .. }, Route::Ai {}) => true,
+      (Route::AiVisualizer {}, Route::Ai {}) => true,
       (Route::Web3Article { .. }, Route::Web3 {}) => true,
       (Route::WasmArticle { .. }, Route::Wasm {}) => true,
       (Route::CliArticle { .. }, Route::Cli {}) => true,

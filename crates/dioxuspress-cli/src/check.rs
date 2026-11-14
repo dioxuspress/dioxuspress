@@ -40,6 +40,7 @@ const BUILTIN_MDX_COMPONENTS: &[&str] = &[
   "AudioPlayer",
   "PodcastCard",
   "ThemeShowcase",
+  "ModelArch",
 ];
 
 /// 框架镜像自带的兜底默认图：外部内容仓库在 `site.json` 未覆盖或显式引用这两个默认路径时不误报缺失。

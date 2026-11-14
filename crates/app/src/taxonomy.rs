@@ -87,6 +87,12 @@ pub fn ecosystems() -> Vec<Ecosystem> {
         Domain { id: "agent", label_key: "nav.ai.agent", route: Route::Ai {}, module_id: "ai" },
         Domain { id: "rust-ai", label_key: "nav.ai.rust_ai", route: Route::Ai {}, module_id: "ai" },
         Domain {
+          id: "visualizer",
+          label_key: "nav.ai.visualizer",
+          route: Route::AiVisualizer {},
+          module_id: "ai",
+        },
+        Domain {
           id: "papers",
           label_key: "nav.papers",
           route: Route::Papers {},

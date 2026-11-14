@@ -62,7 +62,8 @@ sequenceDiagram
 在受信内容（文档、博客、课节正文）中可直接书写已注册的组件标签：
 
 - **重点文字着色**：`<Blue text="蓝色强调" />`、`<Green text="通过状态" />`、`<Yellow text="关键提醒" />`、`<Pink text="性能热点" />`；
-- **多媒体卡片**：`<YouTube id="..." />`、`<Bilibili id="BV..." />`、`<PodcastCard id="..." />`。
+- **多媒体卡片**：`<YouTube id="..." />`、`<Bilibili id="BV..." />`、`<PodcastCard id="..." />`；
+- **LLM 架构可视化**：`<ModelArch preset="deepseek-v3" focus="attention" />` 或 `<ModelArch repo="Qwen/Qwen3-8B" source="modelscope" />`。
 
 :::note
 对于论坛帖子、评论与段落笔记等用户生成内容（UGC），渲染管线会自动切换为严格非受信模式：剥离一切原始 HTML 与事件属性，仅放行白名单协议与站内上传图片路径。

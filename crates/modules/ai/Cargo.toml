@@ -2,16 +2,31 @@
 name = "module-ai"
 version = "0.1.0"
 edition = "2021"
-description = "Rust AI 内容板块（candle / burn / 推理 / tokenizers）"
+description = "Rust AI 内容板块与 LLM 架构可视化器（HuggingFace / ModelScope）"
 
 [dependencies]
-dioxus = { workspace = true, features = ["fullstack", "router"] }
+app-core = { path = "../../core" }
 board = { path = "../../board" }
+dioxus = { workspace = true, features = ["fullstack", "router"] }
+dioxus-shadcn = { workspace = true, features = ["badge", "button", "card", "input", "spinner", "tabs", "textarea"] }
+reqwest = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["full"], optional = true }
+tracing.workspace = true
+widgets = { path = "../../widgets" }
+
+[dev-dependencies]
+dioxus-ssr = "0.7.9"
 
 [features]
 server = [
-    "dioxus/server",
-    "board/server",
+  "app-core/server",
+  "board/server",
+  "dep:reqwest",
+  "dep:tokio",
+  "dioxus/server",
+  "widgets/server",
 ]
 
 [lints]

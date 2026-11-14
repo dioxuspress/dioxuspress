@@ -18,7 +18,7 @@ use crate::components::nav::Navbar;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n, Language};
 use crate::server::get_about_page;
-use module_ai::{AiArticlePage, AiIndexPage};
+use module_ai::{AiArticlePage, AiIndexPage, AiVisualizerPage};
 use module_blog::server::{get_blog_content, list_blog_page};
 use module_cases::cases::{CaseDetailPage, CasesIndexPage};
 use module_cli::{CliArticlePage, CliIndexPage};
@@ -236,6 +236,8 @@ mod route_def {
 
         #[route("/ai")]
         Ai {},
+        #[route("/ai/visualizer")]
+        AiVisualizer {},
         #[route("/ai/:slug")]
         AiArticle { slug: String },
 
@@ -722,6 +724,11 @@ pub fn EmbeddedArticle(slug: String) -> Element {
 #[component]
 pub fn Ai() -> Element {
   rsx! { ModuleGate { id: "ai".to_string(), AiIndexPage {} } }
+}
+
+#[component]
+pub fn AiVisualizer() -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), AiVisualizerPage {} } }
 }
 
 #[component]
