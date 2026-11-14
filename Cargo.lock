@@ -4634,8 +4634,17 @@ dependencies = [
 name = "module-ai"
 version = "0.1.0"
 dependencies = [
+ "app-core",
  "board",
  "dioxus",
+ "dioxus-shadcn",
+ "dioxus-ssr",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "widgets",
 ]
 
 [[package]]

@@ -62,7 +62,8 @@ sequenceDiagram
 Trusted content (`docs`, `blog`, `courses`) can invoke registered self-closing Rust components directly:
 
 - **Inline callout highlights**: `<Blue text="Key concept" />`, `<Green text="Verified" />`, `<Yellow text="Heads up" />`, `<Pink text="Hot path" />`;
-- **Interactive embeds**: `<ThemeShowcase />`, `<YouTube id="..." />`, `<Bilibili id="BV..." />`, `<PodcastCard id="..." />`.
+- **Interactive embeds**: `<ThemeShowcase />`, `<YouTube id="..." />`, `<Bilibili id="BV..." />`, `<PodcastCard id="..." />`;
+- **LLM architecture visualizer**: `<ModelArch preset="deepseek-v3" focus="attention" />` or `<ModelArch repo="Qwen/Qwen3-8B" source="hf" />`.
 
 :::note
 User-generated content (forum posts, comments, paragraph notes) always passes through `widgets::parse_untrusted_markdown`, which strips raw HTML and event handlers and restricts images to controlled `/uploads/` paths.

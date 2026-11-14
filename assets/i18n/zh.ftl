@@ -25,6 +25,7 @@ nav.ai.llm = 大模型
 nav.ai.inference = 推理部署
 nav.ai.agent = Agent
 nav.ai.rust_ai = Rust AI
+nav.ai.visualizer = 架构可视化
 nav.papers = 论文速递
 mega.col.domains = 应用领域
 mega.col.learn = 学习资源
