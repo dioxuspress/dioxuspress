@@ -22,6 +22,7 @@
 
 pub mod browser;
 pub mod components;
+pub mod diagram;
 pub mod feed;
 pub mod mdx;
 pub mod reading;
@@ -33,6 +34,7 @@ pub mod toc;
 
 // 重导出最常用 API，方便调用方仅依赖 widgets 顶层路径。
 pub use components::register_default_components;
+pub use diagram::ZoomableDiagram;
 pub use feed::{
   build_atom_feed, build_atom_feed_with_author, build_robots_txt, build_sitemap_xml, ContentEntry,
 };

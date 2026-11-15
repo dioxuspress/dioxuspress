@@ -494,7 +494,7 @@ fn render_stream<'a>(
                         _ => {}
                     }
                 }
-                nodes.push(render_image(&dest_url, &title, &alt, blog_id, untrusted));
+                nodes.push(render_image(&dest_url, &title, &alt, blog_id, untrusted, *block_idx <= 4));
             }
             Event::Start(Tag::Table(aligns)) => {
                 let id = mint_block_id(top, block_idx);
@@ -574,7 +574,14 @@ fn mint_block_id(top: bool, block_idx: &mut usize) -> Option<String> {
 }
 
 /// 图片：相对路径按 blog_id 解析（`image_src`），描述作 alt，title 作图注。
-fn render_image(dest_url: &str, title: &str, alt: &str, blog_id: &str, untrusted: bool) -> Element {
+fn render_image(
+  dest_url: &str,
+  title: &str,
+  alt: &str,
+  blog_id: &str,
+  untrusted: bool,
+  eager: bool,
+) -> Element {
   let Some(src) = image_src(dest_url, blog_id, untrusted) else {
     return rsx! { span { class: "text-red-500", "[image rejected: unsafe URL]" } };
   };
@@ -590,20 +597,15 @@ fn render_image(dest_url: &str, title: &str, alt: &str, blog_id: &str, untrusted
         }
     };
   }
-  // `x.light.webp` 配一张同目录的 `x.dark.webp`：两张都输出，按站点主题（html 上的 `dark` class）只显示一张
+  // `x.light.svg` / `x.light.webp` 配同目录的 `x.dark.*`：内联双主题展示，点击打开可缩放平移检视层
   if let Some(dark_src) = dark_variant(&src).filter(|_| !untrusted) {
     return rsx! {
-        figure { class: "my-8",
-            // 这类图（卷首架构图）字小，正文列放不下：点开看原图
-            a { href: "{src}", target: "_blank", rel: "noopener", class: "dark:hidden",
-                img { src: "{src}", alt: "{alt}", loading: "lazy", decoding: "async", class: "rounded-2xl shadow-xl mx-auto border border-slate-200 cursor-zoom-in" }
-            }
-            a { href: "{dark_src}", target: "_blank", rel: "noopener", class: "hidden dark:block",
-                img { src: "{dark_src}", alt: "{alt}", loading: "lazy", decoding: "async", class: "rounded-2xl shadow-xl mx-auto border border-slate-800 cursor-zoom-in" }
-            }
-            if !title.is_empty() {
-                figcaption { class: "text-center text-sm text-slate-500 mt-3 italic", "{title}" }
-            }
+        crate::diagram::ZoomableDiagram {
+            light_src: src,
+            dark_src,
+            alt: alt.to_string(),
+            title: title.to_string(),
+            eager,
         }
     };
   }
@@ -1413,8 +1415,30 @@ mod tests {
     assert!(html.contains("src=\"/docs-files/burn/arch.dark.webp\""), "{html}");
     assert!(html.contains("dark:hidden") && html.contains("hidden dark:block"), "{html}");
     assert_eq!(html.matches("<figcaption").count(), 1);
+    assert!(!html.contains("role=\"dialog\""), "SSR 首帧不应渲染弹窗节点：{html}");
     let one = render_markdown("![架构](/docs-files/burn/arch.webp)", false);
     assert_eq!(one.matches("<img").count(), 1);
+  }
+
+  /// 卷首架构图（前三个顶层块内）开启 eager + fetchpriority=high + 1600x1000 宽高；
+  /// 文末图表保持 lazy 且不强加 1600x1000 比例。
+  #[test]
+  fn hero_arch_diagram_uses_eager_lcp_and_intrinsic_dimensions() {
+    let hero_md =
+      "# tokio 源码解析\n\n![tokio 架构图](/docs-files/tokio/arch.light.svg \"示意图\")";
+    let hero_html = render_markdown(hero_md, false);
+    assert!(hero_html.contains("loading=\"eager\""), "{hero_html}");
+    assert!(hero_html.contains("fetchpriority=\"high\""), "{hero_html}");
+    assert!(
+      hero_html.contains("width=\"1600\"") && hero_html.contains("height=\"1000\""),
+      "{hero_html}"
+    );
+
+    let deep_md = "# 标题\n\n第一段\n\n第二段\n\n第三段\n\n![耗时对比](/docs-files/patterns/strategy-bench.light.svg)";
+    let deep_html = render_markdown(deep_md, false);
+    assert!(deep_html.contains("loading=\"lazy\""), "{deep_html}");
+    assert!(!deep_html.contains("fetchpriority=\"high\""), "{deep_html}");
+    assert!(!deep_html.contains("width=\"1600\""), "{deep_html}");
   }
 
   /// G7：用户内容（评论 / 话题）不产生 h1，页面只有自己的一个 h1。

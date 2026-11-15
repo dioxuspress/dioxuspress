@@ -442,6 +442,9 @@ fn doc_schema(meta: &crate::server::DocMeta, in_language: &str) -> serde_json::V
   if !meta.keywords.is_empty() {
     v["keywords"] = meta.keywords.join(", ").into();
   }
+  if let Some(img) = meta.image.as_deref().filter(|s| !s.is_empty()) {
+    v["image"] = img.into();
+  }
   if let Some(src) = &meta.source {
     v["about"] = serde_json::json!({
       "@type": "SoftwareSourceCode",
@@ -452,4 +455,25 @@ fn doc_schema(meta: &crate::server::DocMeta, in_language: &str) -> serde_json::V
     });
   }
   v
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::server::DocMeta;
+
+  #[test]
+  fn doc_schema_includes_image_only_when_non_empty() {
+    let meta = DocMeta {
+      title: "tokio 源码解析".into(),
+      description: "异步运行时".into(),
+      image: Some("/docs-files/tokio/arch.og.png".into()),
+      ..Default::default()
+    };
+    let schema = doc_schema(&meta, "zh-CN");
+    assert_eq!(schema["image"], "/docs-files/tokio/arch.og.png");
+
+    let empty = DocMeta { title: "t".into(), image: Some(String::new()), ..Default::default() };
+    assert!(doc_schema(&empty, "zh-CN").get("image").is_none());
+  }
 }
