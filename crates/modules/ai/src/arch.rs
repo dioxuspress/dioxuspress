@@ -32,6 +32,14 @@ pub enum ArchFamily {
   GemmaHybrid,
   /// GLM-4 系列：高压缩比 MQA/GQA + Partial RoPE + 融合 gate_up_proj FFN
   GlmGqa,
+  /// ASR 语音识别架构（Whisper Encoder-Decoder / Qwen2-Audio / SenseVoice / CTC）
+  AudioAsr,
+  /// TTS / Omni 原生多阶段声学架构（Qwen2.5-Omni Thinker-Talker-Token2Wav / Parler-TTS / SpeechT5 / VITS）
+  SpeechTtsOmni,
+  /// 混合线性注意力 / 状态空间模型（Qwen3-Next Gated DeltaNet / Mamba-2 / Jamba / RWKV-7 / MiniMax-01）
+  HybridLinearSsm,
+  /// 双向编码器与向量表征 / 重排序模型（BGE-M3 / BERT / XLM-RoBERTa / ModernBERT / Qwen3-Embedding）
+  EncoderEmbedding,
   /// 其它标准 Decoder-Only Transformer
   GenericTransformer,
   /// 未提供标准 Transformer 超参、仅由 Safetensors 权重树还原的自定义模型
@@ -49,6 +57,10 @@ impl ArchFamily {
       Self::DeepSeekMla => "DeepSeek MLA + MoE",
       Self::GemmaHybrid => "Gemma Hybrid SWA",
       Self::GlmGqa => "GLM Extreme GQA",
+      Self::AudioAsr => "ASR Audio-Text",
+      Self::SpeechTtsOmni => "TTS / Omni Speech",
+      Self::HybridLinearSsm => "Hybrid Linear / SSM",
+      Self::EncoderEmbedding => "Encoder / Embedding",
       Self::GenericTransformer => "Transformer Decoder",
       Self::SafetensorsTree => "Safetensors Weight Tree",
     }
@@ -68,10 +80,48 @@ pub struct VisionSpec {
   pub estimated_params: u64,
 }
 
-/// 注意力子层精确规格。
+/// 语音声学前端与音频编码塔（Audio Frontend + Acoustic Encoder）规格。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AudioSpec {
+  pub model_type: String,
+  pub num_mel_bins: u64,
+  pub sampling_rate_hz: u64,
+  pub hidden_size: u64,
+  pub num_layers: u64,
+  pub num_heads: u64,
+  pub ffn_dim: u64,
+  pub max_source_positions: u64,
+  pub estimated_params: u64,
+}
+
+/// 模型末端输出阶段规格（区分自回归词表头、句向量池化头、重排序打分头与多阶段声学声码器）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum OutputHeadSpec {
+  /// 标准自回归词表投影头 `lm_head [D -> V]`
+  #[default]
+  CausalLmHead,
+  /// 句向量池化与归一化头（`CLS` / `Mean` / `Last-Token` + L2 Normalize → `[B, output_dim]`）
+  EmbeddingPool { pooling_mode: String, output_dim: u64, normalize: bool },
+  /// 交叉编码器重排序/分类打分头（`Classifier / Score [D -> num_labels]`）
+  SequenceScorer { num_labels: u64 },
+  /// 多阶段语音合成 / Omni 声学声码管线（如 `Talker AR -> Flow-Matching DiT + BigVGAN` 或 `RVQ -> DAC`）
+  SpeechSynthesizer {
+    talker_summary: Option<String>,
+    codec_summary: String,
+    num_codebooks: u64,
+    sampling_rate_hz: u64,
+    estimated_params: u64,
+  },
+}
+
+fn default_true() -> bool {
+  true
+}
+
+/// 注意力或序列状态混合子层精确规格。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AttentionSpec {
-  /// 标准 MHA / MQA / GQA（含可选每头 QK-Norm、滑动窗口 SWA 及交替层调度）
+  /// 标准 MHA / MQA / GQA（兼容双向全注意力、Seq2Seq Cross-Attention、QK-Norm、SWA 及 iRoPE）
   StandardGqa {
     num_q_heads: u64,
     num_kv_heads: u64,
@@ -86,6 +136,12 @@ pub enum AttentionSpec {
     /// 如 Llama-4 的 `4`（iRoPE）：每 4 层中 3 层启用 RoPE，第 4 层为无位置编码 NoPE 全局层
     #[serde(default)]
     nope_layer_interval: Option<u64>,
+    /// 是否使用因果掩码（BERT / RoBERTa 等双向编码器为 `false`）
+    #[serde(default = "default_true")]
+    is_causal: bool,
+    /// 是否附带编码器-解码器交叉注意力 `encoder_attn`（如 Whisper / Parler-TTS / SpeechT5 解码层）
+    #[serde(default)]
+    has_cross_attn: bool,
   },
   /// DeepSeek Multi-head Latent Attention (MLA)：低秩联合压缩 KV + 解耦 RoPE
   DeepSeekMla {
@@ -96,6 +152,16 @@ pub enum AttentionSpec {
     qk_nope_head_dim: u64,
     qk_rope_head_dim: u64,
     v_head_dim: u64,
+  },
+  /// 线性注意力 / 选择性状态空间模型（Gated DeltaNet / Mamba-2 / Mamba / RWKV-7 / Lightning Linear）：
+  /// 推理期仅维护 O(1) 恒定大小的循环状态与短卷积缓存，随序列长度 S 零增长。
+  LinearRecurrent {
+    kind: String,
+    num_heads: u64,
+    head_dim: u64,
+    state_dim: u64,
+    conv_kernel: u64,
+    expand_factor: u64,
   },
 }
 
@@ -111,16 +177,20 @@ impl AttentionSpec {
         sliding_window,
         sliding_window_pattern,
         nope_layer_interval,
+        is_causal,
+        has_cross_attn,
         ..
       } => {
-        let kind = if *num_q_heads == *num_kv_heads {
+        let base_kind = if *num_q_heads == *num_kv_heads {
           "MHA"
         } else if *num_kv_heads == 1 {
           "MQA"
         } else {
           "GQA"
         };
+        let kind = if *is_causal { base_kind.to_string() } else { format!("Bi-{base_kind}") };
         let norm_tag = if *qk_norm { " + QK-Norm" } else { "" };
+        let cross_tag = if *has_cross_attn { " + CrossAttn" } else { "" };
         let extra = if let (Some(w), Some(pat)) = (sliding_window, sliding_window_pattern) {
           format!(" · {}:1 SWA({w})", pat.saturating_sub(1))
         } else if let Some(iv) = nope_layer_interval {
@@ -130,19 +200,44 @@ impl AttentionSpec {
         } else {
           String::new()
         };
-        format!("{kind} ({num_q_heads}Q:{num_kv_heads}KV × {head_dim}d{norm_tag}{extra})")
+        format!(
+          "{kind} ({num_q_heads}Q:{num_kv_heads}KV × {head_dim}d{norm_tag}{cross_tag}{extra})"
+        )
       }
       Self::DeepSeekMla { num_heads, kv_lora_rank, qk_rope_head_dim, .. } => {
         format!("MLA ({num_heads}H, c_KV={kv_lora_rank}d + k_R={qk_rope_head_dim}d)")
       }
+      Self::LinearRecurrent { kind, num_heads, head_dim, state_dim, .. } => {
+        format!("{kind} ({num_heads}H×{head_dim}d, O(1) state={state_dim}d)")
+      }
     }
   }
 
-  /// 单层单个 Token 在推理 KV Cache 中实际需要缓存的标量元素个数。
+  /// 单层单个 Token 在推理 KV Cache 中随序列长度增长需要缓存的标量元素个数（`LinearRecurrent` 为 `0`）。
   pub fn cached_elements_per_token(&self) -> u64 {
     match self {
-      Self::StandardGqa { num_kv_heads, head_dim, .. } => 2 * num_kv_heads * head_dim,
+      Self::StandardGqa { num_kv_heads, head_dim, is_causal, .. } => {
+        if *is_causal {
+          2 * num_kv_heads * head_dim
+        } else {
+          0
+        }
+      }
       Self::DeepSeekMla { kv_lora_rank, qk_rope_head_dim, .. } => kv_lora_rank + qk_rope_head_dim,
+      Self::LinearRecurrent { .. } => 0,
+    }
+  }
+
+  /// 单层单条序列在推理期需常驻的固定循环状态元素个数（与上下文长度 S 无关的 O(1) State Cache）。
+  pub fn fixed_state_elements_per_seq(&self, hidden_size: u64) -> u64 {
+    match self {
+      Self::LinearRecurrent {
+        num_heads, head_dim, state_dim, conv_kernel, expand_factor, ..
+      } => {
+        let d_inner = (num_heads * head_dim).max((*expand_factor).max(1) * hidden_size);
+        num_heads * head_dim * state_dim + d_inner * conv_kernel.saturating_sub(1)
+      }
+      _ => 0,
     }
   }
 
@@ -151,23 +246,37 @@ impl AttentionSpec {
     match self {
       Self::StandardGqa { num_q_heads, head_dim, .. } => 2 * num_q_heads * head_dim,
       Self::DeepSeekMla { num_heads, v_head_dim, .. } => 2 * num_heads * v_head_dim,
+      Self::LinearRecurrent { num_heads, head_dim, .. } => 2 * num_heads * head_dim,
     }
   }
 
-  /// 相比标准 MHA 的 KV Cache 压缩倍数（如 32Q:8KV 为 4.0×，DeepSeek-V3 MLA 为 56.89×）。
+  /// 相比标准 MHA 的 KV Cache 压缩倍数（如 32Q:8KV 为 4.0×，DeepSeek-V3 MLA 为 56.89×；
+  /// 对于 `LinearRecurrent`，以标准 32K 上下文下的固定循环状态对比同维度 MHA 计算等效压缩比）。
   pub fn kv_compression_ratio(&self) -> f64 {
-    let actual = self.cached_elements_per_token();
-    if actual == 0 {
-      return 1.0;
+    match self {
+      Self::LinearRecurrent { state_dim, .. } => 65_536.0 / ((*state_dim).max(1) as f64),
+      _ => {
+        let actual = self.cached_elements_per_token();
+        if actual == 0 {
+          return 1.0;
+        }
+        (self.mha_baseline_elements_per_token() as f64) / (actual as f64)
+      }
     }
-    (self.mha_baseline_elements_per_token() as f64) / (actual as f64)
   }
 
-  /// 单层 Attention 子块的参数量（全部激活）。
+  /// 单层 Attention / SSM 子块的参数量（全部激活）。
   pub fn params_per_layer(&self, hidden_size: u64) -> u64 {
     match self {
       Self::StandardGqa {
-        num_q_heads, num_kv_heads, head_dim, qkv_bias, o_bias, qk_norm, ..
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+        qkv_bias,
+        o_bias,
+        qk_norm,
+        has_cross_attn,
+        ..
       } => {
         let q_out = num_q_heads * head_dim;
         let kv_out = num_kv_heads * head_dim;
@@ -181,6 +290,15 @@ impl AttentionSpec {
         }
         if *qk_norm {
           p += 2 * head_dim;
+        }
+        if *has_cross_attn {
+          p += 4 * hidden_size * hidden_size;
+          if *qkv_bias {
+            p += 3 * hidden_size;
+          }
+          if *o_bias {
+            p += hidden_size;
+          }
         }
         p
       }
@@ -202,20 +320,32 @@ impl AttentionSpec {
         let o_proj = (num_heads * v_head_dim) * hidden_size;
         q_params + kv_a + kv_b + o_proj
       }
+      Self::LinearRecurrent {
+        num_heads, head_dim, state_dim, conv_kernel, expand_factor, ..
+      } => {
+        let d_inner = (num_heads * head_dim).max((*expand_factor).max(1) * hidden_size);
+        if *expand_factor >= 2 {
+          3 * hidden_size * d_inner + 2 * hidden_size * state_dim + d_inner * conv_kernel
+        } else {
+          4 * hidden_size * d_inner + d_inner * conv_kernel
+        }
+      }
     }
   }
 }
 
-/// 前馈网络（Dense FFN 或 Sparse MoE）子层精确规格。
+/// 前馈网络（Dense FFN、非门控 2 矩阵 MLP 或 Sparse MoE）子层精确规格。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FfnSpec {
-  /// 稠密门控前馈网络（SwiGLU / GeGLU：支持标准三矩阵或 GLM-4 融合 `gate_up_proj`）
+  /// 稠密前馈网络（`is_gated=true` 为 3 矩阵 SwiGLU/GeGLU；`is_gated=false` 为 2 矩阵标准 MLP；`intermediate_size=0` 表示纯 Mamba 无独立 MLP）
   DenseGated {
     intermediate_size: u64,
     act_fn: String,
     bias: bool,
     #[serde(default)]
     fused_gate_up: bool,
+    #[serde(default = "default_true")]
+    is_gated: bool,
   },
   /// 稀疏混合专家（支持 Routed Top-K Experts + 可选常驻 Shared Experts + 分组路由）
   SparseMoe {
@@ -235,9 +365,13 @@ pub enum FfnSpec {
 impl FfnSpec {
   pub fn short_label(&self) -> String {
     match self {
-      Self::DenseGated { intermediate_size, act_fn, fused_gate_up, .. } => {
-        if *fused_gate_up {
+      Self::DenseGated { intermediate_size, act_fn, fused_gate_up, is_gated, .. } => {
+        if *intermediate_size == 0 {
+          "Integrated in SSM Mixer (No Separate MLP)".to_string()
+        } else if *fused_gate_up {
           format!("Fused GateUp FFN ({act_fn}, I={intermediate_size})")
+        } else if !*is_gated {
+          format!("Standard 2-Layer MLP ({act_fn}, I={intermediate_size})")
         } else {
           format!("Dense FFN ({act_fn}, I={intermediate_size})")
         }
@@ -263,10 +397,14 @@ impl FfnSpec {
   /// 单层 FFN/MoE 的总参数量（含未激活专家）与单 Token 激活参数量。
   pub fn params_per_layer(&self, hidden_size: u64) -> (u64, u64) {
     match self {
-      Self::DenseGated { intermediate_size, bias, .. } => {
-        let mut p = 3 * hidden_size * intermediate_size;
+      Self::DenseGated { intermediate_size, bias, is_gated, .. } => {
+        if *intermediate_size == 0 {
+          return (0, 0);
+        }
+        let matrices = if *is_gated { 3 } else { 2 };
+        let mut p = matrices * hidden_size * intermediate_size;
         if *bias {
-          p += 2 * intermediate_size + hidden_size;
+          p += (matrices - 1) * intermediate_size + hidden_size;
         }
         (p, p)
       }
@@ -339,6 +477,8 @@ impl LayerSegment {
 pub struct ParamBreakdown {
   #[serde(default)]
   pub vision_encoder: u64,
+  #[serde(default)]
+  pub audio_and_speech: u64,
   pub embedding: u64,
   pub attention: u64,
   pub dense_ffn: u64,
@@ -347,7 +487,7 @@ pub struct ParamBreakdown {
   pub norms_and_routers: u64,
   pub lm_head: u64,
   pub mtp_head: u64,
-  /// 模型总参数量（主干 + Embedding + LM Head + 多模态视觉编码器，不含训练辅助 MTP 时可对照 `mtp_head`）
+  /// 模型总参数量（主干 + Embedding + 输出头 + 多模态视觉/语音子系统，不含训练辅助 MTP 时可对照 `mtp_head`）
   pub total_params: u64,
   /// 每个 Token 前向推理实际激活的参数量
   pub active_params: u64,
@@ -357,6 +497,7 @@ pub struct ParamBreakdown {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum InspectorFocus {
   Vision,
+  Audio,
   Embedding,
   #[default]
   Attention,
@@ -370,11 +511,12 @@ impl InspectorFocus {
   pub fn from_attr(raw: &str) -> Self {
     match raw.trim().to_ascii_lowercase().as_str() {
       "vision" | "vit" | "siglip" => Self::Vision,
+      "audio" | "whisper" | "speech" | "mel" => Self::Audio,
       "embed" | "embedding" => Self::Embedding,
-      "attn" | "attention" | "mla" | "gqa" => Self::Attention,
+      "attn" | "attention" | "mla" | "gqa" | "ssm" | "mamba" => Self::Attention,
       "ffn" | "mlp" | "moe" | "experts" => Self::FfnOrMoe,
       "norm" | "rmsnorm" | "residual" => Self::NormAndResidual,
-      "head" | "lm_head" | "logits" => Self::LmHead,
+      "head" | "lm_head" | "logits" | "pool" | "pooling" | "vocoder" => Self::LmHead,
       "mtp" => Self::MtpHead,
       _ => Self::Attention,
     }
@@ -383,6 +525,7 @@ impl InspectorFocus {
   pub fn stage_filter(&self) -> &'static str {
     match self {
       Self::Vision => "vision",
+      Self::Audio => "audio",
       Self::Embedding => "embedding",
       Self::Attention => "attention",
       Self::FfnOrMoe => "ffn_or_moe",
@@ -403,10 +546,14 @@ pub struct ModelBlueprint {
   pub model_type: String,
   pub torch_dtype: String,
   pub quantization_summary: Option<String>,
-  /// 若外层为多模态 VLM（`vision_config` 存在），记录视觉编码器摘要提示与精确规格
+  /// 若外层为多模态（`vision_config` / `audio_config` / Omni 多阶段），记录摘要提示
   pub multimodal_note: Option<String>,
   #[serde(default)]
   pub vision: Option<VisionSpec>,
+  #[serde(default)]
+  pub audio: Option<AudioSpec>,
+  #[serde(default)]
+  pub output_head: OutputHeadSpec,
 
   pub vocab_size: u64,
   pub hidden_size: u64,
@@ -449,9 +596,24 @@ impl ModelBlueprint {
     self.segments.iter().any(|s| matches!(s.ffn, FfnSpec::SparseMoe { .. }))
   }
 
-  /// 默认推荐高亮聚焦的子模块：DeepSeek 聚焦 MLA，纯 MoE 聚焦 MoE，其余聚焦 Attention。
+  /// 是否包含线性注意力 / SSM 恒定循环状态层。
+  pub fn has_linear_recurrent(&self) -> bool {
+    self.segments.iter().any(|s| matches!(s.attention, AttentionSpec::LinearRecurrent { .. }))
+  }
+
+  /// 是否为单次前向编码/打分模型（Embedding / Reranker，推理期无需驻留自回归 KV Cache）。
+  pub fn is_single_pass_encoder(&self) -> bool {
+    matches!(
+      self.output_head,
+      OutputHeadSpec::EmbeddingPool { .. } | OutputHeadSpec::SequenceScorer { .. }
+    )
+  }
+
+  /// 默认推荐高亮聚焦的子模块。
   pub fn default_focus(&self) -> InspectorFocus {
     match self.family {
+      ArchFamily::AudioAsr if self.audio.is_some() => InspectorFocus::Audio,
+      ArchFamily::SpeechTtsOmni => InspectorFocus::LmHead,
       ArchFamily::QwenMoe | ArchFamily::MixtralMoe | ArchFamily::Llama4Moe => {
         InspectorFocus::FfnOrMoe
       }
@@ -479,7 +641,7 @@ impl ModelBlueprint {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 推理显存（VRAM）与 KV Cache 精算器
+// 推理显存（VRAM）与 KV / Recurrent State Cache 精算器
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// 推理部署量化精度预设。
@@ -531,6 +693,8 @@ impl PrecisionPreset {
 pub struct VramEstimate {
   pub weights_bytes: f64,
   pub kv_cache_bytes: f64,
+  /// 线性注意力 / SSM 层常驻的 O(1) 循环状态缓存字节数（与上下文长度 `context_len` 无关）
+  pub state_cache_bytes: f64,
   pub mha_baseline_kv_bytes: f64,
   pub activation_overhead_bytes: f64,
   pub total_bytes: f64,
@@ -549,37 +713,50 @@ impl ModelBlueprint {
     let kv_elem_bytes = precision.bytes_per_kv_elem();
 
     let mut kv_elems_total: f64 = 0.0;
+    let mut state_elems_total: f64 = 0.0;
     let mut mha_elems_total: f64 = 0.0;
 
-    for seg in &self.segments {
-      let n_layers = seg.layer_count();
-      let elems_per_tok = seg.attention.cached_elements_per_token() as f64;
-      match seg.attention {
-        AttentionSpec::StandardGqa {
-          sliding_window: Some(w),
-          sliding_window_pattern: Some(pat),
-          ..
-        } if w > 0 && pat > 1 => {
-          let global_layers = (n_layers / pat) as f64;
-          let local_layers = (n_layers.saturating_sub(n_layers / pat)) as f64;
-          let local_ctx = context_len.min(w) as f64;
-          kv_elems_total +=
-            b * elems_per_tok * (global_layers * (context_len as f64) + local_layers * local_ctx);
+    if !self.is_single_pass_encoder() {
+      let cross_frames = self.audio.as_ref().map(|a| a.max_source_positions).unwrap_or(1500) as f64;
+      for seg in &self.segments {
+        let n_layers = seg.layer_count();
+        let elems_per_tok = seg.attention.cached_elements_per_token() as f64;
+        match seg.attention {
+          AttentionSpec::LinearRecurrent { .. } => {
+            let fixed_state = seg.attention.fixed_state_elements_per_seq(self.hidden_size) as f64;
+            state_elems_total += (n_layers as f64) * b * fixed_state;
+          }
+          AttentionSpec::StandardGqa {
+            sliding_window: Some(w),
+            sliding_window_pattern: Some(pat),
+            ..
+          } if w > 0 && pat > 1 => {
+            let global_layers = (n_layers / pat) as f64;
+            let local_layers = (n_layers.saturating_sub(n_layers / pat)) as f64;
+            let local_ctx = context_len.min(w) as f64;
+            kv_elems_total +=
+              b * elems_per_tok * (global_layers * (context_len as f64) + local_layers * local_ctx);
+          }
+          AttentionSpec::StandardGqa { sliding_window: Some(w), .. } if w > 0 => {
+            kv_elems_total += (n_layers as f64) * b * (context_len.min(w) as f64) * elems_per_tok;
+          }
+          AttentionSpec::StandardGqa { has_cross_attn: true, .. } => {
+            kv_elems_total +=
+              (n_layers as f64) * b * ((context_len as f64) + cross_frames) * elems_per_tok;
+          }
+          _ => {
+            kv_elems_total += (n_layers as f64) * b * (context_len as f64) * elems_per_tok;
+          }
         }
-        AttentionSpec::StandardGqa { sliding_window: Some(w), .. } if w > 0 => {
-          kv_elems_total += (n_layers as f64) * b * (context_len.min(w) as f64) * elems_per_tok;
-        }
-        _ => {
-          kv_elems_total += (n_layers as f64) * b * (context_len as f64) * elems_per_tok;
-        }
+        mha_elems_total += (n_layers as f64)
+          * b
+          * (context_len as f64)
+          * (seg.attention.mha_baseline_elements_per_token() as f64);
       }
-      mha_elems_total += (n_layers as f64)
-        * b
-        * (context_len as f64)
-        * (seg.attention.mha_baseline_elements_per_token() as f64);
     }
 
     let kv_cache_bytes = kv_elems_total * kv_elem_bytes;
+    let state_cache_bytes = state_elems_total * 2.0;
     let mha_baseline_kv_bytes = mha_elems_total * kv_elem_bytes;
 
     // 运行时激活缓冲区与 CUDA Graph / Workspace 预留：与 hidden_size、batch 及单步序列工作区成正比
@@ -590,9 +767,10 @@ impl ModelBlueprint {
     VramEstimate {
       weights_bytes,
       kv_cache_bytes,
+      state_cache_bytes,
       mha_baseline_kv_bytes,
       activation_overhead_bytes,
-      total_bytes: weights_bytes + kv_cache_bytes + activation_overhead_bytes,
+      total_bytes: weights_bytes + kv_cache_bytes + state_cache_bytes + activation_overhead_bytes,
     }
   }
 }
@@ -651,6 +829,17 @@ pub fn format_bytes_iec(bytes: f64) -> String {
 // 核心配置解析逻辑
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// 可选附属配置文件集合（与主 `config.json` 协同建模）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AuxConfigFiles<'a> {
+  pub generation_json: Option<&'a str>,
+  pub tokenizer_json: Option<&'a str>,
+  /// `preprocessor_config.json`（提供音频采样率、Mel 频带数或视觉分辨率/Patch 尺寸）
+  pub preprocessor_json: Option<&'a str>,
+  /// Sentence-Transformers `1_Pooling/config.json`（提供 CLS / Mean / Last-Token 池化策略）
+  pub pooling_json: Option<&'a str>,
+}
+
 /// 从原始 `config.json`（及可选附属配置、Safetensors 摘要）构建完整的 [`ModelBlueprint`]。
 pub fn build_model_blueprint(
   repo_id: &str,
@@ -658,6 +847,23 @@ pub fn build_model_blueprint(
   config_json: &str,
   generation_json: Option<&str>,
   tokenizer_json: Option<&str>,
+  safetensors: Option<SafetensorsSummary>,
+) -> Result<ModelBlueprint, String> {
+  build_model_blueprint_with_aux(
+    repo_id,
+    source_label,
+    config_json,
+    AuxConfigFiles { generation_json, tokenizer_json, preprocessor_json: None, pooling_json: None },
+    safetensors,
+  )
+}
+
+/// 支持完整附属配置（含 `preprocessor_config.json` 与 `1_Pooling/config.json`）的架构推导入口。
+pub fn build_model_blueprint_with_aux(
+  repo_id: &str,
+  source_label: &str,
+  config_json: &str,
+  aux: AuxConfigFiles<'_>,
   safetensors: Option<SafetensorsSummary>,
 ) -> Result<ModelBlueprint, String> {
   let root: Value =
@@ -669,33 +875,57 @@ pub fn build_model_blueprint(
   let raw_config_pretty =
     serde_json::to_string_pretty(&root).unwrap_or_else(|_| config_json.to_string());
 
-  // 兼容多模态 VLM 外壳：若顶层没有 `hidden_size`，自动下钻 `text_config` 或 `llm_config`
+  let preproc = parse_preprocessor_meta(aux.preprocessor_json);
+
+  // 兼容多模态外壳：支持顶层 `thinker_config`（如 Qwen2.5-Omni）及 `vision_config` / `audio_config` / `text_config` / `decoder`
+  let thinker_obj = root_obj.get("thinker_config").and_then(Value::as_object);
+  let mm_container = thinker_obj.unwrap_or(root_obj);
+  let vision_cfg_obj = mm_container
+    .get("vision_config")
+    .or_else(|| root_obj.get("vision_config"))
+    .and_then(Value::as_object);
+  let audio_cfg_obj = mm_container
+    .get("audio_config")
+    .or_else(|| root_obj.get("audio_config"))
+    .and_then(Value::as_object);
+
   let mut multimodal_note: Option<String> = None;
-  let vision_cfg_obj = root_obj.get("vision_config").and_then(Value::as_object);
-  let cfg_obj = if root_obj.contains_key("hidden_size") || root_obj.contains_key("n_embd") {
+  let cfg_obj = if mm_container.contains_key("hidden_size")
+    || mm_container.contains_key("n_embd")
+    || mm_container.contains_key("d_model")
+  {
     if let Some(vc) = vision_cfg_obj {
       let vt = vc.get("model_type").and_then(Value::as_str).unwrap_or("vision_tower");
       let vd = vc.get("hidden_size").and_then(Value::as_u64).unwrap_or(0);
       multimodal_note =
         Some(format!("内含多模态视觉编码器 ({vt}, hidden={vd})，支持点击展开视觉支路"));
     }
-    root_obj
-  } else if let Some(sub) = root_obj
+    mm_container
+  } else if let Some(sub) = mm_container
     .get("text_config")
-    .or_else(|| root_obj.get("llm_config"))
-    .or_else(|| root_obj.get("language_config"))
+    .or_else(|| mm_container.get("llm_config"))
+    .or_else(|| mm_container.get("language_config"))
+    .or_else(|| mm_container.get("decoder"))
     .and_then(Value::as_object)
   {
-    let vision_tag = vision_cfg_obj
-      .and_then(|v| v.get("model_type"))
-      .and_then(Value::as_str)
-      .unwrap_or("Vision Encoder");
-    multimodal_note = Some(format!(
-      "多模态复合架构（含 {vision_tag} 视觉编码器 + 语言主干），可点击视觉支路展开细节"
-    ));
+    if thinker_obj.is_some() {
+      multimodal_note = Some(
+        "原生全模态 Thinker-Talker 架构（含视觉塔 + 音频塔 + 语言主干 + 声码合成流）".to_string(),
+      );
+    } else if let Some(vc) = vision_cfg_obj {
+      let vision_tag = vc.get("model_type").and_then(Value::as_str).unwrap_or("Vision Encoder");
+      multimodal_note = Some(format!(
+        "多模态复合架构（含 {vision_tag} 视觉编码器 + 语言主干），可点击视觉支路展开细节"
+      ));
+    } else if let Some(ac) = audio_cfg_obj {
+      let audio_tag = ac.get("model_type").and_then(Value::as_str).unwrap_or("Audio Encoder");
+      multimodal_note = Some(format!(
+        "语音-文本复合架构（含 {audio_tag} 声学编码塔 + 语言主干），可点击音频支路展开细节"
+      ));
+    }
     sub
   } else {
-    root_obj
+    mm_container
   };
 
   let architectures: Vec<String> = root_obj
@@ -704,12 +934,17 @@ pub fn build_model_blueprint(
     .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
     .unwrap_or_default();
 
-  let model_type = cfg_obj
-    .get("model_type")
-    .or_else(|| root_obj.get("model_type"))
-    .and_then(Value::as_str)
-    .unwrap_or("unknown")
-    .to_string();
+  let root_model_type = root_obj.get("model_type").and_then(Value::as_str).unwrap_or("");
+  let model_type = if !root_model_type.is_empty() && thinker_obj.is_some() {
+    root_model_type.to_string()
+  } else {
+    cfg_obj
+      .get("model_type")
+      .or_else(|| root_obj.get("model_type"))
+      .and_then(Value::as_str)
+      .unwrap_or("unknown")
+      .to_string()
+  };
 
   let torch_dtype = cfg_obj
     .get("torch_dtype")
@@ -722,11 +957,15 @@ pub fn build_model_blueprint(
   let quantization_summary =
     extract_quantization_summary(root_obj).or_else(|| extract_quantization_summary(cfg_obj));
 
-  let (tokenizer_class, tok_vocab) = parse_tokenizer_meta(tokenizer_json);
-  let (default_temperature, default_top_p) = parse_generation_meta(generation_json);
+  let (tokenizer_class, tok_vocab) = parse_tokenizer_meta(aux.tokenizer_json);
+  let (default_temperature, default_top_p) = parse_generation_meta(aux.generation_json);
 
-  let hidden_opt = u64_any(cfg_obj, &["hidden_size", "n_embd", "d_model"]);
-  let layers_opt = u64_any(cfg_obj, &["num_hidden_layers", "n_layer", "num_layers"]);
+  let hidden_opt =
+    u64_any(cfg_obj, &["hidden_size", "n_embd", "d_model", "dim", "hidden_channels"]);
+  let layers_opt = u64_any(
+    cfg_obj,
+    &["num_hidden_layers", "n_layer", "num_layers", "decoder_layers", "encoder_layers", "depth"],
+  );
 
   // 若既无标准 Transformer 维度、但存在 Safetensors 真实权重树，则走纯 L2 兜底建模
   let (Some(hidden_size), Some(num_hidden_layers)) = (hidden_opt, layers_opt) else {
@@ -752,19 +991,92 @@ pub fn build_model_blueprint(
     return Err("hidden_size 与 num_hidden_layers 必须大于 0".to_string());
   }
 
-  let vision = vision_cfg_obj.and_then(|vc| parse_vision_spec(vc, hidden_size));
+  let vision = vision_cfg_obj.and_then(|vc| parse_vision_spec(vc, hidden_size, &preproc));
 
-  let arch_joined = format!("{} {}", architectures.join(" "), model_type).to_ascii_lowercase();
+  let arch_joined =
+    format!("{} {} {}", architectures.join(" "), model_type, root_model_type).to_ascii_lowercase();
+  let repo_lc = repo_id.to_ascii_lowercase();
+
+  let is_whisper_like = arch_joined.contains("whisper")
+    || (cfg_obj.contains_key("encoder_layers")
+      && cfg_obj.contains_key("decoder_layers")
+      && (cfg_obj.contains_key("num_mel_bins") || arch_joined.contains("speecht5")));
+  let is_ctc_asr = arch_joined.contains("wav2vec2")
+    || arch_joined.contains("hubert")
+    || arch_joined.contains("sensevoice")
+    || arch_joined.contains("wavlm")
+    || arch_joined.contains("paraformer");
+
+  let audio = parse_audio_spec(
+    audio_cfg_obj,
+    cfg_obj,
+    hidden_size,
+    is_whisper_like,
+    is_ctc_asr,
+    !std::ptr::eq(cfg_obj, mm_container),
+    &preproc,
+  );
+  if multimodal_note.is_none() {
+    if let Some(ref aud) = audio {
+      multimodal_note = Some(format!(
+        "语音编码前端：{} ({} Mel bins @ {}kHz, {}L×{}d)，可点击音频支路查看声学下采样流",
+        aud.model_type,
+        aud.num_mel_bins,
+        aud.sampling_rate_hz / 1000,
+        aud.num_layers,
+        aud.hidden_size
+      ));
+    }
+  }
+
+  // 识别 TTS / Omni 声码输出管线 vs Embedding / Reranker 编码头
+  let speech_synth = parse_speech_synthesizer(root_obj, cfg_obj, &arch_joined, &preproc);
+  let is_tts_or_omni = speech_synth.is_some();
+  let is_asr = !is_tts_or_omni && (is_whisper_like || is_ctc_asr || audio.is_some());
+
+  let is_bi_encoder_arch = matches!(
+    model_type.as_str(),
+    "bert"
+      | "roberta"
+      | "xlm-roberta"
+      | "modernbert"
+      | "deberta"
+      | "deberta-v2"
+      | "electra"
+      | "mpnet"
+      | "jina_bert"
+      | "nomic_bert"
+  ) || arch_joined.contains("xlmroberta")
+    || arch_joined.contains("modernbert")
+    || arch_joined.contains("bertmodel");
+  let is_seq_cls = architectures.iter().any(|a| a.contains("ForSequenceClassification"));
+  let is_embed_repo = !is_asr
+    && !is_tts_or_omni
+    && vision.is_none()
+    && (repo_lc.contains("embedding")
+      || repo_lc.contains("bge-")
+      || repo_lc.contains("gte-")
+      || repo_lc.contains("e5-"));
+  let is_rerank = !is_asr && !is_tts_or_omni && (is_seq_cls || repo_lc.contains("rerank"));
+  let pool_cfg = parse_pooling_meta(aux.pooling_json);
+  let is_embedding_model = !is_asr
+    && !is_tts_or_omni
+    && (is_rerank || pool_cfg.is_some() || is_bi_encoder_arch || is_embed_repo);
+
   let is_llama4 = arch_joined.contains("llama4");
   let is_gemma_any = arch_joined.contains("gemma");
   let is_gemma2_or_3 = arch_joined.contains("gemma2") || arch_joined.contains("gemma3");
   let is_glm = arch_joined.contains("glm") || arch_joined.contains("chatglm");
   let is_mixtral = arch_joined.contains("mixtral");
+  let is_pure_mamba = matches!(model_type.as_str(), "mamba" | "mamba2" | "falcon_mamba");
 
   let vocab_size =
     u64_any(cfg_obj, &["padded_vocab_size", "vocab_size"]).or(tok_vocab).unwrap_or(32000);
-  let max_position_embeddings =
-    u64_any(cfg_obj, &["max_position_embeddings", "n_positions", "seq_length"]).unwrap_or(4096);
+  let max_position_embeddings = u64_any(
+    cfg_obj,
+    &["max_position_embeddings", "n_positions", "seq_length", "max_target_positions"],
+  )
+  .unwrap_or(if is_whisper_like { 448 } else { 4096 });
   let rms_norm_eps = f64_any(
     cfg_obj,
     &["rms_norm_eps", "layernorm_epsilon", "layer_norm_eps", "layer_norm_epsilon"],
@@ -773,30 +1085,56 @@ pub fn build_model_blueprint(
     .get("tie_word_embeddings")
     .or_else(|| root_obj.get("tie_word_embeddings"))
     .and_then(Value::as_bool)
-    .unwrap_or(is_gemma_any);
+    .unwrap_or(is_gemma_any || is_whisper_like || is_pure_mamba);
   let hidden_act = cfg_obj
     .get("hidden_act")
     .or_else(|| cfg_obj.get("hidden_activation"))
     .or_else(|| cfg_obj.get("activation_function"))
     .and_then(Value::as_str)
-    .unwrap_or("silu")
+    .unwrap_or(if is_bi_encoder_arch || is_whisper_like { "gelu" } else { "silu" })
     .to_string();
-  let rope_summary = extract_rope_summary(cfg_obj);
+
+  let has_explicit_rope = cfg_obj.contains_key("rope_theta")
+    || cfg_obj.contains_key("rope_scaling")
+    || cfg_obj.contains_key("rotary_percent")
+    || cfg_obj.contains_key("rotary_emb_base");
+  let rope_summary = if is_pure_mamba || arch_joined.contains("rwkv") {
+    "Implicit Recurrent State (No Pos Embed)".to_string()
+  } else if (is_bi_encoder_arch || is_whisper_like) && !has_explicit_rope {
+    format!("Learned / Sinusoidal Pos ({max_position_embeddings})")
+  } else {
+    extract_rope_summary(cfg_obj)
+  };
   let num_nextn_predict_layers = u64_any(cfg_obj, &["num_nextn_predict_layers"]).unwrap_or(0);
 
-  let num_q_heads = u64_any(cfg_obj, &["num_attention_heads", "n_head"]).unwrap_or(32).max(1);
+  let num_q_heads =
+    u64_any(cfg_obj, &["num_attention_heads", "n_head", "decoder_attention_heads", "num_heads"])
+      .unwrap_or(32)
+      .max(1);
   let num_kv_heads =
     u64_any(cfg_obj, &["num_key_value_heads", "num_kv_heads", "multi_query_group_num"])
       .unwrap_or(num_q_heads)
       .max(1);
 
-  // 1. 识别 Attention 形态（MLA vs Standard GQA）
+  let is_causal = !(is_bi_encoder_arch || is_ctc_asr);
+  let has_cross_attn = is_whisper_like || root_obj.contains_key("decoder");
+
+  // 1. 识别 Attention 形态（MLA vs Hybrid/Pure Linear SSM vs Standard GQA）
   let kv_lora_rank = u64_any(cfg_obj, &["kv_lora_rank"]);
   let is_mla = kv_lora_rank.is_some()
     || arch_joined.contains("deepseek_v2")
     || arch_joined.contains("deepseek_v3");
 
-  let attention = if let Some(kv_rank) = kv_lora_rank {
+  let linear_ssm_plan = detect_linear_ssm(
+    cfg_obj,
+    &model_type,
+    &arch_joined,
+    hidden_size,
+    num_hidden_layers,
+    num_q_heads,
+  );
+
+  let standard_attention = if let Some(kv_rank) = kv_lora_rank {
     let q_lora_rank = u64_any(cfg_obj, &["q_lora_rank"]).filter(|&v| v > 0);
     let qk_nope_head_dim = u64_any(cfg_obj, &["qk_nope_head_dim"]).unwrap_or(128);
     let qk_rope_head_dim = u64_any(cfg_obj, &["qk_rope_head_dim"]).unwrap_or(64);
@@ -812,7 +1150,10 @@ pub fn build_model_blueprint(
   } else {
     let head_dim =
       u64_any(cfg_obj, &["head_dim", "kv_channels"]).unwrap_or(hidden_size / num_q_heads).max(1);
-    let default_qkv_bias = arch_joined.contains("qwen2") || arch_joined.contains("chatglm");
+    let default_qkv_bias = arch_joined.contains("qwen2")
+      || arch_joined.contains("chatglm")
+      || is_bi_encoder_arch
+      || is_whisper_like;
     let qkv_bias = cfg_obj
       .get("attention_bias")
       .or_else(|| cfg_obj.get("qkv_bias"))
@@ -824,13 +1165,13 @@ pub fn build_model_blueprint(
       .get("attention_bias")
       .or_else(|| cfg_obj.get("add_bias_linear"))
       .and_then(Value::as_bool)
-      .unwrap_or(false);
+      .unwrap_or(is_bi_encoder_arch || is_whisper_like);
     let qk_norm = cfg_obj
       .get("qk_norm")
       .or_else(|| cfg_obj.get("use_qk_norm"))
       .and_then(Value::as_bool)
       .unwrap_or_else(|| {
-        arch_joined.contains("qwen3")
+        (arch_joined.contains("qwen3") && !arch_joined.contains("qwen3_next_no_qknorm"))
           || arch_joined.contains("gemma3")
           || safetensors.as_ref().is_some_and(|s| s.has_qk_norm)
       });
@@ -852,25 +1193,59 @@ pub fn build_model_blueprint(
       sliding_window,
       sliding_window_pattern,
       nope_layer_interval,
+      is_causal,
+      has_cross_attn,
     }
   };
 
   // 2. 识别 FFN / MoE 与纵向分层区间
-  let intermediate_size = u64_any(cfg_obj, &["intermediate_size", "ffn_hidden_size", "n_inner"])
-    .unwrap_or(hidden_size * 4);
-  let dense_mlp_inter = u64_any(cfg_obj, &["intermediate_size_mlp"]).unwrap_or(intermediate_size);
+  let intermediate_size = u64_any(
+    cfg_obj,
+    &["intermediate_size", "ffn_hidden_size", "n_inner", "decoder_ffn_dim", "ffn_dim"],
+  )
+  .unwrap_or(hidden_size * 4);
+  let dense_mlp_inter = if linear_ssm_plan.as_ref().is_some_and(|p| !p.has_separate_ffn) {
+    0
+  } else {
+    u64_any(cfg_obj, &["intermediate_size_mlp"]).unwrap_or(intermediate_size)
+  };
   let mlp_bias = cfg_obj
     .get("mlp_bias")
     .or_else(|| cfg_obj.get("add_bias_linear"))
     .and_then(Value::as_bool)
-    .unwrap_or(false);
-  let norms_per_layer = if is_gemma2_or_3 || arch_joined.contains("glm4") { 4 } else { 2 };
+    .unwrap_or(is_bi_encoder_arch || is_whisper_like);
+  let norms_per_layer = if is_gemma2_or_3 || arch_joined.contains("glm4") {
+    4
+  } else if has_cross_attn {
+    3
+  } else if dense_mlp_inter == 0 {
+    1
+  } else {
+    2
+  };
+
+  let is_gated_ffn = if is_whisper_like || is_ctc_asr {
+    false
+  } else if is_bi_encoder_arch {
+    let act_lc = hidden_act.to_ascii_lowercase();
+    act_lc.contains("glu") || model_type == "modernbert"
+  } else {
+    true
+  };
 
   let num_routed_experts =
     u64_any(cfg_obj, &["n_routed_experts", "num_experts", "num_local_experts"]).unwrap_or(0);
   let is_moe = num_routed_experts > 1;
 
-  let family = if is_mla {
+  let family = if is_tts_or_omni {
+    ArchFamily::SpeechTtsOmni
+  } else if is_asr {
+    ArchFamily::AudioAsr
+  } else if is_embedding_model {
+    ArchFamily::EncoderEmbedding
+  } else if linear_ssm_plan.is_some() {
+    ArchFamily::HybridLinearSsm
+  } else if is_mla {
     ArchFamily::DeepSeekMla
   } else if is_llama4 && is_moe {
     ArchFamily::Llama4Moe
@@ -893,16 +1268,33 @@ pub fn build_model_blueprint(
     ArchFamily::GenericTransformer
   };
 
-  let schedule_note = build_schedule_note(&attention, cfg_obj);
+  let output_head = if let Some(synth) = speech_synth {
+    synth
+  } else if is_rerank {
+    OutputHeadSpec::SequenceScorer {
+      num_labels: u64_any(cfg_obj, &["num_labels"]).unwrap_or(1).max(1),
+    }
+  } else if is_embedding_model {
+    let (mode, out_dim) = pool_cfg.unwrap_or_else(|| {
+      let default_mode = if is_bi_encoder_arch { "cls / mean" } else { "last_token" };
+      (default_mode.to_string(), hidden_size)
+    });
+    OutputHeadSpec::EmbeddingPool { pooling_mode: mode, output_dim: out_dim, normalize: true }
+  } else {
+    OutputHeadSpec::CausalLmHead
+  };
+
+  let schedule_note = build_schedule_note(&standard_attention, cfg_obj);
 
   let dense_ffn = FfnSpec::DenseGated {
     intermediate_size: dense_mlp_inter,
     act_fn: hidden_act.clone(),
     bias: mlp_bias,
     fused_gate_up: is_glm,
+    is_gated: is_gated_ffn,
   };
 
-  let segments = if is_moe {
+  let active_ffn = if is_moe {
     let top_k = u64_any(cfg_obj, &["num_experts_per_tok", "num_selected_experts"]).unwrap_or(2);
     let moe_inter = u64_any(cfg_obj, &["moe_intermediate_size"]).unwrap_or(intermediate_size);
     let n_shared_cfg = u64_any(cfg_obj, &["n_shared_experts"]).unwrap_or(0);
@@ -910,9 +1302,14 @@ pub fn build_model_blueprint(
     let (num_shared_experts, shared_intermediate_size, has_shared_gate) = if n_shared_cfg > 0 {
       (n_shared_cfg, n_shared_cfg * moe_inter, false)
     } else if shared_inter_cfg > 0 {
-      (1, shared_inter_cfg, arch_joined.contains("qwen2_moe") || arch_joined.contains("qwen2moe"))
+      (
+        1,
+        shared_inter_cfg,
+        arch_joined.contains("qwen2_moe")
+          || arch_joined.contains("qwen2moe")
+          || arch_joined.contains("qwen3_next"),
+      )
     } else if is_llama4 {
-      // Llama-4 (Scout / Maverick) 固定内置 1 个常驻 Shared Expert（维度与单专家 intermediate_size 相同）
       (1, moe_inter, false)
     } else {
       (0, 0, false)
@@ -927,7 +1324,7 @@ pub fn build_model_blueprint(
       .unwrap_or(if is_llama4 { "sigmoid" } else { "softmax" })
       .to_string();
 
-    let moe_ffn = FfnSpec::SparseMoe {
+    Some(FfnSpec::SparseMoe {
       num_routed_experts,
       top_k,
       moe_intermediate_size: moe_inter,
@@ -937,17 +1334,65 @@ pub fn build_model_blueprint(
       router_groups,
       scoring_func,
       act_fn: hidden_act.clone(),
-    };
+    })
+  } else {
+    None
+  };
 
-    let moe_step = u64_any(cfg_obj, &["interleave_moe_layer_step"]).unwrap_or(1).max(1);
-    let first_k_dense = u64_any(cfg_obj, &["first_k_dense_replace"])
+  let segments = if let Some(ssm) = linear_ssm_plan {
+    let seg_ffn = active_ffn.unwrap_or_else(|| dense_ffn.clone());
+    if ssm.full_attn_layers == 0 {
+      vec![LayerSegment {
+        start_layer: 0,
+        end_layer: num_hidden_layers - 1,
+        title: format!("纯循环状态层栈 ({} ×{num_hidden_layers})", ssm.kind_short),
+        attention: ssm.spec,
+        ffn: seg_ffn,
+        norms_per_layer,
+        schedule_note: Some(
+          "全栈 O(1) 恒定循环状态推理（零增长 KV Cache），解码时间与显存复杂度随序列长度恒定"
+            .to_string(),
+        ),
+      }]
+    } else {
+      let full_n = ssm.full_attn_layers.min(num_hidden_layers - 1).max(1);
+      let lin_n = num_hidden_layers - full_n;
+      let ratio_note = format!(
+        "{}:1 混合序列架构：{lin_n} 层 {} (O(1) 恒定 State Cache) + {full_n} 层全局注意力 (O(S) KV Cache)",
+        lin_n / full_n.max(1),
+        ssm.kind_short
+      );
+      vec![
+        LayerSegment {
+          start_layer: 0,
+          end_layer: lin_n - 1,
+          title: format!("线性/状态空间层组 ({} ×{lin_n})", ssm.kind_short),
+          attention: ssm.spec,
+          ffn: seg_ffn.clone(),
+          norms_per_layer,
+          schedule_note: Some(ratio_note.clone()),
+        },
+        LayerSegment {
+          start_layer: lin_n,
+          end_layer: num_hidden_layers - 1,
+          title: format!("交替全局注意力层组 (Full Attention ×{full_n})"),
+          attention: standard_attention,
+          ffn: seg_ffn,
+          norms_per_layer,
+          schedule_note: Some(ratio_note),
+        },
+      ]
+    }
+  } else if let Some(moe_ffn) = active_ffn {
+    let moe_step =
+      u64_any(cfg_obj, &["interleave_moe_layer_step", "expert_layer_period"]).unwrap_or(1).max(1);
+    let first_k_dense = u64_any(cfg_obj, &["first_k_dense_replace", "expert_layer_offset"])
       .or_else(|| safetensors.as_ref().and_then(|s| s.detected_first_moe_layer))
       .unwrap_or(0)
       .min(num_hidden_layers);
 
     let mut segs = Vec::new();
-    if moe_step > 1 && first_k_dense == 0 {
-      // 如 Llama-4 Maverick：Dense 层与 MoE 层按周期交替堆叠
+    if moe_step > 1 && first_k_dense <= 1 {
       let moe_layers = num_hidden_layers / moe_step;
       let dense_layers = num_hidden_layers.saturating_sub(moe_layers);
       if dense_layers > 0 {
@@ -955,7 +1400,7 @@ pub fn build_model_blueprint(
           start_layer: 0,
           end_layer: dense_layers - 1,
           title: format!("交替稠密层组 (Interleaved Dense ×{dense_layers})"),
-          attention: attention.clone(),
+          attention: standard_attention.clone(),
           ffn: dense_ffn.clone(),
           norms_per_layer,
           schedule_note: Some(format!("与稀疏 MoE 按 step={moe_step} 逐层交替堆叠（偶/奇层分流）")),
@@ -966,7 +1411,7 @@ pub fn build_model_blueprint(
           start_layer: dense_layers,
           end_layer: num_hidden_layers - 1,
           title: format!("交替稀疏专家层组 (Interleaved MoE ×{moe_layers})"),
-          attention: attention.clone(),
+          attention: standard_attention.clone(),
           ffn: moe_ffn,
           norms_per_layer,
           schedule_note: schedule_note.clone(),
@@ -978,7 +1423,7 @@ pub fn build_model_blueprint(
           start_layer: 0,
           end_layer: first_k_dense - 1,
           title: "前置稠密预热层 (Dense SwiGLU)".to_string(),
-          attention: attention.clone(),
+          attention: standard_attention.clone(),
           ffn: dense_ffn.clone(),
           norms_per_layer,
           schedule_note: None,
@@ -989,7 +1434,7 @@ pub fn build_model_blueprint(
           start_layer: first_k_dense,
           end_layer: num_hidden_layers - 1,
           title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
-          attention: attention.clone(),
+          attention: standard_attention,
           ffn: moe_ffn,
           norms_per_layer,
           schedule_note: schedule_note.clone(),
@@ -998,11 +1443,18 @@ pub fn build_model_blueprint(
     }
     segs
   } else {
+    let stack_title = if !is_causal {
+      "双向编码器层栈 (Bidirectional Encoder Stack)".to_string()
+    } else if has_cross_attn {
+      "交叉注意力解码器层栈 (Seq2Seq Decoder Stack)".to_string()
+    } else {
+      "Transformer 解码器层栈 (Decoder Stack)".to_string()
+    };
     vec![LayerSegment {
       start_layer: 0,
       end_layer: num_hidden_layers - 1,
-      title: "Transformer 解码器层栈 (Decoder Stack)".to_string(),
-      attention,
+      title: stack_title,
+      attention: standard_attention,
       ffn: dense_ffn,
       norms_per_layer,
       schedule_note,
@@ -1010,11 +1462,19 @@ pub fn build_model_blueprint(
   };
 
   let vision_params = vision.as_ref().map(|v| v.estimated_params).unwrap_or(0);
+  let audio_and_speech_params = audio.as_ref().map(|a| a.estimated_params).unwrap_or(0)
+    + match &output_head {
+      OutputHeadSpec::SpeechSynthesizer { estimated_params, .. } => *estimated_params,
+      _ => 0,
+    };
+
   let params = compute_param_breakdown(
     vision_params,
+    audio_and_speech_params,
     vocab_size,
     hidden_size,
     tie_word_embeddings,
+    &output_head,
     num_nextn_predict_layers,
     &segments,
   );
@@ -1029,6 +1489,8 @@ pub fn build_model_blueprint(
     quantization_summary,
     multimodal_note,
     vision,
+    audio,
+    output_head,
     vocab_size,
     hidden_size,
     num_hidden_layers,
@@ -1048,7 +1510,57 @@ pub fn build_model_blueprint(
   })
 }
 
-fn parse_vision_spec(vc: &serde_json::Map<String, Value>, text_hidden: u64) -> Option<VisionSpec> {
+#[derive(Default)]
+struct PreprocessorHints {
+  mel_bins: Option<u64>,
+  sampling_rate: Option<u64>,
+  image_size: Option<u64>,
+  patch_size: Option<u64>,
+}
+
+fn parse_preprocessor_meta(raw: Option<&str>) -> PreprocessorHints {
+  let Some(s) = raw else {
+    return PreprocessorHints::default();
+  };
+  let Ok(val) = serde_json::from_str::<Value>(s) else {
+    return PreprocessorHints::default();
+  };
+  let Some(obj) = val.as_object() else {
+    return PreprocessorHints::default();
+  };
+  let mel_bins = u64_any(obj, &["feature_size", "num_mel_bins", "n_mels"]).filter(|&v| v >= 16);
+  let sampling_rate = u64_any(obj, &["sampling_rate", "sample_rate"]).filter(|&v| v >= 8000);
+  let image_size = u64_any(obj, &["image_size"]).or_else(|| {
+    obj
+      .get("size")
+      .or_else(|| obj.get("crop_size"))
+      .and_then(Value::as_object)
+      .and_then(|sz| u64_any(sz, &["height", "shortest_edge", "longest_edge"]))
+  });
+  let patch_size = u64_any(obj, &["patch_size"]);
+  PreprocessorHints { mel_bins, sampling_rate, image_size, patch_size }
+}
+
+fn parse_pooling_meta(raw: Option<&str>) -> Option<(String, u64)> {
+  let s = raw?;
+  let val = serde_json::from_str::<Value>(s).ok()?;
+  let obj = val.as_object()?;
+  let dim = u64_any(obj, &["word_embedding_dimension"]).unwrap_or(0);
+  let mode = if obj.get("pooling_mode_lasttoken").and_then(Value::as_bool) == Some(true) {
+    "last_token"
+  } else if obj.get("pooling_mode_cls_token").and_then(Value::as_bool) == Some(true) {
+    "cls"
+  } else {
+    "mean"
+  };
+  Some((mode.to_string(), dim))
+}
+
+fn parse_vision_spec(
+  vc: &serde_json::Map<String, Value>,
+  text_hidden: u64,
+  preproc: &PreprocessorHints,
+) -> Option<VisionSpec> {
   let hidden_size = u64_any(vc, &["hidden_size", "embed_dim", "vision_width"])?;
   if hidden_size == 0 {
     return None;
@@ -1056,8 +1568,8 @@ fn parse_vision_spec(vc: &serde_json::Map<String, Value>, text_hidden: u64) -> O
   let num_hidden_layers = u64_any(vc, &["num_hidden_layers", "depth"]).unwrap_or(24).max(1);
   let num_attention_heads = u64_any(vc, &["num_attention_heads", "num_heads"]).unwrap_or(16).max(1);
   let intermediate_size = u64_any(vc, &["intermediate_size", "mlp_dim"]).unwrap_or(hidden_size * 4);
-  let image_size = u64_any(vc, &["image_size"]);
-  let patch_size = u64_any(vc, &["patch_size"]);
+  let image_size = u64_any(vc, &["image_size"]).or(preproc.image_size);
+  let patch_size = u64_any(vc, &["patch_size"]).or(preproc.patch_size);
   let model_type = vc.get("model_type").and_then(Value::as_str).unwrap_or("vision_encoder");
 
   let patch = patch_size.unwrap_or(14);
@@ -1076,6 +1588,322 @@ fn parse_vision_spec(vc: &serde_json::Map<String, Value>, text_hidden: u64) -> O
     patch_size,
     estimated_params,
   })
+}
+
+fn parse_audio_spec(
+  audio_cfg: Option<&serde_json::Map<String, Value>>,
+  cfg_obj: &serde_json::Map<String, Value>,
+  text_hidden: u64,
+  is_whisper_like: bool,
+  is_ctc_asr: bool,
+  has_projector: bool,
+  preproc: &PreprocessorHints,
+) -> Option<AudioSpec> {
+  if let Some(ac) = audio_cfg {
+    let d = u64_any(ac, &["d_model", "hidden_size", "encoder_hidden_size"])?;
+    let layers = u64_any(ac, &["encoder_layers", "num_hidden_layers", "num_layers"])?;
+    let heads =
+      u64_any(ac, &["encoder_attention_heads", "num_attention_heads"]).unwrap_or(20).max(1);
+    let ffn = u64_any(ac, &["encoder_ffn_dim", "intermediate_size"]).unwrap_or(d * 4);
+    let mels = u64_any(ac, &["num_mel_bins", "n_mels"]).or(preproc.mel_bins).unwrap_or(128);
+    let sr = u64_any(ac, &["sampling_rate"]).or(preproc.sampling_rate).unwrap_or(16_000);
+    let max_pos = u64_any(ac, &["max_source_positions"]).unwrap_or(1500);
+    let mt = ac.get("model_type").and_then(Value::as_str).unwrap_or("audio_encoder");
+    let stem = mels * 3 * d + d * 3 * d + max_pos * d;
+    let trunk = layers * (4 * d * d + 2 * d * ffn + 4 * d);
+    let proj = if has_projector { d * text_hidden * 2 } else { 0 };
+    return Some(AudioSpec {
+      model_type: mt.to_string(),
+      num_mel_bins: mels,
+      sampling_rate_hz: sr,
+      hidden_size: d,
+      num_layers: layers,
+      num_heads: heads,
+      ffn_dim: ffn,
+      max_source_positions: max_pos,
+      estimated_params: stem + trunk + proj,
+    });
+  }
+
+  if is_whisper_like {
+    let d = u64_any(cfg_obj, &["d_model", "hidden_size"])?;
+    let layers = u64_any(cfg_obj, &["encoder_layers"])?;
+    let heads =
+      u64_any(cfg_obj, &["encoder_attention_heads", "num_attention_heads"]).unwrap_or(20).max(1);
+    let ffn = u64_any(cfg_obj, &["encoder_ffn_dim", "intermediate_size"]).unwrap_or(d * 4);
+    let mels = u64_any(cfg_obj, &["num_mel_bins"]).or(preproc.mel_bins).unwrap_or(128);
+    let sr = preproc.sampling_rate.unwrap_or(16_000);
+    let max_pos = u64_any(cfg_obj, &["max_source_positions"]).unwrap_or(1500);
+    let stem = mels * 3 * d + d * 3 * d + max_pos * d;
+    let trunk = layers * (4 * d * d + 2 * d * ffn + 4 * d);
+    return Some(AudioSpec {
+      model_type: "whisper_encoder".to_string(),
+      num_mel_bins: mels,
+      sampling_rate_hz: sr,
+      hidden_size: d,
+      num_layers: layers,
+      num_heads: heads,
+      ffn_dim: ffn,
+      max_source_positions: max_pos,
+      estimated_params: stem + trunk,
+    });
+  }
+
+  if is_ctc_asr {
+    let mels = preproc.mel_bins.unwrap_or(80);
+    let sr = preproc.sampling_rate.unwrap_or(16_000);
+    let conv_params = 4_200_000u64;
+    return Some(AudioSpec {
+      model_type: "conv_feature_extractor".to_string(),
+      num_mel_bins: mels,
+      sampling_rate_hz: sr,
+      hidden_size: text_hidden,
+      num_layers: 7,
+      num_heads: 1,
+      ffn_dim: text_hidden,
+      max_source_positions: 1500,
+      estimated_params: conv_params,
+    });
+  }
+
+  None
+}
+
+fn parse_speech_synthesizer(
+  root_obj: &serde_json::Map<String, Value>,
+  cfg_obj: &serde_json::Map<String, Value>,
+  arch_joined: &str,
+  preproc: &PreprocessorHints,
+) -> Option<OutputHeadSpec> {
+  // 1) Qwen2.5-Omni / Qwen3-Omni: `talker_config` + `token2wav_config`
+  if root_obj.contains_key("talker_config") || root_obj.contains_key("token2wav_config") {
+    let talker_raw = root_obj.get("talker_config").and_then(Value::as_object);
+    let talker_inner =
+      talker_raw.and_then(|t| t.get("text_config").and_then(Value::as_object)).or(talker_raw);
+    let (talker_summary, talker_params) = if let Some(tc) = talker_inner {
+      let td = u64_any(tc, &["hidden_size", "d_model"]).unwrap_or(896);
+      let tl = u64_any(tc, &["num_hidden_layers", "num_layers"]).unwrap_or(24);
+      let ti = u64_any(tc, &["intermediate_size"]).unwrap_or(td * 4);
+      let tv = u64_any(tc, &["vocab_size"]).unwrap_or(8448);
+      let p = tv * td + tl * (4 * td * td + 3 * td * ti);
+      (Some(format!("Talker Dual-Track AR ({tl}L×{td}d, codec_vocab={tv})")), p)
+    } else {
+      (None, 0)
+    };
+    let t2w_params = if root_obj.contains_key("token2wav_config") { 180_000_000 } else { 0 };
+    return Some(OutputHeadSpec::SpeechSynthesizer {
+      talker_summary,
+      codec_summary: "Token2Wav (Flow-Matching DiT + BigVGAN)".to_string(),
+      num_codebooks: 1,
+      sampling_rate_hz: preproc.sampling_rate.unwrap_or(24_000),
+      estimated_params: talker_params + t2w_params,
+    });
+  }
+
+  // 2) Parler-TTS / MusicGen: `text_encoder` + `decoder` + `audio_encoder` (DAC / EnCodec)
+  if arch_joined.contains("parler_tts") || arch_joined.contains("musicgen") {
+    let te_info = root_obj.get("text_encoder").and_then(Value::as_object).map(|te| {
+      let d = u64_any(te, &["d_model", "hidden_size"]).unwrap_or(1024);
+      let l = u64_any(te, &["num_layers", "num_hidden_layers"]).unwrap_or(24);
+      (format!("Prompt Encoder ({l}L×{d}d)"), l * 12 * d * d)
+    });
+    let ae = root_obj.get("audio_encoder").and_then(Value::as_object);
+    let codebooks = u64_any(cfg_obj, &["num_codebooks"])
+      .or_else(|| ae.and_then(|a| u64_any(a, &["num_codebooks"])))
+      .unwrap_or(9);
+    let sr =
+      ae.and_then(|a| u64_any(a, &["sampling_rate"])).or(preproc.sampling_rate).unwrap_or(44_100);
+    let codec_type = ae.and_then(|a| a.get("model_type")).and_then(Value::as_str).unwrap_or("DAC");
+    let (talker_summary, te_params) = match te_info {
+      Some((s, p)) => (Some(s), p),
+      None => (None, 0),
+    };
+    return Some(OutputHeadSpec::SpeechSynthesizer {
+      talker_summary,
+      codec_summary: format!(
+        "{} Neural Audio Codec ({codebooks} RVQ Codebooks)",
+        codec_type.to_uppercase()
+      ),
+      num_codebooks: codebooks,
+      sampling_rate_hz: sr,
+      estimated_params: te_params + 75_000_000,
+    });
+  }
+
+  // 3) SpeechT5 / VITS / Bark / Kokoro / F5-TTS
+  if arch_joined.contains("speecht5")
+    || arch_joined.contains("vits")
+    || arch_joined.contains("bark")
+    || arch_joined.contains("kokoro")
+    || arch_joined.contains("f5tts")
+    || arch_joined.contains("cosyvoice")
+  {
+    let sr = u64_any(cfg_obj, &["sampling_rate"]).or(preproc.sampling_rate).unwrap_or(24_000);
+    return Some(OutputHeadSpec::SpeechSynthesizer {
+      talker_summary: None,
+      codec_summary: "Acoustic Post-Net / Flow-Matching / HiFi-GAN Vocoder".to_string(),
+      num_codebooks: u64_any(cfg_obj, &["num_codebooks"]).unwrap_or(1),
+      sampling_rate_hz: sr,
+      estimated_params: 28_000_000,
+    });
+  }
+
+  None
+}
+
+struct LinearSsmPlan {
+  kind_short: &'static str,
+  spec: AttentionSpec,
+  full_attn_layers: u64,
+  has_separate_ffn: bool,
+}
+
+fn detect_linear_ssm(
+  cfg: &serde_json::Map<String, Value>,
+  model_type: &str,
+  arch_joined: &str,
+  hidden_size: u64,
+  num_layers: u64,
+  num_q_heads: u64,
+) -> Option<LinearSsmPlan> {
+  // 1) Qwen3-Next: Gated DeltaNet + Full GQA (default 3:1)
+  if model_type == "qwen3_next" || cfg.contains_key("linear_num_value_heads") {
+    let v_heads = u64_any(cfg, &["linear_num_value_heads"]).unwrap_or(num_q_heads).max(1);
+    let v_dim = u64_any(cfg, &["linear_value_head_dim"]).unwrap_or(128);
+    let k_dim = u64_any(cfg, &["linear_key_head_dim"]).unwrap_or(128);
+    let conv = u64_any(cfg, &["linear_conv_kernel_dim"]).unwrap_or(4);
+    let full_attn_layers = cfg
+      .get("layer_types")
+      .and_then(Value::as_array)
+      .map(|arr| {
+        arr
+          .iter()
+          .filter(|v| v.as_str().is_some_and(|s| s.contains("full") || s == "attention"))
+          .count() as u64
+      })
+      .filter(|&c| c > 0)
+      .unwrap_or_else(|| {
+        let interval = u64_any(cfg, &["full_attention_interval"]).unwrap_or(4).max(2);
+        (num_layers / interval).max(1)
+      });
+    return Some(LinearSsmPlan {
+      kind_short: "Gated DeltaNet",
+      spec: AttentionSpec::LinearRecurrent {
+        kind: "Gated DeltaNet".to_string(),
+        num_heads: v_heads,
+        head_dim: v_dim,
+        state_dim: k_dim,
+        conv_kernel: conv,
+        expand_factor: 1,
+      },
+      full_attn_layers,
+      has_separate_ffn: true,
+    });
+  }
+
+  // 2) Pure Mamba / Mamba-2 / Falcon-Mamba
+  if matches!(model_type, "mamba" | "mamba2" | "falcon_mamba") {
+    let expand = u64_any(cfg, &["expand"]).unwrap_or(2).max(1);
+    let d_inner = expand * hidden_size;
+    let is_m2 = model_type == "mamba2";
+    let state_dim = u64_any(cfg, &["state_size", "ssm_state_size", "d_state"])
+      .unwrap_or(if is_m2 { 128 } else { 16 });
+    let conv = u64_any(cfg, &["conv_kernel", "d_conv"]).unwrap_or(4);
+    let head_dim = u64_any(cfg, &["head_dim", "headdim"]).unwrap_or(64).max(1);
+    let n_heads = u64_any(cfg, &["n_heads"]).unwrap_or((d_inner / head_dim).max(1));
+    let kind_short = if is_m2 { "Mamba-2 SSD" } else { "Mamba Selective SSM" };
+    return Some(LinearSsmPlan {
+      kind_short,
+      spec: AttentionSpec::LinearRecurrent {
+        kind: kind_short.to_string(),
+        num_heads: n_heads,
+        head_dim,
+        state_dim,
+        conv_kernel: conv,
+        expand_factor: expand,
+      },
+      full_attn_layers: 0,
+      has_separate_ffn: false,
+    });
+  }
+
+  // 3) Hybrid Mamba + Transformer (Jamba / Bamba / Zamba2 / Nemotron-H / Granite-4)
+  if matches!(model_type, "jamba" | "bamba" | "zamba2" | "nemotron_h" | "granite_moe_hybrid")
+    || cfg.contains_key("mamba_d_state")
+    || cfg.contains_key("attn_layer_period")
+  {
+    let expand = u64_any(cfg, &["mamba_expand", "expand"]).unwrap_or(2).max(1);
+    let state_dim = u64_any(cfg, &["mamba_d_state", "ssm_state_size", "state_size"]).unwrap_or(16);
+    let conv = u64_any(cfg, &["mamba_d_conv", "conv_kernel", "d_conv"]).unwrap_or(4);
+    let head_dim = u64_any(cfg, &["mamba_headdim", "head_dim"]).unwrap_or(64).max(1);
+    let n_heads = ((expand * hidden_size) / head_dim).max(1);
+    let period = u64_any(cfg, &["attn_layer_period"]).unwrap_or(8).max(2);
+    let full_attn_layers = cfg
+      .get("hybrid_override_pattern")
+      .and_then(Value::as_str)
+      .map(|pat| pat.chars().filter(|&c| c == '*' || c == 'A').count() as u64)
+      .filter(|&c| c > 0)
+      .unwrap_or_else(|| (num_layers / period).max(1));
+    return Some(LinearSsmPlan {
+      kind_short: "Mamba SSM",
+      spec: AttentionSpec::LinearRecurrent {
+        kind: "Mamba Selective SSM".to_string(),
+        num_heads: n_heads,
+        head_dim,
+        state_dim,
+        conv_kernel: conv,
+        expand_factor: 1,
+      },
+      full_attn_layers,
+      has_separate_ffn: true,
+    });
+  }
+
+  // 4) RWKV-6 / RWKV-7 Recurrent WKV
+  if arch_joined.contains("rwkv") {
+    let head_dim = u64_any(cfg, &["head_size", "head_dim"]).unwrap_or(64).max(1);
+    let n_heads = (hidden_size / head_dim).max(1);
+    let kind_short = if arch_joined.contains("rwkv7") { "RWKV-7 WKV" } else { "RWKV WKV" };
+    return Some(LinearSsmPlan {
+      kind_short,
+      spec: AttentionSpec::LinearRecurrent {
+        kind: kind_short.to_string(),
+        num_heads: n_heads,
+        head_dim,
+        state_dim: head_dim,
+        conv_kernel: 2,
+        expand_factor: 1,
+      },
+      full_attn_layers: 0,
+      has_separate_ffn: true,
+    });
+  }
+
+  // 5) MiniMax-01 Lightning Linear Attention + Softmax GQA
+  if arch_joined.contains("minimax") && cfg.contains_key("attn_type_list") {
+    let head_dim = u64_any(cfg, &["head_dim"]).unwrap_or(hidden_size / num_q_heads).max(1);
+    let full_attn_layers = cfg
+      .get("attn_type_list")
+      .and_then(Value::as_array)
+      .map(|arr| arr.iter().filter(|v| v.as_u64() == Some(1)).count() as u64)
+      .filter(|&c| c > 0)
+      .unwrap_or_else(|| (num_layers / 8).max(1));
+    return Some(LinearSsmPlan {
+      kind_short: "Lightning Linear",
+      spec: AttentionSpec::LinearRecurrent {
+        kind: "Lightning Linear Attn".to_string(),
+        num_heads: num_q_heads,
+        head_dim,
+        state_dim: head_dim,
+        conv_kernel: 0,
+        expand_factor: 1,
+      },
+      full_attn_layers,
+      has_separate_ffn: true,
+    });
+  }
+
+  None
 }
 
 fn detect_nope_interval(cfg: &serde_json::Map<String, Value>) -> Option<u64> {
@@ -1118,16 +1946,35 @@ fn build_schedule_note(
   }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_param_breakdown(
   vision_encoder: u64,
+  audio_and_speech: u64,
   vocab_size: u64,
   hidden_size: u64,
   tie_word_embeddings: bool,
+  output_head: &OutputHeadSpec,
   num_nextn_predict_layers: u64,
   segments: &[LayerSegment],
 ) -> ParamBreakdown {
   let embedding = vocab_size * hidden_size;
-  let lm_head = if tie_word_embeddings { 0 } else { vocab_size * hidden_size };
+  let lm_head = match output_head {
+    OutputHeadSpec::CausalLmHead | OutputHeadSpec::SpeechSynthesizer { .. } => {
+      if tie_word_embeddings {
+        0
+      } else {
+        vocab_size * hidden_size
+      }
+    }
+    OutputHeadSpec::EmbeddingPool { output_dim, .. } => {
+      if *output_dim > 0 && *output_dim != hidden_size {
+        hidden_size * (*output_dim)
+      } else {
+        0
+      }
+    }
+    OutputHeadSpec::SequenceScorer { num_labels } => hidden_size * (*num_labels).max(1),
+  };
 
   let mut attention = 0u64;
   let mut dense_ffn = 0u64;
@@ -1139,7 +1986,7 @@ fn compute_param_breakdown(
   for seg in segments {
     let count = seg.layer_count();
     let attn_one = seg.attention.params_per_layer(hidden_size);
-    let norms_one = seg.norms_per_layer.max(2) * hidden_size;
+    let norms_one = seg.norms_per_layer.max(1) * hidden_size;
     attention += count * attn_one;
     norms_and_routers += count * norms_one;
     active_trunk += count * (attn_one + norms_one);
@@ -1177,7 +2024,7 @@ fn compute_param_breakdown(
     }
   }
 
-  // Final RMSNorm
+  // Final RMSNorm / LayerNorm
   norms_and_routers += hidden_size;
   active_trunk += hidden_size;
 
@@ -1198,6 +2045,7 @@ fn compute_param_breakdown(
   };
 
   let total_params = vision_encoder
+    + audio_and_speech
     + embedding
     + attention
     + dense_ffn
@@ -1205,10 +2053,11 @@ fn compute_param_breakdown(
     + moe_shared
     + norms_and_routers
     + lm_head;
-  let active_params = vision_encoder + embedding + active_trunk + lm_head;
+  let active_params = vision_encoder + audio_and_speech + embedding + active_trunk + lm_head;
 
   ParamBreakdown {
     vision_encoder,
+    audio_and_speech,
     embedding,
     attention,
     dense_ffn,
@@ -1248,6 +2097,8 @@ fn build_safetensors_fallback_blueprint(
     quantization_summary,
     multimodal_note: None,
     vision: None,
+    audio: None,
+    output_head: OutputHeadSpec::CausalLmHead,
     vocab_size: 0,
     hidden_size: 0,
     num_hidden_layers: layers,
@@ -2470,5 +3321,181 @@ mod tests {
     assert_eq!(glm.family, ArchFamily::GlmGqa);
     assert!(glm.params.total_params > 9_300_000_000 && glm.params.total_params < 9_500_000_000);
     assert!((glm.segments[0].attention.kv_compression_ratio() - 16.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn parses_whisper_large_v3_asr_dual_tower_and_cross_attention() {
+    let whisper_cfg = r#"{
+      "architectures": ["WhisperForConditionalGeneration"],
+      "model_type": "whisper",
+      "vocab_size": 51866,
+      "d_model": 1280,
+      "encoder_layers": 32,
+      "encoder_attention_heads": 20,
+      "encoder_ffn_dim": 5120,
+      "decoder_layers": 32,
+      "decoder_attention_heads": 20,
+      "decoder_ffn_dim": 5120,
+      "max_source_positions": 1500,
+      "max_target_positions": 448,
+      "num_mel_bins": 128,
+      "activation_function": "gelu"
+    }"#;
+    let preproc = r#"{"feature_size": 128, "sampling_rate": 16000}"#;
+    let bp = build_model_blueprint_with_aux(
+      "openai/whisper-large-v3",
+      "HF",
+      whisper_cfg,
+      AuxConfigFiles { preprocessor_json: Some(preproc), ..AuxConfigFiles::default() },
+      None,
+    )
+    .unwrap();
+
+    assert_eq!(bp.family, ArchFamily::AudioAsr);
+    let aud = bp.audio.as_ref().expect("audio encoder parsed");
+    assert_eq!((aud.num_mel_bins, aud.sampling_rate_hz, aud.num_layers), (128, 16000, 32));
+    // Whisper-large-v3 is ~1.54B params (635M audio encoder + 905M cross-attn decoder)
+    assert!(bp.params.total_params > 1_500_000_000 && bp.params.total_params < 1_580_000_000);
+    match &bp.segments[0].attention {
+      AttentionSpec::StandardGqa { has_cross_attn, .. } => assert!(*has_cross_attn),
+      other => panic!("unexpected attention: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_qwen2_5_omni_thinker_talker_token2wav_pipeline() {
+    let omni_cfg = r#"{
+      "architectures": ["Qwen2_5OmniModel"],
+      "model_type": "qwen2_5_omni",
+      "thinker_config": {
+        "vision_config": {
+          "model_type": "qwen2_5_omni_vision",
+          "hidden_size": 1280,
+          "num_hidden_layers": 32,
+          "num_attention_heads": 16,
+          "intermediate_size": 3420
+        },
+        "audio_config": {
+          "model_type": "qwen2_5_omni_audio",
+          "d_model": 1280,
+          "encoder_layers": 32,
+          "encoder_attention_heads": 20,
+          "encoder_ffn_dim": 5120,
+          "num_mel_bins": 128
+        },
+        "text_config": {
+          "model_type": "qwen2_5_omni_text",
+          "vocab_size": 152064,
+          "hidden_size": 3584,
+          "intermediate_size": 18944,
+          "num_hidden_layers": 28,
+          "num_attention_heads": 28,
+          "num_key_value_heads": 4
+        }
+      },
+      "talker_config": {
+        "vocab_size": 8448,
+        "hidden_size": 896,
+        "intermediate_size": 4864,
+        "num_hidden_layers": 24,
+        "num_attention_heads": 14,
+        "num_key_value_heads": 2
+      },
+      "token2wav_config": {
+        "dit_config": { "dim": 1024, "depth": 22 },
+        "bigvgan_config": { "upsample_rates": [8, 5, 4, 2] }
+      }
+    }"#;
+    let bp =
+      build_model_blueprint("Qwen/Qwen2.5-Omni-7B", "HF", omni_cfg, None, None, None).unwrap();
+    assert_eq!(bp.family, ArchFamily::SpeechTtsOmni);
+    assert!(bp.vision.is_some());
+    assert!(bp.audio.is_some());
+    assert!(matches!(bp.output_head, OutputHeadSpec::SpeechSynthesizer { .. }));
+    assert!(bp.params.audio_and_speech > 800_000_000);
+    assert!(bp.params.total_params > 9_000_000_000 && bp.params.total_params < 12_500_000_000);
+  }
+
+  #[test]
+  fn parses_mamba_constant_state_and_qwen3_next_hybrid_deltanet() {
+    let mamba_cfg = r#"{
+      "architectures": ["MambaForCausalLM"],
+      "model_type": "mamba",
+      "vocab_size": 50280,
+      "hidden_size": 2560,
+      "state_size": 16,
+      "num_hidden_layers": 64,
+      "conv_kernel": 4,
+      "expand": 2
+    }"#;
+    let m = build_model_blueprint("state-spaces/mamba-2.8b-hf", "HF", mamba_cfg, None, None, None)
+      .unwrap();
+    assert_eq!(m.family, ArchFamily::HybridLinearSsm);
+    assert!(m.params.total_params > 2_600_000_000 && m.params.total_params < 2_900_000_000);
+    let est_4k = m.estimate_vram(PrecisionPreset::Bf16, 4096, 1);
+    let est_128k = m.estimate_vram(PrecisionPreset::Bf16, 131_072, 1);
+    assert_eq!(est_4k.kv_cache_bytes, 0.0);
+    assert_eq!(est_128k.kv_cache_bytes, 0.0);
+    assert!(est_4k.state_cache_bytes > 0.0);
+    assert_eq!(est_4k.state_cache_bytes, est_128k.state_cache_bytes);
+
+    let qwen_next = r#"{
+      "architectures": ["Qwen3NextForCausalLM"],
+      "model_type": "qwen3_next",
+      "vocab_size": 151936,
+      "hidden_size": 2048,
+      "num_hidden_layers": 48,
+      "num_attention_heads": 16,
+      "num_key_value_heads": 2,
+      "head_dim": 256,
+      "linear_num_key_heads": 16,
+      "linear_num_value_heads": 32,
+      "linear_key_head_dim": 128,
+      "linear_value_head_dim": 128,
+      "linear_conv_kernel_dim": 4,
+      "full_attention_interval": 4,
+      "moe_intermediate_size": 512,
+      "shared_expert_intermediate_size": 512,
+      "num_experts": 512,
+      "num_experts_per_tok": 10
+    }"#;
+    let qn =
+      build_model_blueprint("Qwen/Qwen3-Next-80B-A3B-Instruct", "HF", qwen_next, None, None, None)
+        .unwrap();
+    assert_eq!(qn.family, ArchFamily::HybridLinearSsm);
+    assert_eq!(qn.segments.len(), 2);
+    assert_eq!(qn.segments[0].layer_count(), 36);
+    assert_eq!(qn.segments[1].layer_count(), 12);
+    assert!(qn.params.total_params > 78_000_000_000 && qn.params.total_params < 83_000_000_000);
+    assert!(qn.params.active_params > 2_500_000_000 && qn.params.active_params < 4_200_000_000);
+  }
+
+  #[test]
+  fn parses_bge_m3_bidirectional_encoder_with_zero_kv_cache() {
+    let bge_cfg = r#"{
+      "architectures": ["XLMRobertaModel"],
+      "model_type": "xlm-roberta",
+      "vocab_size": 250002,
+      "hidden_size": 1024,
+      "num_hidden_layers": 24,
+      "num_attention_heads": 16,
+      "intermediate_size": 4096,
+      "hidden_act": "gelu",
+      "max_position_embeddings": 8194
+    }"#;
+    let pool_json = r#"{"word_embedding_dimension": 1024, "pooling_mode_cls_token": true, "pooling_mode_mean_tokens": false}"#;
+    let bp = build_model_blueprint_with_aux(
+      "BAAI/bge-m3",
+      "HF",
+      bge_cfg,
+      AuxConfigFiles { pooling_json: Some(pool_json), ..AuxConfigFiles::default() },
+      None,
+    )
+    .unwrap();
+    assert_eq!(bp.family, ArchFamily::EncoderEmbedding);
+    assert!(bp.is_single_pass_encoder());
+    assert!(bp.params.total_params > 550_000_000 && bp.params.total_params < 580_000_000);
+    let vram = bp.estimate_vram(PrecisionPreset::Bf16, 8192, 16);
+    assert_eq!(vram.kv_cache_bytes, 0.0);
   }
 }

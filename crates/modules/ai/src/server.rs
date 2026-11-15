@@ -115,7 +115,9 @@ mod imp {
   use std::sync::{Mutex, OnceLock};
   use std::time::{Duration, Instant};
 
-  use crate::arch::{build_model_blueprint, load_builtin_preset, ModelBlueprint};
+  use crate::arch::{
+    build_model_blueprint_with_aux, load_builtin_preset, AuxConfigFiles, ModelBlueprint,
+  };
   use crate::safetensors_meta::{
     parse_safetensors_header_bytes, parse_safetensors_header_len, parse_safetensors_index_json,
     select_representative_shards, summarize_index_and_headers, summarize_single_header,
@@ -337,18 +339,24 @@ mod imp {
     let config_url = endpoint.file_url("config.json");
     let gen_url = endpoint.file_url("generation_config.json");
     let tok_url = endpoint.file_url("tokenizer_config.json");
+    let pre_url = endpoint.file_url("preprocessor_config.json");
+    let pool_url = endpoint.file_url("1_Pooling/config.json");
     let idx_url = endpoint.file_url("model.safetensors.index.json");
 
-    let (cfg_res, gen_res, tok_res, idx_res) = tokio::join!(
+    let (cfg_res, gen_res, tok_res, pre_res, pool_res, idx_res) = tokio::join!(
       fetch_utf8_capped(client, &config_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
       fetch_utf8_capped(client, &gen_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
       fetch_utf8_capped(client, &tok_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
+      fetch_utf8_capped(client, &pre_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
+      fetch_utf8_capped(client, &pool_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
       fetch_utf8_capped(client, &idx_url, endpoint.bearer_token.as_deref(), MAX_INDEX_BYTES),
     );
 
     let config_json = cfg_res?;
     let generation_json = gen_res.ok();
     let tokenizer_json = tok_res.ok();
+    let preprocessor_json = pre_res.ok();
+    let pooling_json = pool_res.ok();
 
     // L2：若存在多分片 `model.safetensors.index.json`，挑最多 3 个代表性分片并发做 Range 采样；
     // 否则尝试单文件 `model.safetensors` 的 Range Header 读取。
@@ -380,12 +388,16 @@ mod imp {
       }
     };
 
-    build_model_blueprint(
+    build_model_blueprint_with_aux(
       repo_id,
       endpoint.label,
       &config_json,
-      generation_json.as_deref(),
-      tokenizer_json.as_deref(),
+      AuxConfigFiles {
+        generation_json: generation_json.as_deref(),
+        tokenizer_json: tokenizer_json.as_deref(),
+        preprocessor_json: preprocessor_json.as_deref(),
+        pooling_json: pooling_json.as_deref(),
+      },
       safetensors,
     )
   }

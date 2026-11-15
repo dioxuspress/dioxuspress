@@ -311,7 +311,7 @@ fn canonical_skeleton(name: &str) -> SkeletonParts {
   while i < parts.len() {
     let seg = parts[i];
     out.push(seg);
-    if matches!(seg, "layers" | "h" | "block" | "blocks") && i + 1 < parts.len() {
+    if matches!(seg, "layers" | "layer" | "h" | "block" | "blocks") && i + 1 < parts.len() {
       if let Ok(idx) = parts[i + 1].parse::<u64>() {
         layer_idx = Some(idx);
         out.push("<L>");
@@ -356,11 +356,43 @@ pub fn classify_tensor_stage(
   {
     return "mtp";
   }
-  if name.contains("embed_tokens") || name.contains("wte") || name.contains("word_embeddings") {
+  if name.starts_with("visual.")
+    || name.contains("vision_tower")
+    || name.contains("vision_model")
+    || name.contains("multi_modal_projector")
+  {
+    return "vision";
+  }
+  if name.starts_with("audio_tower")
+    || name.contains("audio_encoder")
+    || name.starts_with("talker.")
+    || name.starts_with("token2wav")
+  {
+    return "audio";
+  }
+  if name.contains("embed_tokens")
+    || name.contains("wte")
+    || name.contains("word_embeddings")
+    || name.contains("embed_positions")
+  {
     "embedding"
-  } else if name.contains("lm_head") || name.contains("output.weight") {
+  } else if name.contains("lm_head")
+    || name.contains("output.weight")
+    || name.contains("proj_out")
+    || name.contains("pooler.")
+    || name.contains("classifier.")
+    || name.ends_with("score.weight")
+  {
     "lm_head"
-  } else if name.contains("self_attn") || name.contains(".attn.") || name.contains("attention") {
+  } else if name.contains("self_attn")
+    || name.contains("encoder_attn")
+    || name.contains(".attn.")
+    || name.contains("attention")
+    || name.contains("linear_attn")
+    || name.contains(".mamba.")
+    || name.contains("mixer.")
+    || name.contains("time_mix")
+  {
     "attention"
   } else if name.contains("experts")
     || name.contains("shared_expert")
@@ -369,9 +401,21 @@ pub fn classify_tensor_stage(
     || name.contains("e_score_correction_bias")
   {
     "moe"
-  } else if name.contains(".mlp.") || name.contains("feed_forward") || name.contains("ffn") {
+  } else if name.contains(".mlp.")
+    || name.contains("feed_forward")
+    || name.contains("ffn")
+    || name.contains("fc1.")
+    || name.contains("fc2.")
+    || name.contains("intermediate.dense")
+    || name.contains("channel_mix")
+  {
     "ffn"
-  } else if name.contains("layernorm") || name.contains(".norm.") || name.ends_with("norm.weight") {
+  } else if name.contains("layernorm")
+    || name.contains("layer_norm")
+    || name.contains("LayerNorm")
+    || name.contains(".norm.")
+    || name.ends_with("norm.weight")
+  {
     "norm"
   } else {
     "other"

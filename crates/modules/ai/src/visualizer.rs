@@ -12,7 +12,7 @@ use widgets::PageMeta;
 
 use crate::arch::{
   build_model_blueprint, format_bytes_iec, format_count, load_builtin_preset, recommend_gpu_tier,
-  InspectorFocus, ModelBlueprint, PrecisionPreset, BUILTIN_PRESETS,
+  InspectorFocus, ModelBlueprint, OutputHeadSpec, PrecisionPreset, BUILTIN_PRESETS,
 };
 #[cfg(feature = "accounts")]
 use crate::atlas::{current_user_is_admin, SaveToAtlasModal};
@@ -35,11 +35,12 @@ fn current_lang() -> Language {
 #[component]
 pub fn AiVisualizerPage() -> Element {
   let lang = current_lang();
-  let title = lang.pick("LLM 模型架构可视化器", "LLM Architecture Visualizer").to_string();
+  let title =
+    lang.pick("多模态模型架构可视化器", "Multimodal Model Architecture Visualizer").to_string();
   let desc = lang
     .pick(
-      "通过 HuggingFace 或 ModelScope 的 config.json 与 Safetensors 元数据，精确解析并可视化 Llama、Qwen、DeepSeek (MLA/MoE) 内部架构、张量维度与 KV Cache 显存占用。",
-      "Visualize Llama, Qwen, and DeepSeek (MLA/MoE) architectures, tensor shapes, Safetensors weights, and KV cache VRAM directly from HuggingFace or ModelScope metadata.",
+      "通过 HuggingFace 或 ModelScope 的 config.json 与 Safetensors 元数据，精确解析并可视化 LLM、VLM、ASR/TTS 语音、线性注意力 SSM 及 Embedding 模型内部拓扑、张量维度与推理显存占用。",
+      "Visualize LLM, VLM, ASR/TTS Audio, Hybrid Linear/SSM, and Embedding architectures, tensor shapes, Safetensors weights, and VRAM directly from HuggingFace or ModelScope metadata.",
     )
     .to_string();
 
@@ -655,13 +656,29 @@ pub fn ModelVisualizerWorkbench(
 
           div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3",
             div { class: "text-[11px] font-medium text-slate-500 dark:text-slate-400",
-              "KV Cache 压缩效率"
+              if blueprint.is_single_pass_encoder() {
+                "推理状态缓存"
+              } else if blueprint.has_linear_recurrent() {
+                "循环状态 / KV 效率"
+              } else {
+                "KV Cache 压缩效率"
+              }
             }
             div { class: "mt-1 text-base sm:text-lg font-extrabold text-indigo-600 dark:text-indigo-400 font-mono tabular-nums",
-              "{kv_ratio:.1}× vs MHA"
+              if blueprint.is_single_pass_encoder() {
+                "0 B KV Cache"
+              } else if kv_ratio >= 500.0 {
+                "O(1) State"
+              } else {
+                "{kv_ratio:.1}× vs MHA"
+              }
             }
             div { class: "text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate",
-              if let Some(seg) = blueprint.segment_for_layer(selected_layer()) {
+              if blueprint.is_single_pass_encoder() {
+                "单次并行编码 (无自回归缓存)"
+              } else if blueprint.has_linear_recurrent() {
+                "循环状态随序列长度 S 零增长"
+              } else if let Some(seg) = blueprint.segment_for_layer(selected_layer()) {
                 "{seg.attention.cached_elements_per_token()} elems/tok/layer"
               }
             }
@@ -726,12 +743,32 @@ pub fn ModelVisualizerWorkbench(
                     "Vision"
                   }
                 }
+                if blueprint.audio.is_some() {
+                  button {
+                    r#type: "button",
+                    class: if focus() == InspectorFocus::Audio {
+                      "px-2.5 py-1 rounded-md text-xs font-semibold bg-cyan-600 text-white cursor-pointer"
+                    } else {
+                      "px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                    },
+                    onclick: move |_| focus.set(InspectorFocus::Audio),
+                    "Audio"
+                  }
+                }
                 for (f_opt, f_label) in [
                   (InspectorFocus::Embedding, "Embed"),
-                  (InspectorFocus::Attention, "Attention"),
-                  (InspectorFocus::FfnOrMoe, if blueprint.has_moe() { "FFN / MoE" } else { "SwiGLU FFN" }),
-                  (InspectorFocus::NormAndResidual, "RMSNorm"),
-                  (InspectorFocus::LmHead, "LM Head"),
+                  (InspectorFocus::Attention, if blueprint.has_linear_recurrent() { "Attn / SSM" } else { "Attention" }),
+                  (InspectorFocus::FfnOrMoe, if blueprint.has_moe() { "FFN / MoE" } else { "MLP / FFN" }),
+                  (InspectorFocus::NormAndResidual, "Norm"),
+                  (
+                    InspectorFocus::LmHead,
+                    match blueprint.output_head {
+                      OutputHeadSpec::CausalLmHead => "LM Head",
+                      OutputHeadSpec::EmbeddingPool { .. } => "Pooling",
+                      OutputHeadSpec::SequenceScorer { .. } => "Scorer",
+                      OutputHeadSpec::SpeechSynthesizer { .. } => "Vocoder",
+                    },
+                  ),
                 ] {
                   {
                     let is_f = focus() == f_opt;
@@ -822,9 +859,14 @@ pub fn ModelVisualizerWorkbench(
             match detail_tab() {
               DetailTab::VramSimulator => {
                 let est = blueprint.estimate_vram(precision(), ctx_len(), batch_size());
-                let saved_kv = (est.mha_baseline_kv_bytes - est.kv_cache_bytes).max(0.0);
+                let cache_total = est.kv_cache_bytes + est.state_cache_bytes;
+                let saved_kv = (est.mha_baseline_kv_bytes - cache_total).max(0.0);
                 let w_pct = (est.weights_bytes / est.total_bytes.max(1.0) * 100.0).clamp(2.0, 96.0);
-                let kv_pct = (est.kv_cache_bytes / est.total_bytes.max(1.0) * 100.0).clamp(1.0, 96.0);
+                let kv_pct = if cache_total <= 0.0 {
+                  0.0
+                } else {
+                  (cache_total / est.total_bytes.max(1.0) * 100.0).clamp(1.0, 96.0)
+                };
                 rsx! {
                   div { class: "space-y-4",
                     // 控制拨盘：精度 / 上下文长度 / Batch Size
@@ -916,7 +958,7 @@ pub fn ModelVisualizerWorkbench(
                         div {
                           class: "bg-amber-500 h-full transition-all",
                           style: "width: {kv_pct:.1}%",
-                          title: "KV Cache",
+                          title: "KV / Recurrent State Cache",
                         }
                         div {
                           class: "bg-slate-400 dark:bg-slate-600 h-full flex-1",
@@ -934,7 +976,13 @@ pub fn ModelVisualizerWorkbench(
                         div { class: "flex items-center gap-2",
                           span { class: "w-2.5 h-2.5 rounded-xs bg-amber-500 shrink-0" }
                           span { class: "text-slate-600 dark:text-slate-300",
-                            "KV Cache: {format_bytes_iec(est.kv_cache_bytes)}"
+                            if est.state_cache_bytes > 0.0 && est.kv_cache_bytes > 0.0 {
+                              "KV+O(1)状态: {format_bytes_iec(est.kv_cache_bytes)}+{format_bytes_iec(est.state_cache_bytes)}"
+                            } else if est.state_cache_bytes > 0.0 {
+                              "O(1)循环状态: {format_bytes_iec(est.state_cache_bytes)}"
+                            } else {
+                              "KV Cache: {format_bytes_iec(est.kv_cache_bytes)}"
+                            }
                           }
                         }
                         div { class: "flex items-center gap-2",
@@ -945,9 +993,13 @@ pub fn ModelVisualizerWorkbench(
                         }
                       }
 
-                      if saved_kv > 1024.0 * 1024.0 {
+                      if blueprint.is_single_pass_encoder() {
                         div { class: "mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 text-xs text-emerald-700 dark:text-emerald-400 font-medium",
-                          "★ 架构收益：在当前 B={batch_size()}、Ctx={ctx_len()} 配置下，相比标准多头注意力 (MHA 需 {format_bytes_iec(est.mha_baseline_kv_bytes)}) 节省了 {format_bytes_iec(saved_kv)} KV 显存！"
+                          "★ 编码器特性：单次双向并行前向即可产出句向量/重排打分，无需自回归驻留 KV Cache（恒为 0 B）。"
+                        }
+                      } else if saved_kv > 1024.0 * 1024.0 {
+                        div { class: "mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 text-xs text-emerald-700 dark:text-emerald-400 font-medium",
+                          "★ 架构收益：在当前 B={batch_size()}、Ctx={ctx_len()} 配置下，相比标准多头注意力 (MHA 需 {format_bytes_iec(est.mha_baseline_kv_bytes)}) 节省了 {format_bytes_iec(saved_kv)} 缓存显存！"
                         }
                       }
                     }
@@ -987,23 +1039,27 @@ pub fn ModelVisualizerWorkbench(
                       div { class: "flex flex-wrap gap-1",
                         for (st_key, st_lbl) in [
                           ("all", "全部阶段"),
+                          ("vision", "Vision"),
+                          ("audio", "Audio"),
                           ("embedding", "Embedding"),
-                          ("attention", "Attention"),
-                          ("ffn", "Dense FFN"),
+                          ("attention", "Attn / SSM"),
+                          ("ffn", "MLP / FFN"),
                           ("moe", "Sparse MoE"),
-                          ("norm", "RMSNorm"),
-                          ("lm_head", "LM Head"),
+                          ("norm", "Norm"),
+                          ("lm_head", "Output Head"),
                         ] {
-                          button {
-                            key: "{st_key}",
-                            r#type: "button",
-                            class: if weight_stage_filter() == st_key {
-                              "px-2 py-1 rounded text-[11px] font-semibold bg-indigo-600 text-white cursor-pointer"
-                            } else {
-                              "px-2 py-1 rounded text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
-                            },
-                            onclick: move |_| weight_stage_filter.set(st_key.to_string()),
-                            "{st_lbl}"
+                          if st_key == "all" || st.patterns.iter().any(|p| p.stage == st_key) {
+                            button {
+                              key: "{st_key}",
+                              r#type: "button",
+                              class: if weight_stage_filter() == st_key {
+                                "px-2 py-1 rounded text-[11px] font-semibold bg-indigo-600 text-white cursor-pointer"
+                              } else {
+                                "px-2 py-1 rounded text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                              },
+                              onclick: move |_| weight_stage_filter.set(st_key.to_string()),
+                              "{st_lbl}"
+                            }
                           }
                         }
                       }
@@ -1073,12 +1129,13 @@ fn ParamStackedBar(params: crate::arch::ParamBreakdown) -> Element {
   let tot = params.total_params.max(1) as f64;
   let slices = [
     ("Vision", params.vision_encoder, "bg-fuchsia-500"),
+    ("Audio / Speech", params.audio_and_speech, "bg-cyan-500"),
     ("Embedding", params.embedding, "bg-emerald-500"),
-    ("Attention", params.attention, "bg-indigo-500"),
+    ("Attention / SSM", params.attention, "bg-indigo-500"),
     ("Dense FFN", params.dense_ffn, "bg-sky-500"),
     ("MoE Routed", params.moe_routed, "bg-amber-500"),
     ("MoE Shared", params.moe_shared, "bg-teal-500"),
-    ("LM Head", params.lm_head, "bg-rose-500"),
+    ("Output Head", params.lm_head, "bg-rose-500"),
   ];
 
   rsx! {
@@ -1221,5 +1278,70 @@ mod tests {
     vdom.rebuild_in_place();
     let html = dioxus_ssr::render(&vdom);
     assert!(html.contains("ModelArch 组件需指定"));
+  }
+
+  #[test]
+  fn ssr_renders_audio_ssm_and_embedding_workbenches() {
+    use crate::arch::{build_model_blueprint_with_aux, AuxConfigFiles};
+
+    #[component]
+    fn MultimodalHost() -> Element {
+      let whisper = build_model_blueprint_with_aux(
+        "openai/whisper-large-v3",
+        "HuggingFace",
+        r#"{"architectures":["WhisperForConditionalGeneration"],"model_type":"whisper","d_model":1280,"encoder_layers":32,"encoder_attention_heads":20,"encoder_ffn_dim":5120,"decoder_layers":32,"decoder_attention_heads":20,"decoder_ffn_dim":5120,"num_mel_bins":128,"max_source_positions":1500,"max_target_positions":448,"vocab_size":51866}"#,
+        AuxConfigFiles::default(),
+        None,
+      )
+      .expect("whisper");
+      let mamba = build_model_blueprint_with_aux(
+        "state-spaces/mamba-2.8b-hf",
+        "HuggingFace",
+        r#"{"architectures":["MambaForCausalLM"],"model_type":"mamba","d_model":2560,"n_layer":64,"state_size":16,"conv_kernel":4,"expand":2,"vocab_size":50280}"#,
+        AuxConfigFiles::default(),
+        None,
+      )
+      .expect("mamba");
+      let bge = build_model_blueprint_with_aux(
+        "BAAI/bge-m3",
+        "HuggingFace",
+        r#"{"architectures":["XLMRobertaModel"],"model_type":"xlm-roberta","hidden_size":1024,"num_hidden_layers":24,"num_attention_heads":16,"intermediate_size":4096,"max_position_embeddings":8194,"vocab_size":250002}"#,
+        AuxConfigFiles {
+          pooling_json: Some(r#"{"word_embedding_dimension":1024,"pooling_mode_cls_token":true}"#),
+          ..Default::default()
+        },
+        None,
+      )
+      .expect("bge");
+
+      rsx! {
+        div {
+          ModelVisualizerWorkbench {
+            blueprint: whisper,
+            initial_focus: Some(InspectorFocus::Audio),
+            embedded: true,
+          }
+          ModelVisualizerWorkbench {
+            blueprint: mamba,
+            initial_focus: Some(InspectorFocus::Attention),
+            embedded: true,
+          }
+          ModelVisualizerWorkbench {
+            blueprint: bge,
+            initial_focus: Some(InspectorFocus::LmHead),
+            embedded: true,
+          }
+        }
+      }
+    }
+
+    let mut vdom = VirtualDom::new(MultimodalHost);
+    vdom.rebuild_in_place();
+    let html = dioxus_ssr::render(&vdom);
+    assert!(html.contains("Audio Tower"));
+    assert!(html.contains("Conv1D Acoustic Stem"));
+    assert!(html.contains("O(1) Recurrent State"));
+    assert!(html.contains("0 B KV Cache"));
+    assert!(html.contains("Sentence / Document Embedding Pooling Head"));
   }
 }

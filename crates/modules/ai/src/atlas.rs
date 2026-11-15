@@ -37,7 +37,7 @@ use crate::visualizer::clean_server_err;
 use crate::visualizer::ModelVisualizerWorkbench;
 
 #[cfg(feature = "server")]
-use crate::arch::{build_model_blueprint, load_builtin_preset};
+use crate::arch::{build_model_blueprint_with_aux, load_builtin_preset, AuxConfigFiles};
 #[cfg(feature = "server")]
 use crate::safetensors_meta::{parse_safetensors_index_json, summarize_index_and_headers};
 
@@ -247,6 +247,10 @@ pub fn parse_model_dir(dir: &Path, slug_fallback: &str) -> Result<CuratedModelDe
     .map_err(|e| format!("读取 {} 失败: {e}", cfg_path.display()))?;
   let gen_raw = std::fs::read_to_string(dir.join("generation_config.json")).ok();
   let tok_raw = std::fs::read_to_string(dir.join("tokenizer_config.json")).ok();
+  let pre_raw = std::fs::read_to_string(dir.join("preprocessor_config.json")).ok();
+  let pool_raw = std::fs::read_to_string(dir.join("1_Pooling/config.json"))
+    .or_else(|_| std::fs::read_to_string(dir.join("pooling_config.json")))
+    .ok();
 
   // 若目录下附带 safetensors.index.json 则优先解析，否则尝试复用内置快照的 L2 张量表
   let idx_raw = std::fs::read_to_string(dir.join("model.safetensors.index.json"))
@@ -267,12 +271,16 @@ pub fn parse_model_dir(dir: &Path, slug_fallback: &str) -> Result<CuratedModelDe
     raw_meta.hf_repo.trim().to_string()
   };
 
-  let blueprint = build_model_blueprint(
+  let blueprint = build_model_blueprint_with_aux(
     &repo_id,
     "Curated Model Atlas (Official Config)",
     &cfg_raw,
-    gen_raw.as_deref(),
-    tok_raw.as_deref(),
+    AuxConfigFiles {
+      generation_json: gen_raw.as_deref(),
+      tokenizer_json: tok_raw.as_deref(),
+      preprocessor_json: pre_raw.as_deref(),
+      pooling_json: pool_raw.as_deref(),
+    },
     safetensors,
   )?;
 
@@ -325,6 +333,8 @@ pub fn load_curated_models_full() -> Arc<Vec<CuratedModelDetail>> {
         "model.yaml"
           | "model.yml"
           | "config.json"
+          | "preprocessor_config.json"
+          | "pooling_config.json"
           | "README.md"
           | "readme.md"
           | "model.safetensors.index.json"
@@ -903,10 +913,20 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
           }
           div {
             div { class: "text-[10px] text-slate-400",
-              {lang.pick("KV 压缩效率", "KV Compression")}
+              if model.modality == ModelModality::Embedding {
+                {lang.pick("推理缓存模式", "Cache Mode")}
+              } else {
+                {lang.pick("KV 压缩效率", "KV Compression")}
+              }
             }
             div { class: "text-xs font-bold text-indigo-600 dark:text-indigo-400 tabular-nums",
-              "{model.kv_compression_ratio:.1}× vs MHA"
+              if model.modality == ModelModality::Embedding {
+                "0 B (Single-Pass)"
+              } else if model.kv_compression_ratio >= 500.0 {
+                "O(1) State"
+              } else {
+                "{model.kv_compression_ratio:.1}× vs MHA"
+              }
             }
           }
           div {

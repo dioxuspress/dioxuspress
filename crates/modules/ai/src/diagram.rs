@@ -10,7 +10,8 @@
 use dioxus::prelude::*;
 
 use crate::arch::{
-  format_count, AttentionSpec, FfnSpec, InspectorFocus, LayerSegment, ModelBlueprint, VisionSpec,
+  format_count, AttentionSpec, AudioSpec, FfnSpec, InspectorFocus, LayerSegment, ModelBlueprint,
+  OutputHeadSpec, VisionSpec,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,7 @@ pub fn MacroArchitectureFlow(
   // 各可折叠区块的独立状态
   let mut preset_mode = use_signal(|| FlowDensityPreset::Standard);
   let mut expand_vision = use_signal(|| false);
+  let mut expand_audio = use_signal(|| false);
   let mut expanded_segments =
     use_signal(|| (0..seg_count).map(|idx| idx == default_active_idx).collect::<Vec<bool>>());
   let mut expand_inline_attn = use_signal(|| false);
@@ -56,6 +58,7 @@ pub fn MacroArchitectureFlow(
     match mode {
       FlowDensityPreset::Compact => {
         expand_vision.set(false);
+        expand_audio.set(false);
         expanded_segments.set(vec![false; seg_count]);
         expand_inline_attn.set(false);
         expand_inline_ffn.set(false);
@@ -64,6 +67,7 @@ pub fn MacroArchitectureFlow(
       }
       FlowDensityPreset::Standard => {
         expand_vision.set(false);
+        expand_audio.set(false);
         expanded_segments.set((0..seg_count).map(|i| i == default_active_idx).collect());
         expand_inline_attn.set(false);
         expand_inline_ffn.set(false);
@@ -72,6 +76,7 @@ pub fn MacroArchitectureFlow(
       }
       FlowDensityPreset::Expanded => {
         expand_vision.set(true);
+        expand_audio.set(true);
         expanded_segments.set(vec![true; seg_count]);
         expand_inline_attn.set(true);
         expand_inline_ffn.set(true);
@@ -186,7 +191,66 @@ pub fn MacroArchitectureFlow(
             }
           }
         }
+      }
+
+      // 0B. 可选语音声学编码支路（Whisper / Qwen2-Audio / SenseVoice / Qwen2.5-Omni，可折叠/展开）
+      if let Some(ref aud) = blueprint.audio {
+        div { class: "w-full mb-1 rounded-xl border border-cyan-200 dark:border-cyan-900/70 bg-cyan-50/40 dark:bg-cyan-950/20 p-2.5",
+          div { class: "flex items-center justify-between gap-2",
+            button {
+              r#type: "button",
+              class: "flex items-center gap-1.5 text-left text-xs font-bold text-cyan-700 dark:text-cyan-300 cursor-pointer",
+              onclick: move |_| {
+                let next = !expand_audio();
+                expand_audio.set(next);
+                on_select_focus.call(InspectorFocus::Audio);
+              },
+              span { class: "font-mono text-[11px]",
+                if expand_audio() { "▾" } else { "▸" }
+              }
+              span { "Audio Tower ({aud.model_type})" }
+            }
+            div { class: "flex items-center gap-1.5",
+              span { class: "text-[11px] font-mono text-cyan-700 dark:text-cyan-300",
+                "{aud.num_mel_bins}Mel@{aud.sampling_rate_hz / 1000}kHz · {aud.num_layers}L×{aud.hidden_size}d · {format_count(aud.estimated_params)}"
+              }
+              button {
+                r#type: "button",
+                class: "px-1.5 py-0.5 rounded text-[10px] font-medium bg-white dark:bg-slate-900 border border-cyan-200 dark:border-cyan-800 text-cyan-700 dark:text-cyan-300 cursor-pointer",
+                onclick: move |_| expand_audio.set(!expand_audio()),
+                if expand_audio() { "收起" } else { "展开" }
+              }
+            }
+          }
+
+          if expand_audio() {
+            div { class: "mt-2.5 space-y-1.5 border-t border-cyan-200/70 dark:border-cyan-900/60 pt-2.5",
+              div { class: "text-[11px] font-mono text-slate-600 dark:text-slate-300 flex items-center justify-between",
+                span { "1. Acoustic Frontend ({aud.num_mel_bins} Log-Mel, {aud.sampling_rate_hz / 1000} kHz + Conv1D Stem)" }
+                span { class: "text-slate-400", "→ [{aud.hidden_size}]" }
+              }
+              button {
+                r#type: "button",
+                class: card_cls(InspectorFocus::Audio),
+                onclick: move |_| on_select_focus.call(InspectorFocus::Audio),
+                div { class: "text-xs font-semibold text-slate-900 dark:text-white font-mono",
+                  "Audio Encoder ×{aud.num_layers} ({aud.num_heads}H, FFN={aud.ffn_dim}, T≤{aud.max_source_positions})"
+                }
+                div { class: "mt-0.5 text-[11px] font-mono text-cyan-600 dark:text-cyan-400",
+                  "Cross-Attn K,V / Audio Projector [{aud.hidden_size} → {d}]"
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if blueprint.vision.is_some() && blueprint.audio.is_some() {
+        VerticalArrow { label: "vision_embeds + audio_embeds + text_tokens" }
+      } else if blueprint.vision.is_some() {
         VerticalArrow { label: "image_embeds + text_tokens" }
+      } else if blueprint.audio.is_some() {
+        VerticalArrow { label: "audio_features + decoder_tokens" }
       } else {
         // 纯文本模型输入胶囊
         div { class: "px-3.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs font-mono text-slate-600 dark:text-slate-300",
@@ -202,7 +266,7 @@ pub fn MacroArchitectureFlow(
         onclick: move |_| on_select_focus.call(InspectorFocus::Embedding),
         div { class: "flex items-center justify-between gap-2",
           span { class: "text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400",
-            if blueprint.vision.is_some() {
+            if blueprint.vision.is_some() || blueprint.audio.is_some() {
               "Token Embedding & Multimodal Fusion"
             } else {
               "Token Embedding"
@@ -424,11 +488,20 @@ pub fn MacroArchitectureFlow(
                         },
                         div { class: "flex items-center justify-between gap-2",
                           span { class: "text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400",
-                            "Self-Attention"
+                            match seg.attention {
+                              AttentionSpec::LinearRecurrent { .. } => "Linear Attention / SSM Mixer",
+                              AttentionSpec::StandardGqa { is_causal: false, .. } => "Bidirectional Self-Attention",
+                              AttentionSpec::StandardGqa { has_cross_attn: true, .. } => "Causal + Cross-Attention",
+                              _ => "Self-Attention",
+                            }
                           }
                           div { class: "flex items-center gap-1.5",
                             span { class: "px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 text-[10px] font-mono font-semibold",
-                              "KV ÷{seg.attention.kv_compression_ratio():.1}×"
+                              match seg.attention {
+                                AttentionSpec::LinearRecurrent { .. } => "O(1) State".to_string(),
+                                AttentionSpec::StandardGqa { is_causal: false, .. } => "0 KV (Single-Pass)".to_string(),
+                                _ => format!("KV ÷{:.1}×", seg.attention.kv_compression_ratio()),
+                              }
                             }
                             button {
                               r#type: "button",
@@ -470,170 +543,183 @@ pub fn MacroArchitectureFlow(
                         "+"
                       }
                       span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
-                        "h_mid = x + SelfAttn(Norm(x)) : [B, S, {d}]"
+                        "h_mid = x + Mixer(Norm(x)) : [B, S, {d}]"
                       }
                     }
                   }
 
-                  div { class: "h-3 w-0.5 bg-slate-300 dark:bg-slate-700 mx-auto my-1" }
+                  if !matches!(seg.ffn, FfnSpec::DenseGated { intermediate_size: 0, .. }) {
+                    div { class: "h-3 w-0.5 bg-slate-300 dark:bg-slate-700 mx-auto my-1" }
 
-                  // 第二残差子块：Pre-FFN Norm + Dense FFN / Sparse MoE (+ 可选 Post-FFN Norm)
-                  div { class: "relative pl-5 border-l-2 border-amber-400/80 dark:border-amber-500/60 space-y-2 py-1",
-                    span { class: "absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-amber-100 dark:bg-amber-950 border border-amber-400 text-[9px] flex items-center justify-center font-mono text-amber-700 dark:text-amber-300",
-                      "h"
-                    }
-                    span { class: "text-[10px] font-mono text-amber-600 dark:text-amber-400 block -mt-1",
-                      "Residual Skip #2"
-                    }
-
-                    button {
-                      r#type: "button",
-                      class: card_cls(InspectorFocus::NormAndResidual),
-                      onclick: move |_| {
-                        on_select_layer.call(if is_selected_seg { selected_layer } else { start_l });
-                        on_select_focus.call(InspectorFocus::NormAndResidual);
-                      },
-                      div { class: "flex items-center justify-between text-xs",
-                        span { class: "font-semibold text-slate-700 dark:text-slate-200 font-mono",
-                          if has_post_norms {
-                            "pre_feedforward_layernorm (RMSNorm)"
-                          } else {
-                            "post_attention_layernorm (RMSNorm)"
-                          }
-                        }
-                        span { class: "font-mono text-[11px] text-slate-400", "[{d}]" }
+                    // 第二残差子块：Pre-FFN Norm + Dense FFN / Sparse MoE (+ 可选 Post-FFN Norm)
+                    div { class: "relative pl-5 border-l-2 border-amber-400/80 dark:border-amber-500/60 space-y-2 py-1",
+                      span { class: "absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-amber-100 dark:bg-amber-950 border border-amber-400 text-[9px] flex items-center justify-center font-mono text-amber-700 dark:text-amber-300",
+                        "h"
                       }
-                    }
+                      span { class: "text-[10px] font-mono text-amber-600 dark:text-amber-400 block -mt-1",
+                        "Residual Skip #2"
+                      }
 
-                    {
-                      let is_moe_seg = matches!(seg.ffn, FfnSpec::SparseMoe { .. });
-                      rsx! {
-                        div { class: card_cls(InspectorFocus::FfnOrMoe),
-                          div {
-                            onclick: move |_| {
-                              on_select_layer.call(if is_selected_seg { selected_layer } else { start_l });
-                              on_select_focus.call(InspectorFocus::FfnOrMoe);
-                            },
-                            div { class: "flex items-center justify-between gap-2",
-                              span { class: if is_moe_seg {
-                                "text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400"
-                              } else {
-                                "text-xs font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400"
+                      button {
+                        r#type: "button",
+                        class: card_cls(InspectorFocus::NormAndResidual),
+                        onclick: move |_| {
+                          on_select_layer.call(if is_selected_seg { selected_layer } else { start_l });
+                          on_select_focus.call(InspectorFocus::NormAndResidual);
+                        },
+                        div { class: "flex items-center justify-between text-xs",
+                          span { class: "font-semibold text-slate-700 dark:text-slate-200 font-mono",
+                            if has_post_norms {
+                              "pre_feedforward_layernorm (RMSNorm)"
+                            } else {
+                              "post_attention_layernorm (RMSNorm)"
+                            }
+                          }
+                          span { class: "font-mono text-[11px] text-slate-400", "[{d}]" }
+                        }
+                      }
+
+                      {
+                        let is_moe_seg = matches!(seg.ffn, FfnSpec::SparseMoe { .. });
+                        let is_ungated_mlp = matches!(seg.ffn, FfnSpec::DenseGated { is_gated: false, .. });
+                        rsx! {
+                          div { class: card_cls(InspectorFocus::FfnOrMoe),
+                            div {
+                              onclick: move |_| {
+                                on_select_layer.call(if is_selected_seg { selected_layer } else { start_l });
+                                on_select_focus.call(InspectorFocus::FfnOrMoe);
                               },
-                                if is_moe_seg { "Sparse MoE Feed-Forward" } else { "Gated MLP (FFN)" }
-                              }
-                              div { class: "flex items-center gap-1.5",
-                                span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
-                                  if ffn_tot != ffn_act {
-                                    "{format_count(ffn_act)} / {format_count(ffn_tot)}"
+                              div { class: "flex items-center justify-between gap-2",
+                                span { class: if is_moe_seg {
+                                  "text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400"
+                                } else {
+                                  "text-xs font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400"
+                                },
+                                  if is_moe_seg {
+                                    "Sparse MoE Feed-Forward"
+                                  } else if is_ungated_mlp {
+                                    "Standard 2-Layer MLP (FFN)"
                                   } else {
-                                    "{format_count(ffn_tot)}/layer"
+                                    "Gated MLP (FFN)"
                                   }
                                 }
+                                div { class: "flex items-center gap-1.5",
+                                  span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                                    if ffn_tot != ffn_act {
+                                      "{format_count(ffn_act)} / {format_count(ffn_tot)}"
+                                    } else {
+                                      "{format_count(ffn_tot)}/layer"
+                                    }
+                                  }
+                                  button {
+                                    r#type: "button",
+                                    class: "px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-[10px] font-medium text-slate-600 dark:text-slate-300 cursor-pointer",
+                                    onclick: move |evt| {
+                                      evt.stop_propagation();
+                                      expand_inline_ffn.set(!expand_inline_ffn());
+                                    },
+                                    if expand_inline_ffn() { "▴ 收起算子" } else { "▾ 展开算子" }
+                                  }
+                                }
+                              }
+                              div { class: "mt-1 text-xs font-semibold text-slate-900 dark:text-white font-mono",
+                                "{seg.ffn.short_label()}"
+                              }
+                            }
+
+                            // L3：如果是 Sparse MoE，提供独立的「专家路由簇」收起/展开观察抽屉
+                            if let FfnSpec::SparseMoe {
+                              num_routed_experts,
+                              top_k,
+                              moe_intermediate_size,
+                              num_shared_experts,
+                              shared_intermediate_size,
+                              router_groups,
+                              ref scoring_func,
+                              ..
+                            } = seg.ffn {
+                              div { class: "mt-2 pt-2 border-t border-slate-200/80 dark:border-slate-800",
                                 button {
                                   r#type: "button",
-                                  class: "px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-[10px] font-medium text-slate-600 dark:text-slate-300 cursor-pointer",
+                                  class: "w-full flex items-center justify-between text-[11px] font-mono text-amber-700 dark:text-amber-300 cursor-pointer",
                                   onclick: move |evt| {
                                     evt.stop_propagation();
-                                    expand_inline_ffn.set(!expand_inline_ffn());
+                                    expand_moe_cluster.set(!expand_moe_cluster());
                                   },
-                                  if expand_inline_ffn() { "▴ 收起算子" } else { "▾ 展开算子" }
-                                }
-                              }
-                            }
-                            div { class: "mt-1 text-xs font-semibold text-slate-900 dark:text-white font-mono",
-                              "{seg.ffn.short_label()}"
-                            }
-                          }
-
-                          // L3：如果是 Sparse MoE，提供独立的「专家路由簇」收起/展开观察抽屉
-                          if let FfnSpec::SparseMoe {
-                            num_routed_experts,
-                            top_k,
-                            moe_intermediate_size,
-                            num_shared_experts,
-                            shared_intermediate_size,
-                            router_groups,
-                            ref scoring_func,
-                            ..
-                          } = seg.ffn {
-                            div { class: "mt-2 pt-2 border-t border-slate-200/80 dark:border-slate-800",
-                              button {
-                                r#type: "button",
-                                class: "w-full flex items-center justify-between text-[11px] font-mono text-amber-700 dark:text-amber-300 cursor-pointer",
-                                onclick: move |evt| {
-                                  evt.stop_propagation();
-                                  expand_moe_cluster.set(!expand_moe_cluster());
-                                },
-                                span {
-                                  if expand_moe_cluster() { "▾ 专家路由阵列 (Router + Experts)" } else { "▸ 展开专家路由阵列 ({top_k}/{num_routed_experts} Active)" }
-                                }
-                                span { class: "text-[10px] text-slate-400",
-                                  if expand_moe_cluster() { "收起" } else { "展开" }
-                                }
-                              }
-
-                              if expand_moe_cluster() {
-                                div { class: "mt-2 space-y-1.5 text-[11px] font-mono",
-                                  div { class: "rounded-lg bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/60 px-2.5 py-1.5 text-amber-900 dark:text-amber-200",
-                                    "Router [{d} → {num_routed_experts}] · {scoring_func}"
-                                    if let Some((ng, tg)) = router_groups {
-                                      " · {ng}组选{tg}组"
-                                    }
+                                  span {
+                                    if expand_moe_cluster() { "▾ 专家路由阵列 (Router + Experts)" } else { "▸ 展开专家路由阵列 ({top_k}/{num_routed_experts} Active)" }
                                   }
-                                  div { class: "grid grid-cols-2 gap-1.5",
-                                    div { class: "rounded-lg bg-amber-500/15 border border-amber-400/60 px-2 py-1.5",
-                                      div { class: "font-bold text-amber-800 dark:text-amber-300",
-                                        "★ Active ×{top_k}"
-                                      }
-                                      div { class: "text-[10px] text-slate-600 dark:text-slate-300",
-                                        "I={moe_intermediate_size} (参与计算)"
-                                      }
-                                    }
-                                    div { class: "rounded-lg bg-slate-100 dark:bg-slate-800/80 border border-dashed border-slate-300 dark:border-slate-700 px-2 py-1.5",
-                                      div { class: "font-semibold text-slate-500 dark:text-slate-400",
-                                        "Idle ×{num_routed_experts.saturating_sub(top_k)}"
-                                      }
-                                      div { class: "text-[10px] text-slate-400",
-                                        "0 FLOPs (驻留显存)"
-                                      }
-                                    }
+                                  span { class: "text-[10px] text-slate-400",
+                                    if expand_moe_cluster() { "收起" } else { "展开" }
                                   }
-                                  if num_shared_experts > 0 && shared_intermediate_size > 0 {
-                                    div { class: "rounded-lg bg-emerald-50/80 dark:bg-emerald-950/40 border border-emerald-300/70 dark:border-emerald-800/60 px-2.5 py-1.5 text-emerald-800 dark:text-emerald-300",
-                                      "常驻共享专家 ×{num_shared_experts} (I={shared_intermediate_size}，100% Token 直通)"
+                                }
+
+                                if expand_moe_cluster() {
+                                  div { class: "mt-2 space-y-1.5 text-[11px] font-mono",
+                                    div { class: "rounded-lg bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/60 px-2.5 py-1.5 text-amber-900 dark:text-amber-200",
+                                      "Router [{d} → {num_routed_experts}] · {scoring_func}"
+                                      if let Some((ng, tg)) = router_groups {
+                                        " · {ng}组选{tg}组"
+                                      }
+                                    }
+                                    div { class: "grid grid-cols-2 gap-1.5",
+                                      div { class: "rounded-lg bg-amber-500/15 border border-amber-400/60 px-2 py-1.5",
+                                        div { class: "font-bold text-amber-800 dark:text-amber-300",
+                                          "★ Active ×{top_k}"
+                                        }
+                                        div { class: "text-[10px] text-slate-600 dark:text-slate-300",
+                                          "I={moe_intermediate_size} (参与计算)"
+                                        }
+                                      }
+                                      div { class: "rounded-lg bg-slate-100 dark:bg-slate-800/80 border border-dashed border-slate-300 dark:border-slate-700 px-2 py-1.5",
+                                        div { class: "font-semibold text-slate-500 dark:text-slate-400",
+                                          "Idle ×{num_routed_experts.saturating_sub(top_k)}"
+                                        }
+                                        div { class: "text-[10px] text-slate-400",
+                                          "0 FLOPs (驻留显存)"
+                                        }
+                                      }
+                                    }
+                                    if num_shared_experts > 0 && shared_intermediate_size > 0 {
+                                      div { class: "rounded-lg bg-emerald-50/80 dark:bg-emerald-950/40 border border-emerald-300/70 dark:border-emerald-800/60 px-2.5 py-1.5 text-emerald-800 dark:text-emerald-300",
+                                        "常驻共享专家 ×{num_shared_experts} (I={shared_intermediate_size}，100% Token 直通)"
+                                      }
                                     }
                                   }
                                 }
                               }
                             }
-                          }
 
-                          // L2 内联展开：FFN / MoE 矩阵维度流
-                          if expand_inline_ffn() {
-                            InlineFfnDetail {
-                              hidden_size: d,
-                              ffn: seg.ffn.clone(),
+                            // L2 内联展开：FFN / MoE 矩阵维度流
+                            if expand_inline_ffn() {
+                              InlineFfnDetail {
+                                hidden_size: d,
+                                ffn: seg.ffn.clone(),
+                              }
                             }
                           }
                         }
                       }
-                    }
 
-                    if has_post_norms {
-                      div { class: "rounded-lg border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/70 px-2.5 py-1.5 flex items-center justify-between text-[11px] font-mono text-slate-600 dark:text-slate-300",
-                        span { "post_feedforward_layernorm (Post-FFN Norm)" }
-                        span { class: "text-slate-400", "[{d}]" }
+                      if has_post_norms {
+                        div { class: "rounded-lg border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/70 px-2.5 py-1.5 flex items-center justify-between text-[11px] font-mono text-slate-600 dark:text-slate-300",
+                          span { "post_feedforward_layernorm (Post-FFN Norm)" }
+                          span { class: "text-slate-400", "[{d}]" }
+                        }
+                      }
+
+                      div { class: "flex items-center gap-2 pt-0.5",
+                        span { class: "inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-500 text-white text-xs font-bold shadow-xs",
+                          "+"
+                        }
+                        span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                          "h_out = h_mid + FFN(Norm(h_mid)) : [B, S, {d}]"
+                        }
                       }
                     }
-
-                    div { class: "flex items-center gap-2 pt-0.5",
-                      span { class: "inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-500 text-white text-xs font-bold shadow-xs",
-                        "+"
-                      }
-                      span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
-                        "h_out = h_mid + FFN(Norm(h_mid)) : [B, S, {d}]"
-                      }
+                  } else {
+                    div { class: "mt-2 rounded-lg border border-dashed border-slate-200 dark:border-slate-800 px-2.5 py-1.5 text-[10px] font-mono text-slate-500 dark:text-slate-400",
+                      "纯 SSM 块已内嵌门控通道扩展 (expand×D)，无独立第二残差 MLP 子层"
                     }
                   }
                 }
@@ -645,106 +731,164 @@ pub fn MacroArchitectureFlow(
 
       VerticalArrow { label: &format!("h_final : [B, S, {d}]") }
 
-      // 3. 末端输出与投机预测阶段（支持整体收起与展开）
-      if !expand_output_stage() {
-        div { class: "w-full rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/40 dark:bg-rose-950/20 p-3 flex items-center justify-between gap-2",
-          button {
-            r#type: "button",
-            class: "flex items-center gap-1.5 text-left cursor-pointer",
-            onclick: move |_| expand_output_stage.set(true),
-            span { class: "text-xs font-mono font-bold text-rose-600 dark:text-rose-400", "▸" }
-            div {
-              div { class: "text-xs font-bold text-slate-900 dark:text-white",
-                "Output Stage (Final Norm + LM Head"
-                if blueprint.num_nextn_predict_layers > 0 {
-                  " + MTP ×{blueprint.num_nextn_predict_layers}"
-                }
-                ")"
-              }
-              div { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
-                "[{d} → {v}] → logits : float [B, S, {v}]"
-              }
+      // 3. 末端输出阶段（兼容 Causal LM Head / 句向量池化 / Reranker 分类打分 / Omni & TTS 声学声码器）
+      {
+        let (stage_short_title, stage_card_header, stage_main_formula, stage_param_label, output_pill_text) =
+          match &blueprint.output_head {
+            OutputHeadSpec::CausalLmHead => {
+              let mtp_suffix = if blueprint.num_nextn_predict_layers > 0 {
+                format!(" + MTP ×{}", blueprint.num_nextn_predict_layers)
+              } else {
+                String::new()
+              };
+              let p_lbl = if blueprint.tie_word_embeddings {
+                "0 (Tied w/ Embed)".to_string()
+              } else {
+                format_count(blueprint.params.lm_head)
+              };
+              (
+                format!("Output Stage (Final Norm + LM Head{mtp_suffix})"),
+                "Output Projection (LM Head)",
+                format!("lm_head [{d} → {v}]"),
+                p_lbl,
+                format!("logits : float [B, S, {v}]"),
+              )
             }
-          }
-          button {
-            r#type: "button",
-            class: "px-2 py-0.5 rounded text-[10px] font-semibold bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 cursor-pointer",
-            onclick: move |_| expand_output_stage.set(true),
-            "展开输出层"
-          }
-        }
-      } else {
-        div { class: "w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 p-3 flex flex-col items-center",
-          div { class: "w-full flex items-center justify-between mb-2",
-            span { class: "text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400",
-              "▾ Output & Decoding Stage"
+            OutputHeadSpec::EmbeddingPool { pooling_mode, output_dim, normalize } => {
+              let norm_tag = if *normalize { " + L2 Norm" } else { "" };
+              (
+                format!("Output Stage ({pooling_mode} Pooling)"),
+                "Pooling & Vector Normalization",
+                format!("{pooling_mode}(h_final){norm_tag} → [{output_dim}]"),
+                format_count(blueprint.params.lm_head),
+                format!("embeddings : float [B, {output_dim}]"),
+              )
             }
-            button {
-              r#type: "button",
-              class: "px-2 py-0.5 rounded text-[10px] font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer",
-              onclick: move |_| expand_output_stage.set(false),
-              "收起"
+            OutputHeadSpec::SequenceScorer { num_labels } => (
+              "Output Stage (Cross-Encoder Scorer)".to_string(),
+              "Classification / Relevance Head",
+              format!("classifier / score [{d} → {num_labels}]"),
+              format_count(blueprint.params.lm_head),
+              format!("scores : float [B, {num_labels}]"),
+            ),
+            OutputHeadSpec::SpeechSynthesizer {
+              talker_summary,
+              codec_summary,
+              num_codebooks,
+              sampling_rate_hz,
+              estimated_params,
+            } => {
+              let sr_k = sampling_rate_hz / 1000;
+              let main_f = match talker_summary {
+                Some(t) => format!("{t} → {codec_summary}"),
+                None => format!("{codec_summary} ({num_codebooks} RVQ Codebooks)"),
+              };
+              (
+                format!("Output Stage (Talker / Vocoder @ {sr_k}kHz)"),
+                "Speech Synthesizer & Neural Vocoder",
+                main_f,
+                format_count(*estimated_params),
+                format!("waveform : pcm_f32 [B, T_wav] @ {sr_k}kHz"),
+              )
             }
-          }
+          };
 
-          if blueprint.num_nextn_predict_layers > 0 {
-            button {
-              r#type: "button",
-              class: card_cls(InspectorFocus::MtpHead),
-              onclick: move |_| on_select_focus.call(InspectorFocus::MtpHead),
-              div { class: "flex items-center justify-between gap-2",
-                span { class: "text-xs font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400",
-                  "Multi-Token Prediction (MTP ×{blueprint.num_nextn_predict_layers})"
-                }
-                span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
-                  "+{format_count(blueprint.params.mtp_head)}"
-                }
-              }
-              div { class: "mt-1 text-xs font-mono text-slate-700 dark:text-slate-300",
-                "eh_proj [2×{d} → {d}] + Speculative Block"
-              }
-            }
-            VerticalArrow { label: "" }
-          }
-
-          button {
-            r#type: "button",
-            class: card_cls(InspectorFocus::NormAndResidual),
-            onclick: move |_| on_select_focus.call(InspectorFocus::NormAndResidual),
-            div { class: "flex items-center justify-between text-xs",
-              span { class: "font-semibold text-slate-800 dark:text-slate-100 font-mono",
-                "model.norm (Final RMSNorm)"
-              }
-              span { class: "font-mono text-slate-500 dark:text-slate-400", "[{d}]" }
-            }
-          }
-
-          VerticalArrow { label: "" }
-
-          button {
-            r#type: "button",
-            class: card_cls(InspectorFocus::LmHead),
-            onclick: move |_| on_select_focus.call(InspectorFocus::LmHead),
-            div { class: "flex items-center justify-between gap-2",
-              span { class: "text-xs font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400",
-                "Output Projection (LM Head)"
-              }
-              span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
-                if blueprint.tie_word_embeddings {
-                  "0 (Tied w/ Embed)"
-                } else {
-                  "{format_count(blueprint.params.lm_head)}"
+        if !expand_output_stage() {
+          rsx! {
+            div { class: "w-full rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/40 dark:bg-rose-950/20 p-3 flex items-center justify-between gap-2",
+              button {
+                r#type: "button",
+                class: "flex items-center gap-1.5 text-left cursor-pointer",
+                onclick: move |_| expand_output_stage.set(true),
+                span { class: "text-xs font-mono font-bold text-rose-600 dark:text-rose-400", "▸" }
+                div {
+                  div { class: "text-xs font-bold text-slate-900 dark:text-white",
+                    "{stage_short_title}"
+                  }
+                  div { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                    "{stage_main_formula} → {output_pill_text}"
+                  }
                 }
               }
-            }
-            div { class: "mt-1 text-sm font-semibold text-slate-900 dark:text-white font-mono",
-              "lm_head [{d} → {v}]"
+              button {
+                r#type: "button",
+                class: "px-2 py-0.5 rounded text-[10px] font-semibold bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 cursor-pointer",
+                onclick: move |_| expand_output_stage.set(true),
+                "展开输出层"
+              }
             }
           }
+        } else {
+          rsx! {
+            div { class: "w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 p-3 flex flex-col items-center",
+              div { class: "w-full flex items-center justify-between mb-2",
+                span { class: "text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400",
+                  "▾ Output & Decoding Stage"
+                }
+                button {
+                  r#type: "button",
+                  class: "px-2 py-0.5 rounded text-[10px] font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer",
+                  onclick: move |_| expand_output_stage.set(false),
+                  "收起"
+                }
+              }
 
-          VerticalArrow { label: "" }
-          div { class: "px-3.5 py-1 rounded-full bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-xs font-mono font-semibold text-rose-700 dark:text-rose-300",
-            "logits : float [B, S, {v}]"
+              if blueprint.num_nextn_predict_layers > 0 {
+                button {
+                  r#type: "button",
+                  class: card_cls(InspectorFocus::MtpHead),
+                  onclick: move |_| on_select_focus.call(InspectorFocus::MtpHead),
+                  div { class: "flex items-center justify-between gap-2",
+                    span { class: "text-xs font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400",
+                      "Multi-Token Prediction (MTP ×{blueprint.num_nextn_predict_layers})"
+                    }
+                    span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                      "+{format_count(blueprint.params.mtp_head)}"
+                    }
+                  }
+                  div { class: "mt-1 text-xs font-mono text-slate-700 dark:text-slate-300",
+                    "eh_proj [2×{d} → {d}] + Speculative Block"
+                  }
+                }
+                VerticalArrow { label: "" }
+              }
+
+              button {
+                r#type: "button",
+                class: card_cls(InspectorFocus::NormAndResidual),
+                onclick: move |_| on_select_focus.call(InspectorFocus::NormAndResidual),
+                div { class: "flex items-center justify-between text-xs",
+                  span { class: "font-semibold text-slate-800 dark:text-slate-100 font-mono",
+                    "Final Norm (RMSNorm / LayerNorm)"
+                  }
+                  span { class: "font-mono text-slate-500 dark:text-slate-400", "[{d}]" }
+                }
+              }
+
+              VerticalArrow { label: "" }
+
+              button {
+                r#type: "button",
+                class: card_cls(InspectorFocus::LmHead),
+                onclick: move |_| on_select_focus.call(InspectorFocus::LmHead),
+                div { class: "flex items-center justify-between gap-2",
+                  span { class: "text-xs font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400",
+                    "{stage_card_header}"
+                  }
+                  span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                    "{stage_param_label}"
+                  }
+                }
+                div { class: "mt-1 text-xs sm:text-sm font-semibold text-slate-900 dark:text-white font-mono",
+                  "{stage_main_formula}"
+                }
+              }
+
+              VerticalArrow { label: "" }
+              div { class: "px-3.5 py-1 rounded-full bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-xs font-mono font-semibold text-rose-700 dark:text-rose-300",
+                "{output_pill_text}"
+              }
+            }
           }
         }
       }
@@ -752,12 +896,18 @@ pub fn MacroArchitectureFlow(
   }
 }
 
-/// 在左侧宏观卡片内部就地展开的 Attention 算子矩阵明细表。
+/// 在左侧宏观卡片内部就地展开的 Attention / SSM 算子矩阵明细表。
 #[component]
 fn InlineAttentionDetail(hidden_size: u64, attention: AttentionSpec) -> Element {
   match attention {
     AttentionSpec::StandardGqa {
-      num_q_heads, num_kv_heads, head_dim, qkv_bias, qk_norm, ..
+      num_q_heads,
+      num_kv_heads,
+      head_dim,
+      qkv_bias,
+      qk_norm,
+      has_cross_attn,
+      ..
     } => {
       let q_out = num_q_heads * head_dim;
       let kv_out = num_kv_heads * head_dim;
@@ -781,6 +931,12 @@ fn InlineAttentionDetail(hidden_size: u64, attention: AttentionSpec) -> Element 
           div { class: "flex justify-between",
             span { "o_proj" }
             span { "[{q_out} → {hidden_size}]" }
+          }
+          if has_cross_attn {
+            div { class: "flex justify-between",
+              span { "encoder_attn (Cross Q/K/V/O)" }
+              span { class: "text-cyan-600 dark:text-cyan-400", "4 × [{hidden_size} → {hidden_size}]" }
+            }
           }
         }
       }
@@ -826,6 +982,36 @@ fn InlineAttentionDetail(hidden_size: u64, attention: AttentionSpec) -> Element 
         }
       }
     }
+    AttentionSpec::LinearRecurrent {
+      kind,
+      num_heads,
+      head_dim,
+      state_dim,
+      conv_kernel,
+      expand_factor,
+    } => {
+      let d_inner = (num_heads * head_dim).max(expand_factor.max(1) * hidden_size);
+      rsx! {
+        div { class: "mt-2.5 pt-2 border-t border-indigo-200/70 dark:border-indigo-800/60 space-y-1 text-[11px] font-mono text-slate-600 dark:text-slate-300",
+          div { class: "flex justify-between",
+            span { "in_proj ({kind})" }
+            span { class: "text-indigo-600 dark:text-indigo-400", "[{hidden_size} → {2 * d_inner} + B/C/Δ]" }
+          }
+          div { class: "flex justify-between",
+            span { "conv1d (Causal Depthwise)" }
+            span { class: "text-sky-600 dark:text-sky-400", "k={conv_kernel}, ch={d_inner}" }
+          }
+          div { class: "flex justify-between",
+            span { "recurrent_state (O(1))" }
+            span { class: "text-emerald-600 dark:text-emerald-400 font-semibold", "[{num_heads} × {head_dim} × {state_dim}]" }
+          }
+          div { class: "flex justify-between",
+            span { "out_proj" }
+            span { "[{d_inner} → {hidden_size}]" }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -833,28 +1019,45 @@ fn InlineAttentionDetail(hidden_size: u64, attention: AttentionSpec) -> Element 
 #[component]
 fn InlineFfnDetail(hidden_size: u64, ffn: FfnSpec) -> Element {
   match ffn {
-    FfnSpec::DenseGated { intermediate_size, act_fn, fused_gate_up, .. } => {
+    FfnSpec::DenseGated { intermediate_size, act_fn, fused_gate_up, is_gated, .. } => {
       let two_inter = 2 * intermediate_size;
       rsx! {
         div { class: "mt-2.5 pt-2 border-t border-sky-200/70 dark:border-sky-800/60 space-y-1 text-[11px] font-mono text-slate-600 dark:text-slate-300",
-          if fused_gate_up {
+          if intermediate_size == 0 {
+            div { class: "text-slate-500", "通道扩展已内嵌于 SSM Mixer" }
+          } else if !is_gated {
             div { class: "flex justify-between",
-              span { "dense_h_to_4h (Fused Gate+Up)" }
-              span { class: "text-sky-600 dark:text-sky-400", "[{hidden_size} → {two_inter}]" }
+              span { "fc1 / intermediate" }
+              span { class: "text-sky-600 dark:text-sky-400", "[{hidden_size} → {intermediate_size}]" }
+            }
+            div { class: "flex justify-between",
+              span { "Pointwise Activation" }
+              span { class: "text-amber-600 dark:text-amber-400", "{act_fn}(x)" }
+            }
+            div { class: "flex justify-between",
+              span { "fc2 / output" }
+              span { "[{intermediate_size} → {hidden_size}]" }
             }
           } else {
-            div { class: "flex justify-between",
-              span { "gate_proj + up_proj" }
-              span { class: "text-sky-600 dark:text-sky-400", "2 × [{hidden_size} → {intermediate_size}]" }
+            if fused_gate_up {
+              div { class: "flex justify-between",
+                span { "dense_h_to_4h (Fused Gate+Up)" }
+                span { class: "text-sky-600 dark:text-sky-400", "[{hidden_size} → {two_inter}]" }
+              }
+            } else {
+              div { class: "flex justify-between",
+                span { "gate_proj + up_proj" }
+                span { class: "text-sky-600 dark:text-sky-400", "2 × [{hidden_size} → {intermediate_size}]" }
+              }
             }
-          }
-          div { class: "flex justify-between",
-            span { "Gated Nonlinearity" }
-            span { class: "text-amber-600 dark:text-amber-400", "{act_fn}(gate) ⊙ up" }
-          }
-          div { class: "flex justify-between",
-            span { "down_proj" }
-            span { "[{intermediate_size} → {hidden_size}]" }
+            div { class: "flex justify-between",
+              span { "Gated Nonlinearity" }
+              span { class: "text-amber-600 dark:text-amber-400", "{act_fn}(gate) ⊙ up" }
+            }
+            div { class: "flex justify-between",
+              span { "down_proj" }
+              span { "[{intermediate_size} → {hidden_size}]" }
+            }
           }
         }
       }
@@ -912,6 +1115,12 @@ pub fn MicroSubgraphDiagram(
       },
       None => rsx! { EmptyDiagramNote {} },
     },
+    InspectorFocus::Audio => match blueprint.audio {
+      Some(aud) => rsx! {
+        AudioSubgraphSvg { audio: aud, target_hidden: d }
+      },
+      None => rsx! { EmptyDiagramNote {} },
+    },
     InspectorFocus::Attention => match seg_opt.map(|s| s.attention) {
       Some(AttentionSpec::StandardGqa {
         num_q_heads,
@@ -923,6 +1132,8 @@ pub fn MicroSubgraphDiagram(
         sliding_window,
         sliding_window_pattern,
         nope_layer_interval,
+        is_causal,
+        has_cross_attn,
       }) => rsx! {
         GqaSubgraphSvg {
           hidden_size: d,
@@ -935,6 +1146,8 @@ pub fn MicroSubgraphDiagram(
           sliding_window,
           sliding_window_pattern,
           nope_layer_interval,
+          is_causal,
+          has_cross_attn,
           rope_label: blueprint.rope_summary.clone(),
         }
       },
@@ -956,12 +1169,39 @@ pub fn MicroSubgraphDiagram(
           v_head_dim,
         }
       },
+      Some(AttentionSpec::LinearRecurrent {
+        kind,
+        num_heads,
+        head_dim,
+        state_dim,
+        conv_kernel,
+        expand_factor,
+      }) => rsx! {
+        LinearSsmSubgraphSvg {
+          hidden_size: d,
+          kind,
+          num_heads,
+          head_dim,
+          state_dim,
+          conv_kernel,
+          expand_factor,
+        }
+      },
       None => rsx! { EmptyDiagramNote {} },
     },
     InspectorFocus::FfnOrMoe => match seg_opt.map(|s| s.ffn) {
-      Some(FfnSpec::DenseGated { intermediate_size, act_fn, bias, fused_gate_up }) => rsx! {
-        DenseSwiGluSvg { hidden_size: d, intermediate_size, act_fn, bias, fused_gate_up }
-      },
+      Some(FfnSpec::DenseGated { intermediate_size, act_fn, bias, fused_gate_up, is_gated }) => {
+        rsx! {
+          DenseSwiGluSvg {
+            hidden_size: d,
+            intermediate_size,
+            act_fn,
+            bias,
+            fused_gate_up,
+            is_gated,
+          }
+        }
+      }
       Some(FfnSpec::SparseMoe {
         num_routed_experts,
         top_k,
@@ -994,6 +1234,7 @@ pub fn MicroSubgraphDiagram(
         hidden_size: d,
         tied: blueprint.tie_word_embeddings,
         eps: blueprint.rms_norm_eps.unwrap_or(1e-6),
+        output_head: blueprint.output_head.clone(),
       }
     },
     InspectorFocus::LmHead => rsx! {
@@ -1003,6 +1244,7 @@ pub fn MicroSubgraphDiagram(
         hidden_size: d,
         tied: blueprint.tie_word_embeddings,
         eps: blueprint.rms_norm_eps.unwrap_or(1e-6),
+        output_head: blueprint.output_head.clone(),
       }
     },
     InspectorFocus::NormAndResidual => rsx! {
@@ -1012,6 +1254,7 @@ pub fn MicroSubgraphDiagram(
         hidden_size: d,
         tied: blueprint.tie_word_embeddings,
         eps: blueprint.rms_norm_eps.unwrap_or(1e-6),
+        output_head: blueprint.output_head.clone(),
       }
     },
     InspectorFocus::MtpHead => rsx! {
@@ -1021,6 +1264,7 @@ pub fn MicroSubgraphDiagram(
         hidden_size: d,
         tied: blueprint.tie_word_embeddings,
         eps: blueprint.rms_norm_eps.unwrap_or(1e-6),
+        output_head: blueprint.output_head.clone(),
       }
     },
   }
@@ -1088,7 +1332,118 @@ fn VisionSubgraphSvg(vision: VisionSpec, text_hidden: u64) -> Element {
   }
 }
 
-/// 标准 MHA / GQA / MQA + 可选 QK-Norm / SWA / iRoPE 算子级精确流图。
+/// 语音声学编码器（Log-Mel 前端 + Conv1D 下采样 + 双向声学 Transformer）算子级拓扑图。
+#[component]
+fn AudioSubgraphSvg(audio: AudioSpec, target_hidden: u64) -> Element {
+  let sr_k = audio.sampling_rate_hz / 1000;
+  let ad = audio.hidden_size;
+
+  rsx! {
+    div { class: "w-full overflow-x-auto",
+      svg {
+        view_box: "0 0 680 280",
+        class: "w-full min-w-[520px] h-auto font-mono",
+        role: "img",
+        "aria-label": "Speech acoustic frontend and audio encoder graph",
+
+        rect { x: "165", y: "10", width: "350", height: "32", rx: "8", class: "fill-slate-100 dark:fill-slate-800 stroke-slate-300 dark:stroke-slate-600", stroke_width: "1.5" }
+        text { x: "340", y: "30", text_anchor: "middle", font_size: "11", class: "fill-slate-800 dark:fill-slate-100 font-semibold",
+          "Waveform PCM @ {sr_k} kHz → Log-Mel [{audio.num_mel_bins}, T_frames]"
+        }
+
+        line { x1: "340", y1: "42", x2: "340", y2: "62", class: "stroke-cyan-400", stroke_width: "1.5" }
+        rect { x: "145", y: "62", width: "390", height: "42", rx: "8", class: "fill-cyan-50 dark:fill-cyan-950/60 stroke-cyan-500", stroke_width: "1.5" }
+        text { x: "340", y: "80", text_anchor: "middle", font_size: "11", class: "fill-cyan-700 dark:fill-cyan-300 font-bold",
+          "Conv1D Acoustic Stem (2× Conv1D + GELU, stride=2)"
+        }
+        text { x: "340", y: "96", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+          "Downsample → [B, ≤{audio.max_source_positions}, {ad}] + Sinusoidal Pos"
+        }
+
+        line { x1: "340", y1: "104", x2: "340", y2: "126", class: "stroke-cyan-400", stroke_width: "1.5" }
+        rect { x: "125", y: "126", width: "430", height: "54", rx: "10", class: "fill-indigo-50 dark:fill-indigo-950/60 stroke-indigo-500", stroke_width: "1.5" }
+        text { x: "340", y: "147", text_anchor: "middle", font_size: "11", class: "fill-indigo-700 dark:fill-indigo-300 font-bold",
+          "{audio.model_type} ×{audio.num_layers} Layers ({audio.num_heads} Heads)"
+        }
+        text { x: "340", y: "166", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+          "Bidirectional Full Attention + MLP [{ad} → {audio.ffn_dim} → {ad}]"
+        }
+
+        line { x1: "340", y1: "180", x2: "340", y2: "204", class: "stroke-indigo-400", stroke_width: "1.5" }
+        rect { x: "145", y: "204", width: "390", height: "52", rx: "10", class: "fill-cyan-600 stroke-cyan-400", stroke_width: "1.5" }
+        text { x: "340", y: "225", text_anchor: "middle", font_size: "11", class: "fill-white font-bold",
+          "Audio Adapter / Cross-Attention K,V [{ad} → {target_hidden}]"
+        }
+        text { x: "340", y: "243", text_anchor: "middle", font_size: "10", class: "fill-cyan-100",
+          "Acoustic Representations : [B, T_enc, {target_hidden}] → Decoder / Thinker"
+        }
+      }
+    }
+  }
+}
+
+/// 线性注意力 / 选择性状态空间模型（Gated DeltaNet / Mamba-2 / RWKV-7）恒定状态算子子图。
+#[component]
+fn LinearSsmSubgraphSvg(
+  hidden_size: u64,
+  kind: String,
+  num_heads: u64,
+  head_dim: u64,
+  state_dim: u64,
+  conv_kernel: u64,
+  expand_factor: u64,
+) -> Element {
+  let d_inner = (num_heads * head_dim).max(expand_factor.max(1) * hidden_size);
+  let state_elems = num_heads * head_dim * state_dim;
+
+  rsx! {
+    div { class: "w-full overflow-x-auto",
+      svg {
+        view_box: "0 0 680 300",
+        class: "w-full min-w-[520px] h-auto font-mono",
+        role: "img",
+        "aria-label": "Linear recurrent attention and SSM operator graph",
+
+        rect { x: "220", y: "10", width: "240", height: "30", rx: "8", class: "fill-slate-100 dark:fill-slate-800 stroke-slate-300 dark:stroke-slate-600", stroke_width: "1.5" }
+        text { x: "340", y: "29", text_anchor: "middle", font_size: "11", class: "fill-slate-800 dark:fill-slate-100 font-semibold",
+          "x_norm [B, S, {hidden_size}]"
+        }
+
+        line { x1: "340", y1: "40", x2: "340", y2: "60", class: "stroke-indigo-400", stroke_width: "1.5" }
+        rect { x: "125", y: "60", width: "430", height: "42", rx: "8", class: "fill-indigo-50 dark:fill-indigo-950/70 stroke-indigo-500", stroke_width: "1.5" }
+        text { x: "340", y: "78", text_anchor: "middle", font_size: "11", class: "fill-indigo-700 dark:fill-indigo-300 font-bold",
+          "in_proj ({kind}) [{hidden_size} → z({d_inner}) + x({d_inner}) + B, C, Δ/β]"
+        }
+        text { x: "340", y: "94", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+          "Depthwise Causal Conv1D (kernel={conv_kernel}, SiLU) on sequence branch"
+        }
+
+        line { x1: "340", y1: "102", x2: "340", y2: "124", class: "stroke-emerald-500", stroke_width: "1.5" }
+        rect { x: "125", y: "124", width: "430", height: "54", rx: "10", class: "fill-emerald-50 dark:fill-emerald-950/60 stroke-emerald-500", stroke_dasharray: "5 3", stroke_width: "1.8" }
+        text { x: "340", y: "145", text_anchor: "middle", font_size: "11", class: "fill-emerald-800 dark:fill-emerald-300 font-bold",
+          "★ O(1) Recurrent State S_t = α_t·S_{{t-1}} + k_t⊗v_t"
+        }
+        text { x: "340", y: "164", text_anchor: "middle", font_size: "10", class: "fill-emerald-700 dark:fill-emerald-400",
+          "Fixed State [{num_heads}H × {head_dim}d × {state_dim}d] ({state_elems} elems/seq · 0 KV growth w/ S!)"
+        }
+
+        line { x1: "340", y1: "178", x2: "340", y2: "200", class: "stroke-indigo-400", stroke_width: "1.5" }
+        rect { x: "160", y: "200", width: "360", height: "36", rx: "8", class: "fill-indigo-600 stroke-indigo-400", stroke_width: "1.5" }
+        text { x: "340", y: "222", text_anchor: "middle", font_size: "10.5", class: "fill-white font-bold",
+          "Gated Readout: RMSNorm(y_t) ⊙ SiLU(z_t) → [B, S, {d_inner}]"
+        }
+
+        line { x1: "340", y1: "236", x2: "340", y2: "252", class: "stroke-slate-400", stroke_width: "1.5" }
+        rect { x: "205", y: "252", width: "270", height: "36", rx: "8", class: "fill-slate-100 dark:fill-slate-800 stroke-slate-400 dark:stroke-slate-600", stroke_width: "1.5" }
+        text { x: "340", y: "274", text_anchor: "middle", font_size: "11", class: "fill-slate-900 dark:fill-white font-bold",
+          "out_proj [{d_inner} → {hidden_size}] → Residual (+)"
+        }
+      }
+    }
+  }
+}
+
+/// 标准 MHA / GQA / MQA + 可选双向掩码 / Cross-Attn / QK-Norm / SWA / iRoPE 算子级精确流图。
 #[component]
 fn GqaSubgraphSvg(
   hidden_size: u64,
@@ -1101,6 +1456,8 @@ fn GqaSubgraphSvg(
   sliding_window: Option<u64>,
   sliding_window_pattern: Option<u64>,
   nope_layer_interval: Option<u64>,
+  is_causal: bool,
+  has_cross_attn: bool,
   rope_label: String,
 ) -> Element {
   let q_out = num_q_heads * head_dim;
@@ -1108,14 +1465,32 @@ fn GqaSubgraphSvg(
   let group_size = (num_q_heads / num_kv_heads.max(1)).max(1);
   let bias_tag = if qkv_bias { "+bias" } else { "no bias" };
   let o_bias_tag = if o_bias { "+bias" } else { "no bias" };
-  let mask_tag = match (sliding_window, sliding_window_pattern) {
-    (Some(w), Some(pat)) => format!("{}:1 SWA(W={w}) / Global", pat.saturating_sub(1)),
-    (Some(w), None) => format!("Causal SWA (W={w})"),
-    _ => "Causal Mask".to_string(),
+  let mask_tag = if !is_causal {
+    "Bidirectional Full Mask".to_string()
+  } else {
+    match (sliding_window, sliding_window_pattern) {
+      (Some(w), Some(pat)) => format!("{}:1 SWA(W={w}) / Global", pat.saturating_sub(1)),
+      (Some(w), None) => format!("Causal SWA (W={w})"),
+      _ => "Causal Mask".to_string(),
+    }
   };
   let pos_note = match nope_layer_interval {
     Some(iv) => format!("iRoPE ({}:1 RoPE/NoPE)", iv.saturating_sub(1)),
     None => rope_label,
+  };
+  let cache_banner = if !is_causal {
+    "★ Parallel Bidirectional Pass: 0 B Persistent KV Cache".to_string()
+  } else if has_cross_attn {
+    format!(
+      "★ Self KV ({} elems/tok) + Cross-Attn Encoder K,V ({} elems/frame)",
+      2 * kv_out,
+      2 * hidden_size
+    )
+  } else {
+    format!(
+      "★ KV Cache (K & V): 2 × [B, {num_kv_heads}, S, {head_dim}] ({} elems/tok/layer)",
+      2 * kv_out
+    )
   };
 
   rsx! {
@@ -1187,7 +1562,7 @@ fn GqaSubgraphSvg(
         line { x1: "340", y1: "168", x2: "340", y2: "182", class: "stroke-sky-400", stroke_width: "1.5" }
         rect { x: "250", y: "182", width: "405", height: "34", rx: "8", class: "fill-amber-50 dark:fill-amber-950/50 stroke-amber-500", stroke_dasharray: "5 3", stroke_width: "1.5" }
         text { x: "452", y: "203", text_anchor: "middle", font_size: "10.5", class: "fill-amber-800 dark:fill-amber-300 font-bold",
-          "★ KV Cache (K & V): 2 × [B, {num_kv_heads}, S, {head_dim}] ({2 * kv_out} elems/tok/layer)"
+          "{cache_banner}"
         }
 
         // 汇入 SDPA 核心算子
@@ -1327,7 +1702,7 @@ fn MlaSubgraphSvg(
   }
 }
 
-/// 稠密门控前馈网络（SwiGLU / GeGLU，兼容 GLM-4 融合 `gate_up_proj`）内部算子流图。
+/// 稠密前馈网络（兼容 3 矩阵 SwiGLU / GeGLU、GLM-4 融合 `gate_up_proj` 与 2 矩阵标准 MLP）内部算子流图。
 #[component]
 fn DenseSwiGluSvg(
   hidden_size: u64,
@@ -1335,10 +1710,65 @@ fn DenseSwiGluSvg(
   act_fn: String,
   bias: bool,
   fused_gate_up: bool,
+  is_gated: bool,
 ) -> Element {
+  if intermediate_size == 0 {
+    return rsx! {
+      EndpointSubgraphSvg {
+        mode: "ssm_mixer".to_string(),
+        vocab_size: 0,
+        hidden_size,
+        tied: false,
+        eps: 1e-5,
+        output_head: OutputHeadSpec::CausalLmHead,
+      }
+    };
+  }
   let bias_note = if bias { "+bias" } else { "no bias" };
   let ratio = (intermediate_size as f64) / (hidden_size.max(1) as f64);
   let two_inter = 2 * intermediate_size;
+
+  if !is_gated {
+    return rsx! {
+      div { class: "w-full overflow-x-auto",
+        svg {
+          view_box: "0 0 680 250",
+          class: "w-full min-w-[480px] h-auto font-mono",
+          role: "img",
+          "aria-label": "Standard 2-layer MLP operator graph",
+
+          rect { x: "230", y: "10", width: "220", height: "28", rx: "8", class: "fill-slate-100 dark:fill-slate-800 stroke-slate-300 dark:stroke-slate-600", stroke_width: "1.5" }
+          text { x: "340", y: "28", text_anchor: "middle", font_size: "11", class: "fill-slate-800 dark:fill-slate-100 font-semibold",
+            "h_norm [B, S, {hidden_size}]"
+          }
+
+          line { x1: "340", y1: "38", x2: "340", y2: "58", class: "stroke-sky-400", stroke_width: "1.5" }
+          rect { x: "160", y: "58", width: "360", height: "42", rx: "8", class: "fill-sky-50 dark:fill-sky-950/70 stroke-sky-500", stroke_width: "1.5" }
+          text { x: "340", y: "76", text_anchor: "middle", font_size: "11", class: "fill-sky-700 dark:fill-sky-300 font-bold",
+            "fc1 / intermediate.dense ({bias_note})"
+          }
+          text { x: "340", y: "92", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+            "[{hidden_size} → {intermediate_size}] ({ratio:.2}× D)"
+          }
+
+          line { x1: "340", y1: "100", x2: "340", y2: "120", class: "stroke-amber-400", stroke_width: "1.5" }
+          rect { x: "220", y: "120", width: "240", height: "32", rx: "8", class: "fill-amber-50 dark:fill-amber-950/60 stroke-amber-500", stroke_width: "1.5" }
+          text { x: "340", y: "140", text_anchor: "middle", font_size: "10.5", class: "fill-amber-700 dark:fill-amber-300 font-bold",
+            "Pointwise Activation: {act_fn}(x)"
+          }
+
+          line { x1: "340", y1: "152", x2: "340", y2: "174", class: "stroke-indigo-400", stroke_width: "1.5" }
+          rect { x: "185", y: "174", width: "310", height: "44", rx: "8", class: "fill-slate-100 dark:fill-slate-800 stroke-slate-400 dark:stroke-slate-600", stroke_width: "1.5" }
+          text { x: "340", y: "194", text_anchor: "middle", font_size: "11", class: "fill-slate-900 dark:fill-white font-bold",
+            "fc2 / output.dense [{intermediate_size} → {hidden_size}]"
+          }
+          text { x: "340", y: "209", text_anchor: "middle", font_size: "10", class: "fill-slate-500 dark:fill-slate-400",
+            "Output: [B, S, {hidden_size}] → Residual (+)"
+          }
+        }
+      }
+    };
+  }
 
   rsx! {
     div { class: "w-full overflow-x-auto",
@@ -1522,7 +1952,7 @@ fn SparseMoeSvg(
   }
 }
 
-/// Embedding / RMSNorm / LM Head / MTP 端点算子流图。
+/// Embedding / RMSNorm / Output Head (LM Head, Pooling, Scorer, Speech Vocoder) / MTP 端点算子流图。
 #[component]
 fn EndpointSubgraphSvg(
   mode: String,
@@ -1530,6 +1960,7 @@ fn EndpointSubgraphSvg(
   hidden_size: u64,
   tied: bool,
   eps: f64,
+  output_head: OutputHeadSpec,
 ) -> Element {
   let (title, box1, box2, foot) = match mode.as_str() {
     "embedding" => (
@@ -1537,26 +1968,67 @@ fn EndpointSubgraphSvg(
       format!("Table Weight W_emb : [{vocab_size}, {hidden_size}]"),
       format!("Gather(W_emb, input_ids) → h_0 : [B, S, {hidden_size}]"),
       if tied {
-        "Weight Tied: 与末端 lm_head 共享同一份 [V, D] 参数矩阵，节省一倍词表显存".to_string()
+        "Weight Tied: 与末端输出投影共享同一份 [V, D] 参数矩阵，节省一倍词表显存".to_string()
       } else {
-        "Untied Embeddings: 与末端 lm_head 独立存储参数".to_string()
+        "Untied Embeddings: 与末端输出层独立存储参数".to_string()
       },
     ),
-    "lm_head" => (
-      "LM Head Vocabulary Projection",
-      if tied {
-        format!("Shared Weight W_embᵀ : [{hidden_size}, {vocab_size}] (Tied)")
-      } else {
-        format!("Linear Weight lm_head : [{vocab_size}, {hidden_size}]")
-      },
-      format!("MatMul(h_final, Wᵀ) → logits : [B, S, {vocab_size}]"),
-      "推理期 Prefill 阶段通常仅对序列最后一个位置 [-1] 计算 Logits 以节省显存带宽".to_string(),
-    ),
+    "lm_head" => match output_head {
+      OutputHeadSpec::CausalLmHead => (
+        "LM Head Vocabulary Projection",
+        if tied {
+          format!("Shared Weight W_embᵀ : [{hidden_size}, {vocab_size}] (Tied)")
+        } else {
+          format!("Linear Weight lm_head : [{vocab_size}, {hidden_size}]")
+        },
+        format!("MatMul(h_final, Wᵀ) → logits : [B, S, {vocab_size}]"),
+        "推理期 Prefill 阶段通常仅对序列最后一个位置 [-1] 计算 Logits 以节省显存带宽".to_string(),
+      ),
+      OutputHeadSpec::EmbeddingPool { pooling_mode, output_dim, normalize } => (
+        "Sentence / Document Embedding Pooling Head",
+        format!("Sequence Token States h_final : [B, S, {hidden_size}] → {pooling_mode} Pool"),
+        format!(
+          "{}(v_pool) → Dense Vector : [B, {output_dim}]",
+          if normalize { "L2_Normalize" } else { "Identity" }
+        ),
+        "单次并行前向即可产出定长句向量，无需自回归解码，推理持久 KV Cache 为 0 B".to_string(),
+      ),
+      OutputHeadSpec::SequenceScorer { num_labels } => (
+        "Cross-Encoder Relevance / Classification Head",
+        format!("Pooled Pair Representation [CLS / EOS] : [B, {hidden_size}]"),
+        format!(
+          "Dense + Classifier [{hidden_size} → {num_labels}] → Relevance Logits [B, {num_labels}]"
+        ),
+        "对 Query-Document 拼接对执行全交叉注意力打分，精度高于双塔检索但需按候选对逐次前向"
+          .to_string(),
+      ),
+      OutputHeadSpec::SpeechSynthesizer {
+        talker_summary,
+        codec_summary,
+        num_codebooks,
+        sampling_rate_hz,
+        ..
+      } => (
+        "Multi-Stage Speech Synthesizer & Neural Vocoder",
+        talker_summary.unwrap_or_else(|| {
+          format!("Acoustic Codebook Head [{hidden_size} → {num_codebooks} RVQ Codebooks]")
+        }),
+        format!("{codec_summary} → Waveform PCM @ {} kHz", sampling_rate_hz / 1000),
+        "将离散语音 Codec Token 流还原为高保真连续音频波形，支持流式分块声码合成".to_string(),
+      ),
+    },
     "mtp" => (
       "Multi-Token Prediction (MTP Speculative Module)",
       format!("Concat(RMSNorm(h_t), RMSNorm(Embed(t_{{k+1}}))) → [B, S, {}]", 2 * hidden_size),
       format!("eh_proj [{} → {hidden_size}] → Transformer Block → Shared LM Head", 2 * hidden_size),
       "训练期增强多步语义规划；推理期可直接充当原生投机采样 (Speculative Decoding) 草稿头"
+        .to_string(),
+    ),
+    "ssm_mixer" => (
+      "Fused Selective SSM Gated Channel Mixer",
+      format!("Pure Mamba Block Integrates Gate z & Sequence Branch x in [{hidden_size}]"),
+      "y = out_proj(RMSNorm(SSM(Conv1D(x))) ⊙ SiLU(z))".to_string(),
+      "纯 Mamba / Mamba-2 将门控激活内融合进 SSM 投影支路，无需额外独立 3 矩阵 SwiGLU 子层"
         .to_string(),
     ),
     _ => (
