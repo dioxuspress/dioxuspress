@@ -116,7 +116,8 @@ mod imp {
   use std::time::{Duration, Instant};
 
   use crate::arch::{
-    build_model_blueprint_with_aux, load_builtin_preset, AuxConfigFiles, ModelBlueprint,
+    build_diffusion_pipeline_blueprint, build_model_blueprint_with_aux, extract_diffusion_slots,
+    load_builtin_preset, AuxConfigFiles, ModelBlueprint,
   };
   use crate::safetensors_meta::{
     parse_safetensors_header_bytes, parse_safetensors_header_len, parse_safetensors_index_json,
@@ -124,7 +125,7 @@ mod imp {
     RawTensorMeta, SafetensorsSummary, MAX_SAFETENSORS_HEADER_BYTES,
   };
 
-  use super::{normalize_repo_request, ModelHubSource};
+  use super::{is_safe_hub_segment, normalize_repo_request, ModelHubSource};
 
   /// `config.json` / `tokenizer_config.json` 单文件上限（2 MiB）。
   const MAX_CONFIG_BYTES: usize = 2 * 1024 * 1024;
@@ -337,14 +338,16 @@ mod imp {
     repo_id: &str,
   ) -> Result<ModelBlueprint, String> {
     let config_url = endpoint.file_url("config.json");
+    let model_idx_url = endpoint.file_url("model_index.json");
     let gen_url = endpoint.file_url("generation_config.json");
     let tok_url = endpoint.file_url("tokenizer_config.json");
     let pre_url = endpoint.file_url("preprocessor_config.json");
     let pool_url = endpoint.file_url("1_Pooling/config.json");
     let idx_url = endpoint.file_url("model.safetensors.index.json");
 
-    let (cfg_res, gen_res, tok_res, pre_res, pool_res, idx_res) = tokio::join!(
+    let (cfg_res, model_idx_res, gen_res, tok_res, pre_res, pool_res, idx_res) = tokio::join!(
       fetch_utf8_capped(client, &config_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
+      fetch_utf8_capped(client, &model_idx_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
       fetch_utf8_capped(client, &gen_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
       fetch_utf8_capped(client, &tok_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
       fetch_utf8_capped(client, &pre_url, endpoint.bearer_token.as_deref(), MAX_CONFIG_BYTES),
@@ -352,7 +355,16 @@ mod imp {
       fetch_utf8_capped(client, &idx_url, endpoint.bearer_token.as_deref(), MAX_INDEX_BYTES),
     );
 
-    let config_json = cfg_res?;
+    let config_json = match cfg_res {
+      Ok(c) => c,
+      Err(cfg_err) => {
+        if let Ok(raw_model_index) = model_idx_res {
+          return fetch_diffusion_pipeline_with_client(client, endpoint, repo_id, &raw_model_index)
+            .await;
+        }
+        return Err(cfg_err);
+      }
+    };
     let generation_json = gen_res.ok();
     let tokenizer_json = tok_res.ok();
     let preprocessor_json = pre_res.ok();
@@ -421,6 +433,106 @@ mod imp {
       }
     }
     out
+  }
+
+  /// 并发拉取 Diffusers 多组件目录（`<slot>/config.json`、`scheduler/scheduler_config.json` 与去噪主干 Safetensors 索引）。
+  async fn fetch_diffusion_pipeline_with_client(
+    client: &reqwest::Client,
+    endpoint: &HubEndpoint,
+    repo_id: &str,
+    raw_model_index: &str,
+  ) -> Result<ModelBlueprint, String> {
+    let (_pipe_cls, slots) = extract_diffusion_slots(raw_model_index)?;
+    let safe_slots: Vec<(String, String)> =
+      slots.into_iter().filter(|(s, _)| is_safe_hub_segment(s)).take(8).collect();
+
+    let denoiser_slot = safe_slots
+      .iter()
+      .find(|(s, c)| {
+        s.starts_with("transformer")
+          || s.starts_with("unet")
+          || c.to_ascii_lowercase().contains("transformer")
+          || c.to_ascii_lowercase().contains("unet")
+      })
+      .map(|(s, _)| s.clone());
+
+    let mut set = tokio::task::JoinSet::new();
+    for (slot, _) in &safe_slots {
+      let rel = if slot == "scheduler" {
+        format!("{slot}/scheduler_config.json")
+      } else {
+        format!("{slot}/config.json")
+      };
+      let url = endpoint.file_url(&rel);
+      let tok = endpoint.bearer_token.clone();
+      let cli = client.clone();
+      let slot_owned = slot.clone();
+      set.spawn(async move {
+        fetch_utf8_capped(&cli, &url, tok.as_deref(), MAX_CONFIG_BYTES)
+          .await
+          .ok()
+          .map(|body| (slot_owned, body))
+      });
+    }
+
+    let mut component_configs: Vec<(String, String)> = Vec::new();
+    while let Some(joined) = set.join_next().await {
+      if let Ok(Some(pair)) = joined {
+        component_configs.push(pair);
+      }
+    }
+
+    // 探测去噪主干子目录的 Safetensors 索引或单文件 Range Header
+    let safetensors = if let Some(ref d_slot) = denoiser_slot {
+      let diff_idx_url =
+        endpoint.file_url(&format!("{d_slot}/diffusion_pytorch_model.safetensors.index.json"));
+      let std_idx_url = endpoint.file_url(&format!("{d_slot}/model.safetensors.index.json"));
+      let (d_idx_res, m_idx_res) = tokio::join!(
+        fetch_utf8_capped(client, &diff_idx_url, endpoint.bearer_token.as_deref(), MAX_INDEX_BYTES),
+        fetch_utf8_capped(client, &std_idx_url, endpoint.bearer_token.as_deref(), MAX_INDEX_BYTES),
+      );
+      if let Ok(raw_idx) = d_idx_res.or(m_idx_res) {
+        if let Ok((total_size, weight_map)) = parse_safetensors_index_json(&raw_idx) {
+          let sub_ep = HubEndpoint {
+            label: endpoint.label,
+            base_resolve_url: format!(
+              "{}/{d_slot}",
+              endpoint.base_resolve_url.trim_end_matches('/')
+            ),
+            bearer_token: endpoint.bearer_token.clone(),
+          };
+          let sample_shards = select_representative_shards(&weight_map);
+          let sampled = sample_shard_headers(client, &sub_ep, &sample_shards).await;
+          Some(summarize_index_and_headers(total_size, &weight_map, &sampled))
+        } else {
+          None
+        }
+      } else {
+        let single_name = "diffusion_pytorch_model.safetensors";
+        let single_url = endpoint.file_url(&format!("{d_slot}/{single_name}"));
+        match fetch_safetensors_header_range(
+          client,
+          &single_url,
+          endpoint.bearer_token.as_deref(),
+          Some(single_name),
+        )
+        .await
+        {
+          Ok(tensors) if !tensors.is_empty() => Some(summarize_single_header(tensors)),
+          _ => None,
+        }
+      }
+    } else {
+      None
+    };
+
+    build_diffusion_pipeline_blueprint(
+      repo_id,
+      endpoint.label,
+      raw_model_index,
+      &component_configs,
+      safetensors,
+    )
   }
 
   /// 流式读取 UTF-8 文本响应，严格限制最大字节数 `max_bytes`。
@@ -653,6 +765,92 @@ mod tests {
     let st = bp.safetensors.expect("safetensors summary parsed via Range");
     assert_eq!(st.total_tensor_count, 2);
     assert!(st.has_qk_norm);
+
+    server_task.abort();
+  }
+
+  #[cfg(feature = "server")]
+  #[tokio::test]
+  async fn fetches_diffusion_pipeline_multi_component_configs_from_local_server() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let header_json = br#"{"transformer_blocks.0.attn.to_q.weight":{"dtype":"BF16","shape":[3072,3072],"data_offsets":[0,18874368]}}"#;
+    let mut st_bytes = Vec::from((header_json.len() as u64).to_le_bytes());
+    st_bytes.extend_from_slice(header_json);
+    st_bytes.extend_from_slice(&vec![0u8; 512]);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server_task = tokio::spawn(async move {
+      loop {
+        let Ok((mut sock, _)) = listener.accept().await else {
+          break;
+        };
+        let st_clone = st_bytes.clone();
+        tokio::spawn(async move {
+          let mut req_buf = [0u8; 2048];
+          let n = sock.read(&mut req_buf).await.unwrap_or(0);
+          let req_str = String::from_utf8_lossy(&req_buf[..n]);
+          let path = req_str.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("");
+
+          let (status, body): (&str, Vec<u8>) = if path.ends_with("/model_index.json") {
+            (
+              "200 OK",
+              br#"{"_class_name":"FluxPipeline","text_encoder":["transformers","CLIPTextModel"],"text_encoder_2":["transformers","T5EncoderModel"],"transformer":["diffusers","FluxTransformer2DModel"],"vae":["diffusers","AutoencoderKL"],"scheduler":["diffusers","FlowMatchEulerDiscreteScheduler"]}"#.to_vec(),
+            )
+          } else if path.ends_with("/text_encoder/config.json") {
+            (
+              "200 OK",
+              br#"{"vocab_size":49408,"hidden_size":768,"intermediate_size":3072,"num_hidden_layers":12}"#.to_vec(),
+            )
+          } else if path.ends_with("/text_encoder_2/config.json") {
+            (
+              "200 OK",
+              br#"{"vocab_size":32128,"d_model":4096,"d_ff":10240,"num_layers":24,"is_gated_act":true}"#.to_vec(),
+            )
+          } else if path.ends_with("/transformer/config.json") {
+            (
+              "200 OK",
+              br#"{"in_channels":64,"num_layers":19,"num_single_layers":38,"attention_head_dim":128,"num_attention_heads":24,"joint_attention_dim":4096}"#.to_vec(),
+            )
+          } else if path.ends_with("/vae/config.json") {
+            ("200 OK", br#"{"latent_channels":16,"block_out_channels":[128,256,512,512]}"#.to_vec())
+          } else if path.ends_with("/scheduler/scheduler_config.json") {
+            ("200 OK", br#"{"num_train_timesteps":1000,"use_dynamic_shifting":true}"#.to_vec())
+          } else if path.ends_with("/transformer/diffusion_pytorch_model.safetensors") {
+            ("206 Partial Content", st_clone)
+          } else {
+            ("404 Not Found", b"not found".to_vec())
+          };
+
+          let resp_head = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+          );
+          let _ = sock.write_all(resp_head.as_bytes()).await;
+          let _ = sock.write_all(&body).await;
+        });
+      }
+    });
+
+    // AGENTS.md Rust HTTP Testing Guidelines: MUST use `.no_proxy()` for loopback test server!
+    let client = reqwest::Client::builder().no_proxy().build().expect("test client");
+    let endpoint = imp::HubEndpoint {
+      label: "TestHub",
+      base_resolve_url: format!("http://{addr}/black-forest-labs/FLUX.1-dev/resolve/main"),
+      bearer_token: None,
+    };
+
+    let bp =
+      imp::fetch_from_endpoint_with_client(&client, &endpoint, "black-forest-labs/FLUX.1-dev")
+        .await
+        .expect("fetch flux pipeline blueprint");
+
+    assert!(bp.is_diffusion_pipeline());
+    assert_eq!(bp.segments.len(), 2);
+    assert!(bp.safetensors.is_some());
 
     server_task.abort();
   }

@@ -10,8 +10,8 @@
 use dioxus::prelude::*;
 
 use crate::arch::{
-  format_count, AttentionSpec, AudioSpec, FfnSpec, InspectorFocus, LayerSegment, ModelBlueprint,
-  OutputHeadSpec, VisionSpec,
+  format_count, AttentionSpec, AudioSpec, DiffusionPipelineSpec, FfnSpec, InspectorFocus,
+  LayerSegment, ModelBlueprint, OutputHeadSpec, VisionSpec,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +41,7 @@ pub fn MacroArchitectureFlow(
   let mut preset_mode = use_signal(|| FlowDensityPreset::Standard);
   let mut expand_vision = use_signal(|| false);
   let mut expand_audio = use_signal(|| false);
+  let mut expand_conditioners = use_signal(|| true);
   let mut expanded_segments =
     use_signal(|| (0..seg_count).map(|idx| idx == default_active_idx).collect::<Vec<bool>>());
   let mut expand_inline_attn = use_signal(|| false);
@@ -59,6 +60,7 @@ pub fn MacroArchitectureFlow(
       FlowDensityPreset::Compact => {
         expand_vision.set(false);
         expand_audio.set(false);
+        expand_conditioners.set(false);
         expanded_segments.set(vec![false; seg_count]);
         expand_inline_attn.set(false);
         expand_inline_ffn.set(false);
@@ -68,6 +70,7 @@ pub fn MacroArchitectureFlow(
       FlowDensityPreset::Standard => {
         expand_vision.set(false);
         expand_audio.set(false);
+        expand_conditioners.set(true);
         expanded_segments.set((0..seg_count).map(|i| i == default_active_idx).collect());
         expand_inline_attn.set(false);
         expand_inline_ffn.set(false);
@@ -77,6 +80,7 @@ pub fn MacroArchitectureFlow(
       FlowDensityPreset::Expanded => {
         expand_vision.set(true);
         expand_audio.set(true);
+        expand_conditioners.set(true);
         expanded_segments.set(vec![true; seg_count]);
         expand_inline_attn.set(true);
         expand_inline_ffn.set(true);
@@ -245,43 +249,120 @@ pub fn MacroArchitectureFlow(
         }
       }
 
-      if blueprint.vision.is_some() && blueprint.audio.is_some() {
-        VerticalArrow { label: "vision_embeds + audio_embeds + text_tokens" }
-      } else if blueprint.vision.is_some() {
-        VerticalArrow { label: "image_embeds + text_tokens" }
-      } else if blueprint.audio.is_some() {
-        VerticalArrow { label: "audio_features + decoder_tokens" }
-      } else {
-        // 纯文本模型输入胶囊
-        div { class: "px-3.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs font-mono text-slate-600 dark:text-slate-300",
-          "input_ids : int64 [B, S]"
-        }
-        VerticalArrow { label: "" }
-      }
+      if let Some(ref diff) = blueprint.diffusion {
+        // 0C. 扩散/流匹配管线：可折叠多编码器语义条件 + 潜空间噪声采样与块化入口
+        {
+          let conds: Vec<_> = diff.components.iter().filter(|c| c.role == "conditioner").collect();
+          rsx! {
+            if !conds.is_empty() {
+              div { class: "w-full mb-1.5 rounded-xl border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/40 dark:bg-emerald-950/20 p-2.5",
+                div { class: "flex items-center justify-between gap-2",
+                  button {
+                    r#type: "button",
+                    class: "flex items-center gap-1.5 text-left text-xs font-bold text-emerald-700 dark:text-emerald-300 cursor-pointer",
+                    onclick: move |_| {
+                      expand_conditioners.set(!expand_conditioners());
+                      on_select_focus.call(InspectorFocus::Embedding);
+                    },
+                    span { class: "font-mono text-[11px]",
+                      if expand_conditioners() { "▾" } else { "▸" }
+                    }
+                    span { "Prompt Conditioners (×{conds.len()})" }
+                  }
+                  div { class: "flex items-center gap-1.5",
+                    span { class: "text-[11px] font-mono text-emerald-700 dark:text-emerald-300",
+                      "{format_count(blueprint.params.embedding)}"
+                    }
+                    button {
+                      r#type: "button",
+                      class: "px-1.5 py-0.5 rounded text-[10px] font-medium bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 cursor-pointer",
+                      onclick: move |_| expand_conditioners.set(!expand_conditioners()),
+                      if expand_conditioners() { "收起" } else { "展开" }
+                    }
+                  }
+                }
+                if expand_conditioners() {
+                  div { class: "mt-2 space-y-1.5 border-t border-emerald-200/70 dark:border-emerald-900/60 pt-2",
+                    for c in conds {
+                      button {
+                        key: "{c.slot}",
+                        r#type: "button",
+                        class: "w-full text-left rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 hover:border-emerald-400 cursor-pointer",
+                        onclick: move |_| on_select_focus.call(InspectorFocus::Embedding),
+                        div { class: "flex items-center justify-between text-[11px] font-mono",
+                          span { class: "font-bold text-slate-900 dark:text-white", "{c.slot}: {c.class_name}" }
+                          span { class: "text-emerald-600 dark:text-emerald-400", "{format_count(c.estimated_params)}" }
+                        }
+                        div { class: "text-[10px] font-mono text-slate-500 dark:text-slate-400", "{c.spec_summary}" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
 
-      // 1. Token Embedding 节点
-      button {
-        r#type: "button",
-        class: card_cls(InspectorFocus::Embedding),
-        onclick: move |_| on_select_focus.call(InspectorFocus::Embedding),
-        div { class: "flex items-center justify-between gap-2",
-          span { class: "text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400",
-            if blueprint.vision.is_some() || blueprint.audio.is_some() {
-              "Token Embedding & Multimodal Fusion"
-            } else {
-              "Token Embedding"
+            button {
+              r#type: "button",
+              class: card_cls(InspectorFocus::Embedding),
+              onclick: move |_| on_select_focus.call(InspectorFocus::Embedding),
+              div { class: "flex items-center justify-between gap-2",
+                span { class: "text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400",
+                  "Latent Noise & Scheduler Loop"
+                }
+                span { class: "text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 dark:text-indigo-300",
+                  "Iterative ODE/SDE"
+                }
+              }
+              div { class: "mt-1 text-xs font-semibold text-slate-900 dark:text-white font-mono",
+                "z_T : {diff.default_latent_shape} · {diff.patch_summary}"
+              }
+              div { class: "mt-0.5 text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                "{diff.scheduler_summary}"
+              }
+            }
+
+            VerticalArrow { label: &format!("z_t + prompt_embeds : [B, S_lat, {d}]") }
+          }
+        }
+      } else {
+        if blueprint.vision.is_some() && blueprint.audio.is_some() {
+          VerticalArrow { label: "vision_embeds + audio_embeds + text_tokens" }
+        } else if blueprint.vision.is_some() {
+          VerticalArrow { label: "image_embeds + text_tokens" }
+        } else if blueprint.audio.is_some() {
+          VerticalArrow { label: "audio_features + decoder_tokens" }
+        } else {
+          // 纯文本模型输入胶囊
+          div { class: "px-3.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs font-mono text-slate-600 dark:text-slate-300",
+            "input_ids : int64 [B, S]"
+          }
+          VerticalArrow { label: "" }
+        }
+
+        // 1. Token Embedding 节点
+        button {
+          r#type: "button",
+          class: card_cls(InspectorFocus::Embedding),
+          onclick: move |_| on_select_focus.call(InspectorFocus::Embedding),
+          div { class: "flex items-center justify-between gap-2",
+            span { class: "text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400",
+              if blueprint.vision.is_some() || blueprint.audio.is_some() {
+                "Token Embedding & Multimodal Fusion"
+              } else {
+                "Token Embedding"
+              }
+            }
+            span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+              "{format_count(blueprint.params.embedding)}"
             }
           }
-          span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
-            "{format_count(blueprint.params.embedding)}"
+          div { class: "mt-1 text-sm font-semibold text-slate-900 dark:text-white font-mono",
+            "embed_tokens [{v}, {d}]"
           }
         }
-        div { class: "mt-1 text-sm font-semibold text-slate-900 dark:text-white font-mono",
-          "embed_tokens [{v}, {d}]"
-        }
-      }
 
-      VerticalArrow { label: &format!("h_0 : [B, S, {d}]") }
+        VerticalArrow { label: &format!("h_0 : [B, S, {d}]") }
+      }
 
       // 2. 纵向逐段渲染所有 Transformer 层段（每段均可独立收起为摘要胶囊或展开内部双残差流）
       for (seg_idx, seg) in blueprint.segments.iter().cloned().enumerate() {
@@ -474,7 +555,11 @@ pub fn MacroArchitectureFlow(
                       },
                       div { class: "flex items-center justify-between text-xs",
                         span { class: "font-semibold text-slate-700 dark:text-slate-200 font-mono",
-                          "input_layernorm (RMSNorm)"
+                          if blueprint.is_diffusion_pipeline() {
+                            "AdaLN-Zero Norm #1 (t_emb)"
+                          } else {
+                            "input_layernorm (RMSNorm)"
+                          }
                         }
                         span { class: "font-mono text-[11px] text-slate-400", "[{d}]" }
                       }
@@ -488,19 +573,33 @@ pub fn MacroArchitectureFlow(
                         },
                         div { class: "flex items-center justify-between gap-2",
                           span { class: "text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400",
-                            match seg.attention {
-                              AttentionSpec::LinearRecurrent { .. } => "Linear Attention / SSM Mixer",
-                              AttentionSpec::StandardGqa { is_causal: false, .. } => "Bidirectional Self-Attention",
-                              AttentionSpec::StandardGqa { has_cross_attn: true, .. } => "Causal + Cross-Attention",
-                              _ => "Self-Attention",
+                            if blueprint.is_diffusion_pipeline() {
+                              if matches!(seg.attention, AttentionSpec::StandardGqa { has_cross_attn: true, .. }) {
+                                "Self + Prompt Cross-Attention"
+                              } else {
+                                "Joint / Bidirectional MM-Attention"
+                              }
+                            } else {
+                              match seg.attention {
+                                AttentionSpec::LinearRecurrent { .. } => "Linear Attention / SSM Mixer",
+                                AttentionSpec::StandardGqa { is_causal: false, .. } => "Bidirectional Self-Attention",
+                                AttentionSpec::StandardGqa { has_cross_attn: true, .. } => "Causal + Cross-Attention",
+                                _ => "Self-Attention",
+                              }
                             }
                           }
                           div { class: "flex items-center gap-1.5",
                             span { class: "px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 text-[10px] font-mono font-semibold",
-                              match seg.attention {
-                                AttentionSpec::LinearRecurrent { .. } => "O(1) State".to_string(),
-                                AttentionSpec::StandardGqa { is_causal: false, .. } => "0 KV (Single-Pass)".to_string(),
-                                _ => format!("KV ÷{:.1}×", seg.attention.kv_compression_ratio()),
+                              {
+                                if blueprint.is_diffusion_pipeline() {
+                                  "0 KV (Iterative)".to_string()
+                                } else {
+                                  match seg.attention {
+                                    AttentionSpec::LinearRecurrent { .. } => "O(1) State".to_string(),
+                                    AttentionSpec::StandardGqa { is_causal: false, .. } => "0 KV (Single-Pass)".to_string(),
+                                    _ => format!("KV ÷{:.1}×", seg.attention.kv_compression_ratio()),
+                                  }
+                                }
                               }
                             }
                             button {
@@ -791,6 +890,32 @@ pub fn MacroArchitectureFlow(
                 format!("waveform : pcm_f32 [B, T_wav] @ {sr_k}kHz"),
               )
             }
+            OutputHeadSpec::LatentDecoder {
+              vae_class,
+              latent_channels,
+              spatial_compression,
+              temporal_compression,
+              is_video,
+              estimated_params,
+            } => {
+              let comp_ratio = if *is_video && *temporal_compression > 1 {
+                format!("{temporal_compression}×{spatial_compression}×{spatial_compression}")
+              } else {
+                format!("{spatial_compression}×{spatial_compression}")
+              };
+              let media_out = if *is_video {
+                "video : rgb_f16 [B, F, 3, H, W]"
+              } else {
+                "image : rgb_f16 [B, 3, H, W]"
+              };
+              (
+                format!("Output Stage (Unpatchify + {vae_class})"),
+                "Latent Unpatchify & VAE Decoder",
+                format!("Unpatchify → {vae_class} ({latent_channels}ch, ×{comp_ratio})"),
+                format_count(*estimated_params),
+                media_out.to_string(),
+              )
+            }
           };
 
         if !expand_output_stage() {
@@ -859,7 +984,11 @@ pub fn MacroArchitectureFlow(
                 onclick: move |_| on_select_focus.call(InspectorFocus::NormAndResidual),
                 div { class: "flex items-center justify-between text-xs",
                   span { class: "font-semibold text-slate-800 dark:text-slate-100 font-mono",
-                    "Final Norm (RMSNorm / LayerNorm)"
+                    if blueprint.is_diffusion_pipeline() {
+                      "AdaLN-Zero Final Modulation & Norm"
+                    } else {
+                      "Final Norm (RMSNorm / LayerNorm)"
+                    }
                   }
                   span { class: "font-mono text-slate-500 dark:text-slate-400", "[{d}]" }
                 }
@@ -1235,6 +1364,7 @@ pub fn MicroSubgraphDiagram(
         tied: blueprint.tie_word_embeddings,
         eps: blueprint.rms_norm_eps.unwrap_or(1e-6),
         output_head: blueprint.output_head.clone(),
+        diffusion: blueprint.diffusion.clone(),
       }
     },
     InspectorFocus::LmHead => rsx! {
@@ -1245,6 +1375,7 @@ pub fn MicroSubgraphDiagram(
         tied: blueprint.tie_word_embeddings,
         eps: blueprint.rms_norm_eps.unwrap_or(1e-6),
         output_head: blueprint.output_head.clone(),
+        diffusion: blueprint.diffusion.clone(),
       }
     },
     InspectorFocus::NormAndResidual => rsx! {
@@ -1255,6 +1386,7 @@ pub fn MicroSubgraphDiagram(
         tied: blueprint.tie_word_embeddings,
         eps: blueprint.rms_norm_eps.unwrap_or(1e-6),
         output_head: blueprint.output_head.clone(),
+        diffusion: blueprint.diffusion.clone(),
       }
     },
     InspectorFocus::MtpHead => rsx! {
@@ -1265,6 +1397,7 @@ pub fn MicroSubgraphDiagram(
         tied: blueprint.tie_word_embeddings,
         eps: blueprint.rms_norm_eps.unwrap_or(1e-6),
         output_head: blueprint.output_head.clone(),
+        diffusion: blueprint.diffusion.clone(),
       }
     },
   }
@@ -1961,18 +2094,41 @@ fn EndpointSubgraphSvg(
   tied: bool,
   eps: f64,
   output_head: OutputHeadSpec,
+  diffusion: Option<DiffusionPipelineSpec>,
 ) -> Element {
   let (title, box1, box2, foot) = match mode.as_str() {
-    "embedding" => (
-      "Token Embedding Lookup",
-      format!("Table Weight W_emb : [{vocab_size}, {hidden_size}]"),
-      format!("Gather(W_emb, input_ids) → h_0 : [B, S, {hidden_size}]"),
-      if tied {
-        "Weight Tied: 与末端输出投影共享同一份 [V, D] 参数矩阵，节省一倍词表显存".to_string()
+    "embedding" => {
+      if let Some(ref diff) = diffusion {
+        let conds: Vec<&str> = diff
+          .components
+          .iter()
+          .filter(|c| c.role == "conditioner")
+          .map(|c| c.class_name.as_str())
+          .collect();
+        let cond_lbl =
+          if conds.is_empty() { "Prompt Text Encoder".to_string() } else { conds.join(" + ") };
+        (
+          "Multi-Encoder Prompt Conditioning & Patchify Stem",
+          format!("{cond_lbl} → Context Embeds + Pooled Guidance"),
+          format!(
+            "Latent {} + {} → z_t : [B, S_lat, {hidden_size}]",
+            diff.default_latent_shape, diff.patch_summary
+          ),
+          format!("采样调度器：{} · 文本编码器在去噪循环外仅单次前向执行", diff.scheduler_summary),
+        )
       } else {
-        "Untied Embeddings: 与末端输出层独立存储参数".to_string()
-      },
-    ),
+        (
+          "Token Embedding Lookup",
+          format!("Table Weight W_emb : [{vocab_size}, {hidden_size}]"),
+          format!("Gather(W_emb, input_ids) → h_0 : [B, S, {hidden_size}]"),
+          if tied {
+            "Weight Tied: 与末端输出投影共享同一份 [V, D] 参数矩阵，节省一倍词表显存".to_string()
+          } else {
+            "Untied Embeddings: 与末端输出层独立存储参数".to_string()
+          },
+        )
+      }
+    }
     "lm_head" => match output_head {
       OutputHeadSpec::CausalLmHead => (
         "LM Head Vocabulary Projection",
@@ -2016,6 +2172,30 @@ fn EndpointSubgraphSvg(
         format!("{codec_summary} → Waveform PCM @ {} kHz", sampling_rate_hz / 1000),
         "将离散语音 Codec Token 流还原为高保真连续音频波形，支持流式分块声码合成".to_string(),
       ),
+      OutputHeadSpec::LatentDecoder {
+        vae_class,
+        latent_channels,
+        spatial_compression,
+        temporal_compression,
+        is_video,
+        ..
+      } => (
+        "Latent Unpatchify & Spatial/3D VAE Decoder",
+        format!(
+          "Proj_Out [{hidden_size}] + Unpatchify → Denoised Latent z_0 [{latent_channels}ch]"
+        ),
+        if is_video {
+          format!(
+            "{vae_class}.decode(z_0) [×{temporal_compression}T, ×{spatial_compression}H, ×{spatial_compression}W] → RGB Video"
+          )
+        } else {
+          format!(
+            "{vae_class}.decode(z_0) [×{spatial_compression}H, ×{spatial_compression}W] → RGB Image"
+          )
+        },
+        "多步迭代去噪仅在低维潜空间执行，末端仅调用一次 VAE 解码器还原像素空间图像或视频帧"
+          .to_string(),
+      ),
     },
     "mtp" => (
       "Multi-Token Prediction (MTP Speculative Module)",
@@ -2031,12 +2211,25 @@ fn EndpointSubgraphSvg(
       "纯 Mamba / Mamba-2 将门控激活内融合进 SSM 投影支路，无需额外独立 3 矩阵 SwiGLU 子层"
         .to_string(),
     ),
-    _ => (
-      "Pre-Norm RMSNorm & Residual Stream",
-      format!("RMS(x) = sqrt(mean(x²) + {eps:.0e}),  γ : [{hidden_size}]"),
-      format!("y = (x / RMS(x)) ⊙ γ → [B, S, {hidden_size}]"),
-      "相比 LayerNorm 省略均值中心化与 β 偏置，减少约 30% 归一化访存开销并稳定深层梯度".to_string(),
-    ),
+    _ => {
+      if diffusion.is_some() {
+        (
+          "AdaLN-Zero Timestep & Guidance Modulation",
+          format!("SiLU(MLP(t_emb + y_pool)) → [γ, β, α] : [B, {hidden_size}]"),
+          "y = (1 + γ(t)) ⊙ LayerNorm(x) + β(t),  h' = x + α(t) ⊙ SubLayer(y)".to_string(),
+          "扩散 Transformer 通过自适应层归一化 (AdaLN-Zero) 将连续时间步 t 与全局条件注入每层残差流"
+            .to_string(),
+        )
+      } else {
+        (
+          "Pre-Norm RMSNorm & Residual Stream",
+          format!("RMS(x) = sqrt(mean(x²) + {eps:.0e}),  γ : [{hidden_size}]"),
+          format!("y = (x / RMS(x)) ⊙ γ → [B, S, {hidden_size}]"),
+          "相比 LayerNorm 省略均值中心化与 β 偏置，减少约 30% 归一化访存开销并稳定深层梯度"
+            .to_string(),
+        )
+      }
+    }
   };
 
   rsx! {

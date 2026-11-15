@@ -88,7 +88,11 @@ impl ModelModality {
     match bp.family {
       ArchFamily::AudioAsr | ArchFamily::SpeechTtsOmni => return Self::Audio,
       ArchFamily::EncoderEmbedding => return Self::Embedding,
+      ArchFamily::DiffusionPipeline => return Self::Diffusion,
       _ => {}
+    }
+    if bp.diffusion.is_some() {
+      return Self::Diffusion;
     }
     if bp.vision.is_some() {
       return Self::Vlm;
@@ -156,6 +160,7 @@ pub struct CuratedModelUpsertInput {
   pub highlights: Vec<String>,
   pub highlights_en: Vec<String>,
   pub readme_md: Option<String>,
+  #[serde(with = "crate::arch::blueprint_wire")]
   pub blueprint: ModelBlueprint,
 }
 
@@ -366,6 +371,88 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
   let mut tags = Vec::new();
   if modality != ModelModality::Llm {
     tags.push(modality.as_str().to_string());
+  }
+  if let Some(ref diff) = bp.diffusion {
+    tags.push(if diff.denoiser_kind.contains("UNet") { "unet" } else { "dit" }.to_string());
+    tags.push(if diff.is_video { "video-gen" } else { "image-gen" }.to_string());
+    if diff.scheduler_summary.to_ascii_lowercase().contains("flow") {
+      tags.push("flow-matching".to_string());
+    }
+
+    let media_zh = if diff.is_video { "视频" } else { "图像" };
+    let media_en = if diff.is_video { "video" } else { "image" };
+    let conds: Vec<String> = diff
+      .components
+      .iter()
+      .filter(|c| c.role == "conditioner")
+      .map(|c| format!("{} ({})", c.class_name, format_count(c.estimated_params)))
+      .collect();
+    let cond_str = if conds.is_empty() { "Text Encoder".to_string() } else { conds.join(" + ") };
+    let vae_ratio = if diff.is_video && diff.temporal_compression > 1 {
+      format!(
+        "{}×{}×{} 时空压缩",
+        diff.temporal_compression, diff.spatial_compression, diff.spatial_compression
+      )
+    } else {
+      format!("{}×{} 空间压缩", diff.spatial_compression, diff.spatial_compression)
+    };
+
+    let summary = format!(
+      "{vendor} 开源多组件{media_zh}生成管线（{}）：全管线常驻参数 {total_str}（去噪主干单步激活 {active_str}），采用 {} 层 × {} 维 {} 与 {}。",
+      diff.pipeline_class, bp.num_hidden_layers, bp.hidden_size, diff.denoiser_kind, diff.scheduler_summary
+    );
+    let summary_en = format!(
+      "{vendor} multi-component {media_en} generation pipeline ({}): {total_str} total pipeline params ({active_str} active denoiser), featuring a {}L × {}d {} with {}.",
+      diff.pipeline_class, bp.num_hidden_layers, bp.hidden_size, diff.denoiser_kind, diff.scheduler_summary
+    );
+    let highlights = vec![
+      format!(
+        "多编码器语义条件与采样调度：{cond_str} 提供语义引导，配合 {} 在潜空间 `{}` 上迭代去噪。",
+        diff.scheduler_summary, diff.default_latent_shape
+      ),
+      format!(
+        "去噪主干拓扑：{}（{} 层 × {} 维，{}，块化 {}），单步前向激活 {active_str} 参数且持久 KV Cache 为 0 B。",
+        diff.denoiser_kind, bp.num_hidden_layers, bp.hidden_size, attn_short, diff.patch_summary
+      ),
+      format!(
+        "潜空间编解码器（VAE）：{} 通道潜表征，{}，仅在迭代去噪结束后执行一次像素空间解码。",
+        diff.latent_channels, vae_ratio
+      ),
+    ];
+    let highlights_en = vec![
+      format!(
+        "Conditioning & Scheduler: {cond_str} paired with {} over latent `{}`.",
+        diff.scheduler_summary, diff.default_latent_shape
+      ),
+      format!(
+        "Denoiser Backbone: {} ({}L × {}d, {}, {}), activating {active_str} per step with 0 B KV cache.",
+        diff.denoiser_kind, bp.num_hidden_layers, bp.hidden_size, attn_short, diff.patch_summary
+      ),
+      format!(
+        "Latent VAE Codec: {}-channel latent space ({}x spatial, {}x temporal compression).",
+        diff.latent_channels, diff.spatial_compression, diff.temporal_compression
+      ),
+    ];
+
+    return CuratedModelUpsertInput {
+      slug,
+      name,
+      vendor,
+      modality,
+      series,
+      release_date: String::new(),
+      hf_repo: repo_id,
+      ms_repo: None,
+      featured: false,
+      order: 50,
+      summary,
+      summary_en,
+      tags,
+      highlights,
+      highlights_en,
+      readme_md: None,
+      blueprint: bp.clone(),
+    };
   }
   if bp.has_moe() {
     tags.push("moe".to_string());
@@ -1402,5 +1489,22 @@ mod tests {
     assert!(b_draft.tags.contains(&"embedding".to_string()));
     assert!(b_draft.tags.contains(&"bidirectional".to_string()));
     assert!(validate_upsert_input(b_draft).is_ok());
+
+    let flux_bp = crate::arch::build_diffusion_pipeline_blueprint(
+      "black-forest-labs/FLUX.1-dev",
+      "HuggingFace",
+      r#"{"_class_name":"FluxPipeline","text_encoder":["transformers","CLIPTextModel"],"text_encoder_2":["transformers","T5EncoderModel"],"transformer":["diffusers","FluxTransformer2DModel"],"vae":["diffusers","AutoencoderKL"],"scheduler":["diffusers","FlowMatchEulerDiscreteScheduler"]}"#,
+      &[(
+        "transformer".to_string(),
+        r#"{"_class_name":"FluxTransformer2DModel","num_layers":19,"num_single_layers":38,"num_attention_heads":24,"attention_head_dim":128,"in_channels":64,"patch_size":1}"#.to_string(),
+      )],
+      None,
+    )
+    .expect("flux");
+    let f_draft = draft_from_blueprint(&flux_bp);
+    assert_eq!(f_draft.modality, ModelModality::Diffusion);
+    assert!(f_draft.tags.contains(&"diffusion".to_string()));
+    assert!(f_draft.tags.contains(&"dit".to_string()));
+    assert!(validate_upsert_input(f_draft).is_ok());
   }
 }
