@@ -14,6 +14,10 @@ use crate::arch::{
   build_model_blueprint, format_bytes_iec, format_count, load_builtin_preset, recommend_gpu_tier,
   InspectorFocus, ModelBlueprint, PrecisionPreset, BUILTIN_PRESETS,
 };
+#[cfg(feature = "accounts")]
+use crate::atlas::{current_user_is_admin, SaveToAtlasModal};
+#[cfg(feature = "accounts")]
+use crate::atlas_store::{draft_from_blueprint, CuratedModelUpsertInput};
 use crate::diagram::{MacroArchitectureFlow, MicroSubgraphDiagram};
 use crate::safetensors_meta::{
   parse_safetensors_index_json, summarize_index_and_headers, TensorPatternEntry,
@@ -49,6 +53,75 @@ pub fn AiVisualizerPage() -> Element {
   let mut show_json_drawer = use_signal(|| false);
   let mut raw_cfg_input = use_signal(String::new);
   let mut raw_idx_input = use_signal(String::new);
+  #[cfg(feature = "accounts")]
+  let mut save_modal_draft: Signal<Option<CuratedModelUpsertInput>> = use_signal(|| None);
+  #[cfg(feature = "accounts")]
+  let mut saved_slug_banner: Signal<Option<String>> = use_signal(|| None);
+
+  #[cfg(feature = "accounts")]
+  let admin_save_btn = if current_user_is_admin() {
+    if let Some(bp_cur) = blueprint() {
+      rsx! {
+        Button {
+          size: ButtonSize::Sm,
+          onclick: move |_| {
+            let mut draft = draft_from_blueprint(&bp_cur);
+            let r_trim = repo_input().trim().to_string();
+            if draft.hf_repo.starts_with("custom/") && r_trim.contains('/') {
+              draft.hf_repo = r_trim;
+            }
+            save_modal_draft.set(Some(draft));
+          },
+          {lang.pick("＋ 收录到模型图鉴", "+ Save to Model Atlas")}
+        }
+      }
+    } else {
+      rsx! {}
+    }
+  } else {
+    rsx! {}
+  };
+  #[cfg(not(feature = "accounts"))]
+  let admin_save_btn = rsx! {};
+
+  #[cfg(feature = "accounts")]
+  let admin_saved_banner = if let Some(saved_slug) = saved_slug_banner() {
+    rsx! {
+      div { class: "mt-3 rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50 dark:bg-emerald-950/40 px-3.5 py-2.5 text-xs text-emerald-800 dark:text-emerald-300 flex flex-wrap items-center justify-between gap-2",
+        span {
+          {lang.pick("已成功保存并发布至模型架构图鉴：", "Published to Model Atlas: ")}
+          span { class: "font-mono font-bold", "/models/{saved_slug}" }
+        }
+        Link {
+          to: format!("/models/{saved_slug}"),
+          class: "font-bold underline hover:opacity-80",
+          {lang.pick("前往查看图鉴详情页 →", "Open Curated Page →")}
+        }
+      }
+    }
+  } else {
+    rsx! {}
+  };
+  #[cfg(not(feature = "accounts"))]
+  let admin_saved_banner = rsx! {};
+
+  #[cfg(feature = "accounts")]
+  let admin_modal_el = if let Some(draft) = save_modal_draft() {
+    rsx! {
+      SaveToAtlasModal {
+        initial_draft: Some(draft),
+        on_close: move |_| save_modal_draft.set(None),
+        on_saved: move |slug: String| {
+          save_modal_draft.set(None);
+          saved_slug_banner.set(Some(slug));
+        },
+      }
+    }
+  } else {
+    rsx! {}
+  };
+  #[cfg(not(feature = "accounts"))]
+  let admin_modal_el = rsx! {};
 
   // 客户端水合后解析 URL 查询参数（例如从文章嵌入卡片点击「打开完整工作台 ↗」跳转过来）
   use_effect(move || {
@@ -170,7 +243,8 @@ pub fn AiVisualizerPage() -> Element {
             }
           }
 
-          div { class: "flex items-center gap-2",
+          div { class: "flex flex-wrap items-center gap-2",
+            {admin_save_btn}
             Button {
               variant: ButtonVariant::Outline,
               size: ButtonSize::Sm,
@@ -334,7 +408,10 @@ pub fn AiVisualizerPage() -> Element {
               "{err}"
             }
           }
+          {admin_saved_banner}
         }
+
+        {admin_modal_el}
 
         // 主可视化工作台
         if let Some(bp) = blueprint() {
@@ -1104,7 +1181,7 @@ fn TensorPatternTable(items: Vec<TensorPatternEntry>) -> Element {
   }
 }
 
-fn clean_server_err(raw: &str) -> String {
+pub(crate) fn clean_server_err(raw: &str) -> String {
   raw.strip_prefix("error running server function: ").unwrap_or(raw).to_string()
 }
 

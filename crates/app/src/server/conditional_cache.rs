@@ -263,7 +263,8 @@ fn probe_source_stamp(path: &str) -> u128 {
     }
   } else if path == "/models" || path.starts_with("/models/") {
     let models_root = module_ai::atlas::resolve_models_root();
-    let dir_stamp = mtime_nanos(&models_root);
+    let dir_stamp = mtime_nanos(&models_root)
+      ^ u128::from(module_ai::atlas_store::atlas_db_stamp()).wrapping_mul(2_654_435_761);
     if let Some(slug) = path.strip_prefix("/models/").filter(|s| !s.is_empty() && !s.contains(".."))
     {
       let mdir = models_root.join(slug);
