@@ -272,6 +272,8 @@ fn probe_source_stamp(path: &str) -> u128 {
         mdir.join("model.yaml"),
         mdir.join("model.yml"),
         mdir.join("config.json"),
+        mdir.join("preprocessor_config.json"),
+        mdir.join("pooling_config.json"),
         mdir.join("README.md"),
       ]);
       dir_stamp.wrapping_mul(1_000_003) ^ leaf_stamp

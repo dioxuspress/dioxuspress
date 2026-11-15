@@ -19,11 +19,11 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(any(feature = "server", feature = "accounts", test))]
 use crate::arch::AttentionSpec;
-use crate::arch::ModelBlueprint;
 #[cfg(any(feature = "server", test))]
 use crate::arch::PrecisionPreset;
 #[cfg(any(feature = "server", feature = "accounts", test))]
-use crate::arch::{format_count, ArchFamily, FfnSpec};
+use crate::arch::{format_count, FfnSpec, OutputHeadSpec};
+use crate::arch::{ArchFamily, ModelBlueprint};
 #[cfg(any(feature = "server", test))]
 use crate::atlas::CuratedModelDetail;
 #[cfg(any(feature = "server", feature = "accounts", test))]
@@ -85,8 +85,16 @@ impl ModelModality {
 
   /// 从已解析的 `ModelBlueprint` 自动推断模态（当 YAML 或表单未显式指定时兜底）。
   pub fn infer_from_blueprint(bp: &ModelBlueprint) -> Self {
+    match bp.family {
+      ArchFamily::AudioAsr | ArchFamily::SpeechTtsOmni => return Self::Audio,
+      ArchFamily::EncoderEmbedding => return Self::Embedding,
+      _ => {}
+    }
     if bp.vision.is_some() {
       return Self::Vlm;
+    }
+    if bp.audio.is_some() {
+      return Self::Audio;
     }
     let joined = format!("{} {}", bp.architectures.join(" "), bp.model_type).to_ascii_lowercase();
     if joined.contains("whisper")
@@ -366,15 +374,24 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
   }
   match main_seg.map(|s| &s.attention) {
     Some(AttentionSpec::DeepSeekMla { .. }) => tags.push("mla".to_string()),
+    Some(AttentionSpec::LinearRecurrent { .. }) => {
+      tags.push("ssm".to_string());
+      tags.push("linear-attn".to_string());
+    }
     Some(AttentionSpec::StandardGqa {
       qk_norm,
       nope_layer_interval,
       sliding_window_pattern,
+      is_causal,
+      has_cross_attn,
       ..
     }) => {
-      tags.push("gqa".to_string());
+      tags.push(if *is_causal { "gqa" } else { "bidirectional" }.to_string());
       if *qk_norm {
         tags.push("qk-norm".to_string());
+      }
+      if *has_cross_attn {
+        tags.push("cross-attn".to_string());
       }
       if nope_layer_interval.is_some() {
         tags.push("irope".to_string());
@@ -384,6 +401,9 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
       }
     }
     None => {}
+  }
+  if bp.has_linear_recurrent() && !tags.iter().any(|t| t == "ssm") {
+    tags.push("ssm".to_string());
   }
   if bp.num_nextn_predict_layers > 0 {
     tags.push("mtp".to_string());
@@ -403,30 +423,66 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
     format!("{total_str} dense architecture")
   };
 
-  let vision_prefix_zh = if let Some(ref v) = bp.vision {
-    format!("融合 {} 层视觉编码塔（{}d）与 ", v.num_hidden_layers, v.hidden_size)
-  } else {
-    String::new()
+  let mm_prefix_zh = match (&bp.vision, &bp.audio) {
+    (Some(v), Some(a)) => format!(
+      "融合 {} 层视觉塔与 {} 层声学塔（{} Mel @ {}kHz）的全模态 ",
+      v.num_hidden_layers,
+      a.num_layers,
+      a.num_mel_bins,
+      a.sampling_rate_hz / 1000
+    ),
+    (Some(v), None) => {
+      format!("融合 {} 层视觉编码塔（{}d）与 ", v.num_hidden_layers, v.hidden_size)
+    }
+    (None, Some(a)) => format!(
+      "配备 {} 层声学编码器（{} Mel @ {}kHz）与 ",
+      a.num_layers,
+      a.num_mel_bins,
+      a.sampling_rate_hz / 1000
+    ),
+    (None, None) => String::new(),
   };
-  let vision_prefix_en = if let Some(ref v) = bp.vision {
-    format!("Integrates a {}L vision encoder ({}d) with a ", v.num_hidden_layers, v.hidden_size)
+  let mm_prefix_en = match (&bp.vision, &bp.audio) {
+    (Some(v), Some(a)) => format!(
+      "Integrates {}L vision + {}L audio ({} Mel) towers with a ",
+      v.num_hidden_layers, a.num_layers, a.num_mel_bins
+    ),
+    (Some(v), None) => {
+      format!("Integrates a {}L vision encoder ({}d) with a ", v.num_hidden_layers, v.hidden_size)
+    }
+    (None, Some(a)) => format!(
+      "Pairs a {}L audio encoder ({} Mel @ {}kHz) with a ",
+      a.num_layers,
+      a.num_mel_bins,
+      a.sampling_rate_hz / 1000
+    ),
+    (None, None) => "Features a ".to_string(),
+  };
+
+  let ctx_label_zh = if ctx_k >= 1 {
+    format!("{ctx_k}K 上下文")
   } else {
-    "Features a ".to_string()
+    format!("{} 序列窗口", bp.max_position_embeddings)
+  };
+  let ctx_label_en = if ctx_k >= 1 {
+    format!("{ctx_k}K max context")
+  } else {
+    format!("{}-token window", bp.max_position_embeddings)
   };
 
   let summary = format!(
-    "{vendor} 开源旗舰模型，采用{vision_prefix_zh}{param_desc_zh}：{} 层 × {} 维主干，搭载 {attn_short} 与 {ffn_short}，原生支持 {ctx_k}K 上下文。",
+    "{vendor} 开源模型，采用{mm_prefix_zh}{param_desc_zh}：{} 层 × {} 维主干，搭载 {attn_short} 与 {ffn_short}，支持 {ctx_label_zh}。",
     bp.num_hidden_layers, bp.hidden_size
   );
   let summary_en = format!(
-    "{vision_prefix_en}{param_desc_en} by {vendor}: {}L × {}d backbone with {attn_short}, {ffn_short}, and {ctx_k}K max context.",
+    "{mm_prefix_en}{param_desc_en} by {vendor}: {}L × {}d backbone with {attn_short}, {ffn_short}, and {ctx_label_en}.",
     bp.num_hidden_layers, bp.hidden_size
   );
 
   let mut highlights = Vec::new();
   let mut highlights_en = Vec::new();
 
-  // 亮点 1：注意力机制与 KV 压缩效率
+  // 亮点 1：注意力 / 线性状态空间机制与推理缓存效率
   if let Some(seg) = main_seg {
     match &seg.attention {
       AttentionSpec::DeepSeekMla { kv_lora_rank, q_lora_rank, qk_rope_head_dim, .. } => {
@@ -441,16 +497,54 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
           "Multi-head Latent Attention: Compresses KV cache to {kv_lora_rank}d latent + {qk_rope_head_dim}d RoPE ({kv_ratio:.1}x smaller than MHA)."
         ));
       }
-      AttentionSpec::StandardGqa { num_q_heads, num_kv_heads, head_dim, qk_norm, .. } => {
-        let norm_zh =
-          if *qk_norm { "，配每头 QK-RMSNorm 稳定深层注意力对数" } else { "" };
-        let norm_en = if *qk_norm { " with per-head QK-RMSNorm" } else { "" };
+      AttentionSpec::LinearRecurrent {
+        kind, num_heads, head_dim, state_dim, conv_kernel, ..
+      } => {
         highlights.push(format!(
-          "注意力子层配置：{num_q_heads} 个 Query 头对 {num_kv_heads} 个 KV 头（head_dim={head_dim}），实现 {kv_ratio:.1}× KV Cache 压缩{norm_zh}。"
+          "线性状态空间混合层：{kind}（{num_heads}H×{head_dim}d, state={state_dim}d, conv={conv_kernel}），推理期仅驻留 O(1) 恒定循环状态，随上下文增长零膨胀。"
         ));
         highlights_en.push(format!(
-          "Attention Topology: {num_q_heads} Q heads to {num_kv_heads} KV heads (head_dim={head_dim}, {kv_ratio:.1}x KV compression){norm_en}."
+          "Linear / SSM Sequence Mixer: {kind} ({num_heads}H×{head_dim}d, state={state_dim}d, conv={conv_kernel}) with constant O(1) recurrent state across sequence lengths."
         ));
+      }
+      AttentionSpec::StandardGqa {
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+        qk_norm,
+        is_causal,
+        has_cross_attn,
+        ..
+      } => {
+        if !*is_causal {
+          highlights.push(format!(
+            "双向全注意力编码器：{num_q_heads} 头（head_dim={head_dim}）无因果掩码并行交互，单次前向编码持久 KV Cache 为 0 B。"
+          ));
+          highlights_en.push(format!(
+            "Bidirectional Full Attention: {num_q_heads} heads (head_dim={head_dim}) encode tokens in parallel with 0 B persistent KV cache."
+          ));
+        } else {
+          let norm_zh = if *qk_norm {
+            "，配每头 QK-RMSNorm"
+          } else if *has_cross_attn {
+            "，并附带编码器-解码器 Cross-Attention"
+          } else {
+            ""
+          };
+          let norm_en = if *qk_norm {
+            " with per-head QK-RMSNorm"
+          } else if *has_cross_attn {
+            " plus Encoder-Decoder Cross-Attention"
+          } else {
+            ""
+          };
+          highlights.push(format!(
+            "注意力子层配置：{num_q_heads} 个 Query 头对 {num_kv_heads} 个 KV 头（head_dim={head_dim}），实现 {kv_ratio:.1}× KV Cache 压缩{norm_zh}。"
+          ));
+          highlights_en.push(format!(
+            "Attention Topology: {num_q_heads} Q heads to {num_kv_heads} KV heads (head_dim={head_dim}, {kv_ratio:.1}x KV compression){norm_en}."
+          ));
+        }
       }
     }
 
@@ -464,7 +558,7 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
         ..
       } => {
         let seg_note = if bp.segments.len() > 1 {
-          format!("异构 {} 段层栈（前段稠密预热），主干每层", bp.segments.len())
+          format!("异构 {} 段层栈，主干每层", bp.segments.len())
         } else {
           format!("全栈统一 {} 层稀疏路由，每层", bp.num_hidden_layers)
         };
@@ -475,23 +569,73 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
           "Sparse MoE FFN: {num_shared_experts} shared + Top-{top_k} of {num_routed_experts} routed experts (I={moe_intermediate_size}), activating {active_str} of {total_str} params per token."
         ));
       }
-      FfnSpec::DenseGated { intermediate_size, act_fn, fused_gate_up, .. } => {
+      FfnSpec::DenseGated { intermediate_size: 0, .. } => {
+        highlights.push(format!(
+          "内融合门控 SSM 架构：全栈 {} 层将通道扩展与门控非线性融合进状态空间算子内部，省去独立 MLP 子层。",
+          bp.num_hidden_layers
+        ));
+        highlights_en.push(format!(
+          "Fused Gated SSM Block: Integrates channel expansion and SiLU gating directly inside {} SSM layers without separate MLP blocks.",
+          bp.num_hidden_layers
+        ));
+      }
+      FfnSpec::DenseGated { intermediate_size, act_fn, fused_gate_up, is_gated, .. } => {
         let ratio = (*intermediate_size as f64) / (bp.hidden_size.max(1) as f64);
+        let kind_zh = if *is_gated { "稠密门控前馈层" } else { "标准双矩阵前馈层" };
+        let kind_en = if *is_gated { "Dense Gated FFN" } else { "Standard 2-Layer MLP" };
         let fused_note = if *fused_gate_up { "（单矩阵融合投影）" } else { "" };
         highlights.push(format!(
-          "稠密门控前馈层：{act_fn} 激活函数，中间维 {intermediate_size}（约为隐藏维 {} 的 {ratio:.2}×）{fused_note}。",
+          "{kind_zh}：{act_fn} 激活函数，中间维 {intermediate_size}（约为隐藏维 {} 的 {ratio:.2}×）{fused_note}。",
           bp.hidden_size
         ));
         highlights_en.push(format!(
-          "Dense Gated FFN: {act_fn} activation with intermediate_size={intermediate_size} ({ratio:.2}x expansion over D={}).",
+          "{kind_en}: {act_fn} activation with intermediate_size={intermediate_size} ({ratio:.2}x expansion over D={}).",
           bp.hidden_size
         ));
       }
     }
   }
 
-  // 亮点 3：多模态 / 交替层调度 / 词表与上下文规模
-  if let Some(ref v) = bp.vision {
+  // 亮点 3：多模态声学/视觉塔、特殊输出头或交替层调度
+  if let OutputHeadSpec::SpeechSynthesizer {
+    ref talker_summary,
+    ref codec_summary,
+    sampling_rate_hz,
+    estimated_params,
+    ..
+  } = bp.output_head
+  {
+    let t_zh = talker_summary.as_deref().unwrap_or("声学离散码本头");
+    highlights.push(format!(
+      "端到端语音合成管线：{t_zh} → {codec_summary}（附加约 {} 参数），直接输出 {} kHz 高保真波形。",
+      format_count(estimated_params),
+      sampling_rate_hz / 1000
+    ));
+    highlights_en.push(format!(
+      "Speech Synthesis Pipeline: {t_zh} -> {codec_summary} (~{} params) generating {} kHz audio waveforms.",
+      format_count(estimated_params),
+      sampling_rate_hz / 1000
+    ));
+  } else if let Some(ref a) = bp.audio {
+    highlights.push(format!(
+      "语音声学编码塔：{} Mel @ {} kHz 前端接 {}（{} 层 × {} 维，约 {} 参数）。",
+      a.num_mel_bins,
+      a.sampling_rate_hz / 1000,
+      a.model_type,
+      a.num_layers,
+      a.hidden_size,
+      format_count(a.estimated_params)
+    ));
+    highlights_en.push(format!(
+      "Audio Encoder Tower: {} Mel @ {} kHz frontend into {} ({}L × {}d, ~{} params).",
+      a.num_mel_bins,
+      a.sampling_rate_hz / 1000,
+      a.model_type,
+      a.num_layers,
+      a.hidden_size,
+      format_count(a.estimated_params)
+    ));
+  } else if let Some(ref v) = bp.vision {
     highlights.push(format!(
       "原生多模态视觉支路：内置 {}（{} 层 × {} 维），参数约 {}，经多模态投影接入语言主干。",
       v.model_type,
@@ -506,11 +650,24 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
       v.hidden_size,
       format_count(v.estimated_params)
     ));
+  } else if let OutputHeadSpec::EmbeddingPool { ref pooling_mode, output_dim, normalize } =
+    bp.output_head
+  {
+    let norm_zh = if normalize { " + L2 单位球归一化" } else { "" };
+    highlights.push(format!(
+      "句向量池化输出头：采用 {pooling_mode} 池化{norm_zh}产出 {output_dim} 维稠密语义表征，词表规模 {}。",
+      bp.vocab_size
+    ));
+    highlights_en.push(format!(
+      "Embedding Pooling Head: {pooling_mode} pooling{} producing {output_dim}d vectors (vocab_size={}).",
+      if normalize { " + L2 normalization" } else { "" },
+      bp.vocab_size
+    ));
   } else if let Some(note) = main_seg.and_then(|s| s.schedule_note.as_deref()) {
     highlights.push(note.to_string());
     highlights_en.push(format!(
-      "Hybrid Layer Schedule across {} layers with vocab_size={} and {}K context window.",
-      bp.num_hidden_layers, bp.vocab_size, ctx_k
+      "Hybrid Layer Schedule across {} layers with vocab_size={} and {ctx_label_en}.",
+      bp.num_hidden_layers, bp.vocab_size
     ));
   } else {
     let tie_zh = if bp.tie_word_embeddings {
@@ -837,6 +994,8 @@ pub async fn polish_draft_via_llm(
     "segment_count": bp.segments.len(),
     "schedule_note": main_seg.and_then(|s| s.schedule_note.clone()),
     "vision": bp.vision,
+    "audio": bp.audio,
+    "output_head": bp.output_head,
     "mtp_layers": bp.num_nextn_predict_layers,
     "quantization": bp.quantization_summary,
   });
@@ -1194,5 +1353,54 @@ mod tests {
     assert_eq!(merged[0].meta.origin, RecordOrigin::Override);
     assert_eq!(merged[1].meta.slug, "qwen3-30b-custom");
     assert_eq!(merged[1].meta.origin, RecordOrigin::Database);
+  }
+
+  #[test]
+  fn auto_drafts_audio_ssm_and_embedding_modalities() {
+    use crate::arch::{build_model_blueprint_with_aux, AuxConfigFiles};
+
+    let whisper_bp = build_model_blueprint_with_aux(
+      "openai/whisper-large-v3",
+      "HuggingFace",
+      r#"{"architectures":["WhisperForConditionalGeneration"],"model_type":"whisper","d_model":1280,"encoder_layers":32,"encoder_attention_heads":20,"encoder_ffn_dim":5120,"decoder_layers":32,"decoder_attention_heads":20,"decoder_ffn_dim":5120,"num_mel_bins":128,"max_source_positions":1500,"max_target_positions":448,"vocab_size":51866}"#,
+      AuxConfigFiles::default(),
+      None,
+    )
+    .expect("whisper");
+    let w_draft = draft_from_blueprint(&whisper_bp);
+    assert_eq!(w_draft.modality, ModelModality::Audio);
+    assert!(w_draft.tags.contains(&"audio".to_string()));
+    assert!(w_draft.tags.contains(&"cross-attn".to_string()));
+    assert!(validate_upsert_input(w_draft).is_ok());
+
+    let mamba_bp = build_model_blueprint_with_aux(
+      "state-spaces/mamba-2.8b-hf",
+      "HuggingFace",
+      r#"{"architectures":["MambaForCausalLM"],"model_type":"mamba","d_model":2560,"n_layer":64,"state_size":16,"conv_kernel":4,"expand":2,"vocab_size":50280}"#,
+      AuxConfigFiles::default(),
+      None,
+    )
+    .expect("mamba");
+    let m_draft = draft_from_blueprint(&mamba_bp);
+    assert_eq!(m_draft.modality, ModelModality::Llm);
+    assert!(m_draft.tags.contains(&"ssm".to_string()));
+    assert!(validate_upsert_input(m_draft).is_ok());
+
+    let bge_bp = build_model_blueprint_with_aux(
+      "BAAI/bge-m3",
+      "HuggingFace",
+      r#"{"architectures":["XLMRobertaModel"],"model_type":"xlm-roberta","hidden_size":1024,"num_hidden_layers":24,"num_attention_heads":16,"intermediate_size":4096,"max_position_embeddings":8194,"vocab_size":250002}"#,
+      AuxConfigFiles {
+        pooling_json: Some(r#"{"word_embedding_dimension":1024,"pooling_mode_cls_token":true}"#),
+        ..Default::default()
+      },
+      None,
+    )
+    .expect("bge-m3");
+    let b_draft = draft_from_blueprint(&bge_bp);
+    assert_eq!(b_draft.modality, ModelModality::Embedding);
+    assert!(b_draft.tags.contains(&"embedding".to_string()));
+    assert!(b_draft.tags.contains(&"bidirectional".to_string()));
+    assert!(validate_upsert_input(b_draft).is_ok());
   }
 }
