@@ -37,9 +37,14 @@ use crate::visualizer::clean_server_err;
 use crate::visualizer::ModelVisualizerWorkbench;
 
 #[cfg(feature = "server")]
-use crate::arch::{build_model_blueprint_with_aux, load_builtin_preset, AuxConfigFiles};
+use crate::arch::{
+  build_diffusion_pipeline_blueprint, build_model_blueprint_with_aux, extract_diffusion_slots,
+  load_builtin_preset, AuxConfigFiles,
+};
 #[cfg(feature = "server")]
 use crate::safetensors_meta::{parse_safetensors_index_json, summarize_index_and_headers};
+#[cfg(feature = "server")]
+use crate::server::is_safe_hub_segment;
 
 fn current_lang() -> Language {
   try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default()
@@ -120,6 +125,7 @@ impl CuratedModelSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CuratedModelDetail {
   pub meta: CuratedModelSummary,
+  #[serde(with = "crate::arch::blueprint_wire")]
   pub blueprint: ModelBlueprint,
   pub readme_md: Option<String>,
 }
@@ -228,8 +234,9 @@ pub fn parse_model_dir(dir: &Path, slug_fallback: &str) -> Result<CuratedModelDe
   };
 
   let cfg_path = dir.join("config.json");
-  if !cfg_path.is_file() {
-    return Err(format!("{} 缺少 config.json", dir.display()));
+  let model_idx_path = dir.join("model_index.json");
+  if !cfg_path.is_file() && !model_idx_path.is_file() {
+    return Err(format!("{} 缺少 config.json 或 model_index.json", dir.display()));
   }
 
   let yaml_raw = std::fs::read_to_string(&yaml_path)
@@ -243,19 +250,22 @@ pub fn parse_model_dir(dir: &Path, slug_fallback: &str) -> Result<CuratedModelDe
     raw_meta.slug.trim().to_string()
   };
 
-  let cfg_raw = std::fs::read_to_string(&cfg_path)
-    .map_err(|e| format!("读取 {} 失败: {e}", cfg_path.display()))?;
-  let gen_raw = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-  let tok_raw = std::fs::read_to_string(dir.join("tokenizer_config.json")).ok();
-  let pre_raw = std::fs::read_to_string(dir.join("preprocessor_config.json")).ok();
-  let pool_raw = std::fs::read_to_string(dir.join("1_Pooling/config.json"))
-    .or_else(|_| std::fs::read_to_string(dir.join("pooling_config.json")))
-    .ok();
+  let repo_id = if raw_meta.hf_repo.trim().is_empty() {
+    slug.clone()
+  } else {
+    raw_meta.hf_repo.trim().to_string()
+  };
 
-  // 若目录下附带 safetensors.index.json 则优先解析，否则尝试复用内置快照的 L2 张量表
-  let idx_raw = std::fs::read_to_string(dir.join("model.safetensors.index.json"))
-    .or_else(|_| std::fs::read_to_string(dir.join("safetensors.index.json")))
-    .ok();
+  // 若目录下附带 safetensors.index.json（含扩散子目录）则优先解析，否则尝试复用内置快照的 L2 张量表
+  let idx_raw = [
+    "model.safetensors.index.json",
+    "safetensors.index.json",
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    "unet/diffusion_pytorch_model.safetensors.index.json",
+  ]
+  .iter()
+  .find_map(|rel| std::fs::read_to_string(dir.join(rel)).ok());
+
   let safetensors = if let Some(ref idx_s) = idx_raw {
     let (tot, wm) = parse_safetensors_index_json(idx_s)?;
     Some(summarize_index_and_headers(tot, &wm, &[]))
@@ -265,24 +275,53 @@ pub fn parse_model_dir(dir: &Path, slug_fallback: &str) -> Result<CuratedModelDe
       .and_then(|bp| bp.safetensors)
   };
 
-  let repo_id = if raw_meta.hf_repo.trim().is_empty() {
-    slug.clone()
+  let blueprint = if model_idx_path.is_file() && !cfg_path.is_file() {
+    let idx_json_raw = std::fs::read_to_string(&model_idx_path)
+      .map_err(|e| format!("读取 {} 失败: {e}", model_idx_path.display()))?;
+    let (_pipe_cls, slots) = extract_diffusion_slots(&idx_json_raw)?;
+    let mut comp_cfgs = Vec::new();
+    for (slot, _cls) in slots {
+      if !is_safe_hub_segment(&slot) {
+        continue;
+      }
+      let sub_dir = dir.join(&slot);
+      let file_name = if slot == "scheduler" { "scheduler_config.json" } else { "config.json" };
+      if let Ok(sub_raw) = std::fs::read_to_string(sub_dir.join(file_name))
+        .or_else(|_| std::fs::read_to_string(sub_dir.join("config.json")))
+      {
+        comp_cfgs.push((slot, sub_raw));
+      }
+    }
+    build_diffusion_pipeline_blueprint(
+      &repo_id,
+      "Curated Model Atlas (Official Config)",
+      &idx_json_raw,
+      &comp_cfgs,
+      safetensors,
+    )?
   } else {
-    raw_meta.hf_repo.trim().to_string()
-  };
+    let cfg_raw = std::fs::read_to_string(&cfg_path)
+      .map_err(|e| format!("读取 {} 失败: {e}", cfg_path.display()))?;
+    let gen_raw = std::fs::read_to_string(dir.join("generation_config.json")).ok();
+    let tok_raw = std::fs::read_to_string(dir.join("tokenizer_config.json")).ok();
+    let pre_raw = std::fs::read_to_string(dir.join("preprocessor_config.json")).ok();
+    let pool_raw = std::fs::read_to_string(dir.join("1_Pooling/config.json"))
+      .or_else(|_| std::fs::read_to_string(dir.join("pooling_config.json")))
+      .ok();
 
-  let blueprint = build_model_blueprint_with_aux(
-    &repo_id,
-    "Curated Model Atlas (Official Config)",
-    &cfg_raw,
-    AuxConfigFiles {
-      generation_json: gen_raw.as_deref(),
-      tokenizer_json: tok_raw.as_deref(),
-      preprocessor_json: pre_raw.as_deref(),
-      pooling_json: pool_raw.as_deref(),
-    },
-    safetensors,
-  )?;
+    build_model_blueprint_with_aux(
+      &repo_id,
+      "Curated Model Atlas (Official Config)",
+      &cfg_raw,
+      AuxConfigFiles {
+        generation_json: gen_raw.as_deref(),
+        tokenizer_json: tok_raw.as_deref(),
+        preprocessor_json: pre_raw.as_deref(),
+        pooling_json: pool_raw.as_deref(),
+      },
+      safetensors,
+    )?
+  };
 
   let readme_md = ["README.md", "readme.md", "index.md"]
     .iter()
@@ -333,11 +372,14 @@ pub fn load_curated_models_full() -> Arc<Vec<CuratedModelDetail>> {
         "model.yaml"
           | "model.yml"
           | "config.json"
+          | "model_index.json"
+          | "scheduler_config.json"
           | "preprocessor_config.json"
           | "pooling_config.json"
           | "README.md"
           | "readme.md"
           | "model.safetensors.index.json"
+          | "diffusion_pytorch_model.safetensors.index.json"
           | "safetensors.index.json"
       )
     })
@@ -890,7 +932,11 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
         div { class: "mt-3.5 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-slate-200/70 dark:border-slate-800/80 p-2.5 font-mono",
           div {
             div { class: "text-[10px] text-slate-400",
-              {lang.pick("总参数 / 激活", "Total / Active")}
+              if model.modality == ModelModality::Diffusion {
+                {lang.pick("全管线 / 去噪主干", "Pipeline / Denoiser")}
+              } else {
+                {lang.pick("总参数 / 激活", "Total / Active")}
+              }
             }
             div { class: "text-xs font-bold text-slate-900 dark:text-white tabular-nums",
               if is_sparse {
@@ -913,14 +959,18 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
           }
           div {
             div { class: "text-[10px] text-slate-400",
-              if model.modality == ModelModality::Embedding {
+              if model.modality == ModelModality::Diffusion {
+                {lang.pick("去噪状态模式", "Denoising Mode")}
+              } else if model.modality == ModelModality::Embedding {
                 {lang.pick("推理缓存模式", "Cache Mode")}
               } else {
                 {lang.pick("KV 压缩效率", "KV Compression")}
               }
             }
             div { class: "text-xs font-bold text-indigo-600 dark:text-indigo-400 tabular-nums",
-              if model.modality == ModelModality::Embedding {
+              if model.modality == ModelModality::Diffusion {
+                "0 KV (Latent ODE)"
+              } else if model.modality == ModelModality::Embedding {
                 "0 B (Single-Pass)"
               } else if model.kv_compression_ratio >= 500.0 {
                 "O(1) State"
@@ -1950,5 +2000,45 @@ mod tests {
     assert!(list[0].has_mla);
     assert!(list[0].has_moe);
     assert!(list.iter().any(|m| m.slug == "qwen3-30b-a3b"));
+  }
+
+  #[test]
+  fn parses_diffusion_model_index_dir_and_roundtrips_detail_wire() {
+    let tmp = std::env::temp_dir().join(format!("dp-atlas-diff-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("transformer")).expect("mkdir transformer");
+    std::fs::create_dir_all(tmp.join("scheduler")).expect("mkdir scheduler");
+
+    std::fs::write(
+      tmp.join("model.yaml"),
+      "slug: flux-1-dev\nname: FLUX.1-dev\nmodality: diffusion\nhf_repo: black-forest-labs/FLUX.1-dev\nsummary: FLUX MMDiT\n",
+    )
+    .expect("write yaml");
+    std::fs::write(
+      tmp.join("model_index.json"),
+      r#"{"_class_name":"FluxPipeline","text_encoder":["transformers","CLIPTextModel"],"text_encoder_2":["transformers","T5EncoderModel"],"transformer":["diffusers","FluxTransformer2DModel"],"vae":["diffusers","AutoencoderKL"],"scheduler":["diffusers","FlowMatchEulerDiscreteScheduler"]}"#,
+    )
+    .expect("write model_index");
+    std::fs::write(
+      tmp.join("transformer/config.json"),
+      r#"{"_class_name":"FluxTransformer2DModel","num_layers":19,"num_single_layers":38,"num_attention_heads":24,"attention_head_dim":128,"in_channels":64,"patch_size":1}"#,
+    )
+    .expect("write transformer cfg");
+    std::fs::write(
+      tmp.join("scheduler/scheduler_config.json"),
+      r#"{"_class_name":"FlowMatchEulerDiscreteScheduler","shift":3.0}"#,
+    )
+    .expect("write scheduler cfg");
+
+    let detail = parse_model_dir(&tmp, "flux-1-dev").expect("parse diffusion dir");
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert_eq!(detail.meta.modality, ModelModality::Diffusion);
+    assert_eq!(detail.blueprint.num_hidden_layers, 57);
+    assert!(detail.blueprint.is_diffusion_pipeline());
+
+    let encoded = serde_json::to_vec(&detail).expect("encode wire");
+    let decoded: CuratedModelDetail = serde_json::from_slice(&encoded).expect("decode wire");
+    assert_eq!(decoded, detail);
   }
 }

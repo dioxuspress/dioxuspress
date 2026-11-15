@@ -39,8 +39,8 @@ pub fn AiVisualizerPage() -> Element {
     lang.pick("多模态模型架构可视化器", "Multimodal Model Architecture Visualizer").to_string();
   let desc = lang
     .pick(
-      "通过 HuggingFace 或 ModelScope 的 config.json 与 Safetensors 元数据，精确解析并可视化 LLM、VLM、ASR/TTS 语音、线性注意力 SSM 及 Embedding 模型内部拓扑、张量维度与推理显存占用。",
-      "Visualize LLM, VLM, ASR/TTS Audio, Hybrid Linear/SSM, and Embedding architectures, tensor shapes, Safetensors weights, and VRAM directly from HuggingFace or ModelScope metadata.",
+      "通过 HuggingFace 或 ModelScope 的 config.json / model_index.json 与 Safetensors 元数据，精确解析并可视化 LLM、VLM、ASR/TTS 语音、图像/视频扩散 (DiT/UNet)、线性注意力 SSM 及 Embedding 架构拓扑与推理显存。",
+      "Visualize LLM, VLM, ASR/TTS Audio, Image/Video Diffusion (MMDiT/3D DiT/UNet), Hybrid Linear/SSM, and Embedding architectures, Safetensors weights, and VRAM from HuggingFace or ModelScope.",
     )
     .to_string();
 
@@ -374,7 +374,7 @@ pub fn AiVisualizerPage() -> Element {
             div { class: "mt-4 pt-4 border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 lg:grid-cols-2 gap-3",
               div {
                 label { class: "block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1",
-                  "1. config.json（必填，纯前端 WASM 即时解析）"
+                  "1. config.json 或 model_index.json（必填，纯前端 WASM 即时解析）"
                 }
                 Textarea {
                   class: "h-36 font-mono text-xs bg-white dark:bg-slate-950",
@@ -628,7 +628,11 @@ pub fn ModelVisualizerWorkbench(
         div { class: "mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3",
           div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3",
             div { class: "text-[11px] font-medium text-slate-500 dark:text-slate-400",
-              "总参数量 / 单 Token 激活"
+              if blueprint.is_diffusion_pipeline() {
+                "全管线总参 / 单步去噪激活"
+              } else {
+                "总参数量 / 单 Token 激活"
+              }
             }
             div { class: "mt-1 text-base sm:text-lg font-extrabold text-slate-900 dark:text-white font-mono tabular-nums",
               if is_sparse {
@@ -649,14 +653,20 @@ pub fn ModelVisualizerWorkbench(
             div { class: "mt-1 text-base sm:text-lg font-extrabold text-slate-900 dark:text-white font-mono tabular-nums",
               "{blueprint.num_hidden_layers}L × {blueprint.hidden_size}d"
             }
-            div { class: "text-[11px] text-slate-500 dark:text-slate-400 font-mono",
-              "Vocab: {blueprint.vocab_size}"
+            div { class: "text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate",
+              if let Some(ref diff) = blueprint.diffusion {
+                "{diff.components.len()} 组件 · {diff.latent_channels}ch Latent"
+              } else {
+                "Vocab: {blueprint.vocab_size}"
+              }
             }
           }
 
           div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3",
             div { class: "text-[11px] font-medium text-slate-500 dark:text-slate-400",
-              if blueprint.is_single_pass_encoder() {
+              if blueprint.is_diffusion_pipeline() {
+                "去噪采样与缓存"
+              } else if blueprint.is_single_pass_encoder() {
                 "推理状态缓存"
               } else if blueprint.has_linear_recurrent() {
                 "循环状态 / KV 效率"
@@ -665,7 +675,7 @@ pub fn ModelVisualizerWorkbench(
               }
             }
             div { class: "mt-1 text-base sm:text-lg font-extrabold text-indigo-600 dark:text-indigo-400 font-mono tabular-nums",
-              if blueprint.is_single_pass_encoder() {
+              if blueprint.is_diffusion_pipeline() || blueprint.is_single_pass_encoder() {
                 "0 B KV Cache"
               } else if kv_ratio >= 500.0 {
                 "O(1) State"
@@ -674,7 +684,9 @@ pub fn ModelVisualizerWorkbench(
               }
             }
             div { class: "text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate",
-              if blueprint.is_single_pass_encoder() {
+              if let Some(ref diff) = blueprint.diffusion {
+                "{diff.scheduler_summary}"
+              } else if blueprint.is_single_pass_encoder() {
                 "单次并行编码 (无自回归缓存)"
               } else if blueprint.has_linear_recurrent() {
                 "循环状态随序列长度 S 零增长"
@@ -686,19 +698,34 @@ pub fn ModelVisualizerWorkbench(
 
           div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3",
             div { class: "text-[11px] font-medium text-slate-500 dark:text-slate-400",
-              "上下文窗口 & 位置编码"
+              if blueprint.is_diffusion_pipeline() {
+                "潜空间序列 & 位置编码"
+              } else {
+                "上下文窗口 & 位置编码"
+              }
             }
             div { class: "mt-1 text-base sm:text-lg font-extrabold text-slate-900 dark:text-white font-mono tabular-nums",
-              "{blueprint.max_position_embeddings / 1024}K ctx"
+              if blueprint.is_diffusion_pipeline() {
+                "{blueprint.max_position_embeddings / 1024}K latents"
+              } else {
+                "{blueprint.max_position_embeddings / 1024}K ctx"
+              }
             }
             div { class: "text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate",
-              "{blueprint.rope_summary}"
+              if let Some(ref diff) = blueprint.diffusion {
+                "{diff.patch_summary} · {blueprint.rope_summary}"
+              } else {
+                "{blueprint.rope_summary}"
+              }
             }
           }
         }
 
         // 参数占比彩色堆叠条
-        ParamStackedBar { params: blueprint.params.clone() }
+        ParamStackedBar {
+          params: blueprint.params.clone(),
+          is_diffusion: blueprint.is_diffusion_pipeline(),
+        }
       }
 
       // 2. 双栏联动工作区：左「宏观分层拓扑流」+ 右「算子级内部子图 & 工程检视面板」
@@ -756,10 +783,10 @@ pub fn ModelVisualizerWorkbench(
                   }
                 }
                 for (f_opt, f_label) in [
-                  (InspectorFocus::Embedding, "Embed"),
+                  (InspectorFocus::Embedding, if blueprint.is_diffusion_pipeline() { "Conditioner" } else { "Embed" }),
                   (InspectorFocus::Attention, if blueprint.has_linear_recurrent() { "Attn / SSM" } else { "Attention" }),
                   (InspectorFocus::FfnOrMoe, if blueprint.has_moe() { "FFN / MoE" } else { "MLP / FFN" }),
-                  (InspectorFocus::NormAndResidual, "Norm"),
+                  (InspectorFocus::NormAndResidual, if blueprint.is_diffusion_pipeline() { "AdaLN" } else { "Norm" }),
                   (
                     InspectorFocus::LmHead,
                     match blueprint.output_head {
@@ -767,6 +794,7 @@ pub fn ModelVisualizerWorkbench(
                       OutputHeadSpec::EmbeddingPool { .. } => "Pooling",
                       OutputHeadSpec::SequenceScorer { .. } => "Scorer",
                       OutputHeadSpec::SpeechSynthesizer { .. } => "Vocoder",
+                      OutputHeadSpec::LatentDecoder { .. } => "VAE Decoder",
                     },
                   ),
                 ] {
@@ -894,7 +922,11 @@ pub fn ModelVisualizerWorkbench(
 
                       div {
                         div { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-1.5",
-                          "上下文长度 (Context)"
+                          if blueprint.is_diffusion_pipeline() {
+                            "潜空间序列 (Latent Tokens)"
+                          } else {
+                            "上下文长度 (Context)"
+                          }
                         }
                         div { class: "flex flex-wrap gap-1",
                           for (c_val, c_lbl) in [(4096u64, "4K"), (16384, "16K"), (32768, "32K"), (65536, "64K"), (131072, "128K")] {
@@ -993,7 +1025,11 @@ pub fn ModelVisualizerWorkbench(
                         }
                       }
 
-                      if blueprint.is_single_pass_encoder() {
+                      if blueprint.is_diffusion_pipeline() {
+                        div { class: "mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 text-xs text-emerald-700 dark:text-emerald-400 font-medium",
+                          "★ 扩散管线特性：迭代去噪无自回归 KV Cache（恒为 0 B）；激活显存随潜空间分辨率序列长度（如 1024px 图像≈4K、480p 视频≈32K、720p 视频≈64K）及 VAE 解码峰值缓冲增长。"
+                        }
+                      } else if blueprint.is_single_pass_encoder() {
                         div { class: "mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800 text-xs text-emerald-700 dark:text-emerald-400 font-medium",
                           "★ 编码器特性：单次双向并行前向即可产出句向量/重排打分，无需自回归驻留 KV Cache（恒为 0 B）。"
                         }
@@ -1125,12 +1161,12 @@ fn HyperKv(k: String, v: String) -> Element {
 }
 
 #[component]
-fn ParamStackedBar(params: crate::arch::ParamBreakdown) -> Element {
+fn ParamStackedBar(params: crate::arch::ParamBreakdown, is_diffusion: bool) -> Element {
   let tot = params.total_params.max(1) as f64;
   let slices = [
-    ("Vision", params.vision_encoder, "bg-fuchsia-500"),
+    (if is_diffusion { "VAE Codec" } else { "Vision" }, params.vision_encoder, "bg-fuchsia-500"),
     ("Audio / Speech", params.audio_and_speech, "bg-cyan-500"),
-    ("Embedding", params.embedding, "bg-emerald-500"),
+    (if is_diffusion { "Text Encoders" } else { "Embedding" }, params.embedding, "bg-emerald-500"),
     ("Attention / SSM", params.attention, "bg-indigo-500"),
     ("Dense FFN", params.dense_ffn, "bg-sky-500"),
     ("MoE Routed", params.moe_routed, "bg-amber-500"),
@@ -1343,5 +1379,61 @@ mod tests {
     assert!(html.contains("O(1) Recurrent State"));
     assert!(html.contains("0 B KV Cache"));
     assert!(html.contains("Sentence / Document Embedding Pooling Head"));
+  }
+
+  #[test]
+  fn ssr_renders_diffusion_flux_and_wan_pipeline_workbenches() {
+    use crate::arch::build_diffusion_pipeline_blueprint;
+
+    #[component]
+    fn DiffusionHost() -> Element {
+      let flux = build_diffusion_pipeline_blueprint(
+        "black-forest-labs/FLUX.1-dev",
+        "HuggingFace",
+        r#"{"_class_name":"FluxPipeline","text_encoder":["transformers","CLIPTextModel"],"text_encoder_2":["transformers","T5EncoderModel"],"transformer":["diffusers","FluxTransformer2DModel"],"vae":["diffusers","AutoencoderKL"],"scheduler":["diffusers","FlowMatchEulerDiscreteScheduler"]}"#,
+        &[(
+          "transformer".to_string(),
+          r#"{"_class_name":"FluxTransformer2DModel","num_layers":19,"num_single_layers":38,"num_attention_heads":24,"attention_head_dim":128,"in_channels":64,"patch_size":1}"#.to_string(),
+        )],
+        None,
+      )
+      .expect("flux");
+
+      let wan = build_diffusion_pipeline_blueprint(
+        "Wan-AI/Wan2.1-T2V-14B-Diffusers",
+        "HuggingFace",
+        r#"{"_class_name":"WanPipeline","text_encoder":["transformers","UMT5EncoderModel"],"transformer":["diffusers","WanTransformer3DModel"],"vae":["diffusers","AutoencoderKLWan"],"scheduler":["diffusers","UniPCMultistepScheduler"]}"#,
+        &[(
+          "transformer".to_string(),
+          r#"{"_class_name":"WanTransformer3DModel","num_layers":40,"num_attention_heads":40,"attention_head_dim":128,"ffn_dim":13824,"in_channels":16,"patch_size":[1,2,2]}"#.to_string(),
+        )],
+        None,
+      )
+      .expect("wan");
+
+      rsx! {
+        div {
+          ModelVisualizerWorkbench {
+            blueprint: flux,
+            initial_focus: Some(InspectorFocus::Embedding),
+            embedded: true,
+          }
+          ModelVisualizerWorkbench {
+            blueprint: wan,
+            initial_focus: Some(InspectorFocus::LmHead),
+            embedded: true,
+          }
+        }
+      }
+    }
+
+    let mut vdom = VirtualDom::new(DiffusionHost);
+    vdom.rebuild_in_place();
+    let html = dioxus_ssr::render(&vdom);
+    assert!(html.contains("Prompt Conditioners"));
+    assert!(html.contains("Multi-Encoder Prompt Conditioning"));
+    assert!(html.contains("Latent Unpatchify"));
+    assert!(html.contains("AutoencoderKLWan"));
+    assert!(html.contains("VAE Decoder"));
   }
 }

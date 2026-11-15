@@ -286,6 +286,7 @@ pub fn check_site(input: &Path) -> Result<CheckSummary, String> {
           }),
         }
         let cfg_path = dir.join("config.json");
+        let idx_path = dir.join("model_index.json");
         if cfg_path.is_file() {
           files_checked += 1;
           match fs::read_to_string(&cfg_path)
@@ -299,11 +300,50 @@ pub fn check_site(input: &Path) -> Result<CheckSummary, String> {
               message: "invalid model config.json (must be a valid JSON object)".to_string(),
             }),
           }
+        } else if idx_path.is_file() {
+          files_checked += 1;
+          match fs::read_to_string(&idx_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+          {
+            Some(v) if v.is_object() => {}
+            _ => diagnostics.push(Diagnostic {
+              file: idx_path,
+              line: 1,
+              message: "invalid model_index.json (must be a valid JSON object)".to_string(),
+            }),
+          }
+          if let Ok(sub_entries) = fs::read_dir(&dir) {
+            for sub in sub_entries.flatten() {
+              let sp = sub.path();
+              if !sp.is_dir() {
+                continue;
+              }
+              for jf_name in ["config.json", "scheduler_config.json"] {
+                let jf = sp.join(jf_name);
+                if jf.is_file() {
+                  files_checked += 1;
+                  match fs::read_to_string(&jf)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                  {
+                    Some(v) if v.is_object() => {}
+                    _ => diagnostics.push(Diagnostic {
+                      file: jf,
+                      line: 1,
+                      message: format!("invalid component {jf_name} (must be a valid JSON object)"),
+                    }),
+                  }
+                }
+              }
+            }
+          }
         } else {
           diagnostics.push(Diagnostic {
             file: dir.clone(),
             line: 1,
-            message: "curated model directory is missing config.json".to_string(),
+            message: "curated model directory is missing config.json or model_index.json"
+              .to_string(),
           });
         }
         let readme = dir.join("README.md");

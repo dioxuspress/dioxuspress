@@ -197,17 +197,27 @@ pub fn select_representative_shards(weight_map: &HashMap<String, String>) -> Vec
     weight_map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
   entries.sort_by_key(|(k, _)| *k);
 
-  if let Some((_, s)) =
-    entries.iter().find(|(k, _)| k.contains("embed_tokens") || k.contains("layers.0.self_attn"))
-  {
+  if let Some((_, s)) = entries.iter().find(|(k, _)| {
+    k.contains("embed_tokens")
+      || k.contains("layers.0.self_attn")
+      || k.contains("transformer_blocks.0.")
+      || k.contains("blocks.0.")
+      || k.contains("down_blocks.0.")
+  }) {
     push_unique(&mut picked, s);
   }
-  if let Some((_, s)) =
-    entries.iter().find(|(k, _)| k.contains(".experts.0.") || k.contains(".experts."))
-  {
+  if let Some((_, s)) = entries.iter().find(|(k, _)| {
+    k.contains(".experts.0.")
+      || k.contains(".experts.")
+      || k.contains("single_transformer_blocks.0.")
+      || k.contains("mid_block.")
+  }) {
     push_unique(&mut picked, s);
   }
-  if let Some((_, s)) = entries.iter().rfind(|(k, _)| k.contains("lm_head") || k.contains("norm")) {
+  if let Some((_, s)) = entries
+    .iter()
+    .rfind(|(k, _)| k.contains("lm_head") || k.contains("proj_out") || k.contains("norm"))
+  {
     push_unique(&mut picked, s);
   }
   if picked.is_empty() {
@@ -311,7 +321,9 @@ fn canonical_skeleton(name: &str) -> SkeletonParts {
   while i < parts.len() {
     let seg = parts[i];
     out.push(seg);
-    if matches!(seg, "layers" | "layer" | "h" | "block" | "blocks") && i + 1 < parts.len() {
+    if (matches!(seg, "layers" | "layer" | "h" | "block" | "blocks") || seg.ends_with("_blocks"))
+      && i + 1 < parts.len()
+    {
       if let Ok(idx) = parts[i + 1].parse::<u64>() {
         layer_idx = Some(idx);
         out.push("<L>");
@@ -374,11 +386,18 @@ pub fn classify_tensor_stage(
     || name.contains("wte")
     || name.contains("word_embeddings")
     || name.contains("embed_positions")
+    || name.starts_with("time_text_embed.")
+    || name.starts_with("condition_embedder.")
+    || name.starts_with("context_embedder.")
+    || name.starts_with("x_embedder.")
+    || name.starts_with("patch_embedding.")
+    || name.starts_with("pos_embed.")
   {
     "embedding"
   } else if name.contains("lm_head")
     || name.contains("output.weight")
     || name.contains("proj_out")
+    || name.contains("conv_out.")
     || name.contains("pooler.")
     || name.contains("classifier.")
     || name.ends_with("score.weight")
@@ -387,6 +406,8 @@ pub fn classify_tensor_stage(
   } else if name.contains("self_attn")
     || name.contains("encoder_attn")
     || name.contains(".attn.")
+    || name.contains(".attn1.")
+    || name.contains(".attn2.")
     || name.contains("attention")
     || name.contains("linear_attn")
     || name.contains(".mamba.")
@@ -402,6 +423,10 @@ pub fn classify_tensor_stage(
   {
     "moe"
   } else if name.contains(".mlp.")
+    || name.contains("proj_mlp")
+    || name.contains(".ff.")
+    || name.contains(".ff_context.")
+    || name.contains("resnets.")
     || name.contains("feed_forward")
     || name.contains("ffn")
     || name.contains("fc1.")
@@ -414,6 +439,11 @@ pub fn classify_tensor_stage(
     || name.contains("layer_norm")
     || name.contains("LayerNorm")
     || name.contains(".norm.")
+    || name.contains(".norm1.")
+    || name.contains(".norm2.")
+    || name.contains("norm_q.")
+    || name.contains("norm_k.")
+    || name.contains("norm_out.")
     || name.ends_with("norm.weight")
   {
     "norm"
