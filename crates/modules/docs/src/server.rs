@@ -596,6 +596,28 @@ pub(crate) fn qualify_doc_title(title: &str, path: &str, volume_label: Option<&s
   format!("{title} · {label}")
 }
 
+/// 当文档 frontmatter 未显式指定 `image` 时，优先查找当前目录伴生的 `arch.og.png`，
+/// 其次回退到所属卷根目录的 `arch.og.png`（OpenGraph / Twitter / 微信不认 `.svg`）。
+#[cfg(feature = "server")]
+pub(crate) fn discover_doc_og_image(
+  docs_root: &std::path::Path,
+  doc_dir: Option<&std::path::Path>,
+  path: &str,
+) -> Option<String> {
+  let trimmed = path.trim_matches('/');
+  if trimmed.is_empty() {
+    return None;
+  }
+  if doc_dir.is_some_and(|d| d.join("arch.og.png").is_file()) {
+    return Some(format!("/docs-files/{trimmed}/arch.og.png"));
+  }
+  let vol_slug = trimmed.split('/').next().filter(|s| !s.is_empty())?;
+  if docs_root.join(vol_slug).join("arch.og.png").is_file() {
+    return Some(format!("/docs-files/{vol_slug}/arch.og.png"));
+  }
+  None
+}
+
 /// 文档正文与 frontmatter；`Ok(None)` 表示没有这篇文档（页面据此回 404）。
 #[post("/api/docs/content")]
 pub async fn get_doc_content(
@@ -615,6 +637,9 @@ pub async fn get_doc_content(
       fs::read_to_string(&filepath).map_err(|e| ServerFnError::new(format!("读取失败: {}", e)))?;
     let (mut meta, content) = parse_doc_frontmatter(&raw, &filepath);
     fill_missing_meta(&mut meta, &content);
+    if meta.image.as_deref().is_none_or(str::is_empty) {
+      meta.image = discover_doc_og_image(&docs_root, filepath.parent(), &path);
+    }
     let tree = cached_tree_for_lang(target_lang);
     let vol_slug = path.trim_matches('/').split('/').next().unwrap_or_default();
     let vol_label = tree.iter().find(|n| n.path == vol_slug).map(|n| n.title.as_str());
@@ -704,6 +729,27 @@ mod tests {
       qualify_doc_title("Typst 脚本基础", "typst/03-scripting", Some("Typst 教程")),
       "Typst 脚本基础"
     );
+  }
+
+  #[test]
+  fn discover_doc_og_image_prefers_page_then_volume_fallback() {
+    let tmp = TempDir::new().unwrap();
+    let docs = tmp.path();
+    write_index(&docs.join("tokio"), None, "# tokio");
+    write_index(&docs.join("tokio/01-overview"), None, "# overview");
+    write_index(&docs.join("plain"), None, "# plain");
+    std::fs::write(docs.join("tokio/arch.og.png"), b"png").unwrap();
+
+    assert_eq!(
+      discover_doc_og_image(docs, Some(&docs.join("tokio")), "tokio").as_deref(),
+      Some("/docs-files/tokio/arch.og.png")
+    );
+    assert_eq!(
+      discover_doc_og_image(docs, Some(&docs.join("tokio/01-overview")), "tokio/01-overview")
+        .as_deref(),
+      Some("/docs-files/tokio/arch.og.png")
+    );
+    assert_eq!(discover_doc_og_image(docs, Some(&docs.join("plain")), "plain"), None);
   }
 
   /// 辅助：提取一棵子树的 slug 列表（保留顺序）

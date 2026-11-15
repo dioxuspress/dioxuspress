@@ -256,7 +256,7 @@ pub fn PageMetaTags(
     )
   });
   let full_title = page_title(&title);
-  let json_ld = schema.as_ref().and_then(|v| page_json_ld(v, &canonical));
+  let json_ld = schema.as_ref().and_then(|v| page_json_ld(v, &canonical, &base_url));
   let default_img = default_og_image();
   let image =
     absolute_url(image.as_deref().filter(|s| !s.is_empty()).unwrap_or(&default_img), &base_url);
@@ -310,12 +310,15 @@ pub fn website_schema() -> serde_json::Value {
   })
 }
 
-/// PageMeta 的 JSON-LD：补 `@context` 与 `url`，序列化后转义 `<`。只接受对象。
-fn page_json_ld(schema: &serde_json::Value, canonical: &str) -> Option<String> {
+/// PageMeta 的 JSON-LD：补 `@context` 与 `url`，将站内相对 `image` 转为绝对地址，序列化后转义 `<`。只接受对象。
+fn page_json_ld(schema: &serde_json::Value, canonical: &str, base_url: &str) -> Option<String> {
   let mut value = schema.clone();
   let obj = value.as_object_mut()?;
   obj.insert("@context".into(), "https://schema.org".into());
   obj.insert("url".into(), canonical.into());
+  if let Some(img) = obj.get("image").and_then(|v| v.as_str()).map(|s| absolute_url(s, base_url)) {
+    obj.insert("image".into(), img.into());
+  }
   ld_json_text(&value)
 }
 
@@ -480,14 +483,20 @@ mod tests {
   /// `</script>` 不会提前结束脚本。
   #[test]
   fn page_json_ld_adds_context_url_and_escapes_lt() {
-    let schema = serde_json::json!({ "@type": "Course", "name": "A</script><b>" });
-    let ld = page_json_ld(&schema, "https://example.com/course/a").expect("json-ld");
+    let schema = serde_json::json!({
+      "@type": "Course",
+      "name": "A</script><b>",
+      "image": "/docs-files/tokio/arch.og.png"
+    });
+    let ld = page_json_ld(&schema, "https://example.com/course/a", "https://example.com")
+      .expect("json-ld");
     assert!(ld.contains("\"@context\":\"https://schema.org\""));
     assert!(ld.contains("\"url\":\"https://example.com/course/a\""));
+    assert!(ld.contains("\"image\":\"https://example.com/docs-files/tokio/arch.og.png\""), "{ld}");
     assert!(!ld.contains('<'), "{ld}");
     let back: serde_json::Value = serde_json::from_str(&ld).expect("still valid json");
     assert_eq!(back["name"], "A</script><b>");
-    assert_eq!(page_json_ld(&serde_json::json!("x"), "u"), None, "只接受对象");
+    assert_eq!(page_json_ld(&serde_json::json!("x"), "u", ""), None, "只接受对象");
   }
 
   #[test]
