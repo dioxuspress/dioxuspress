@@ -356,6 +356,7 @@ pub fn MyOrdersPage() -> Element {
   let membership = mem_res.read().clone().flatten();
 
   rsx! {
+      document::Meta { name: "robots", content: "noindex, nofollow" }
       section { class: "py-12 bg-white dark:bg-slate-950 min-h-[60vh]",
           div { class: "mx-auto max-w-4xl px-4 sm:px-6 lg:px-8",
               h1 { class: "text-2xl font-extrabold text-slate-900 dark:text-white mb-6", "{t(lang, \"pay.orders.title\")}" }

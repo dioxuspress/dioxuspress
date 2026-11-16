@@ -49,6 +49,7 @@ pub fn MyOrders() -> Element {
   #[cfg(not(feature = "payments"))]
   {
     rsx! {
+        document::Meta { name: "robots", content: "noindex, nofollow" }
         section { class: "py-20 bg-white dark:bg-slate-950 min-h-[60vh]",
             div { class: "mx-auto max-w-4xl px-4 text-center text-slate-500",
                 "在线支付未开通，暂无订单可查。如需开通课程权益请联系管理员。"

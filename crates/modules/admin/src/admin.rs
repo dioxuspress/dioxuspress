@@ -40,6 +40,7 @@ pub fn is_current_user_admin() -> bool {
 #[component]
 pub fn ForbiddenPanel() -> Element {
   rsx! {
+      document::Meta { name: "robots", content: "noindex, nofollow" }
       section { class: "min-h-screen flex items-center justify-center bg-white dark:bg-slate-950",
           div { class: "max-w-md text-center px-4",
               div { class: "text-6xl mb-4", "🔒" }
@@ -65,6 +66,7 @@ pub fn AdminShell(active: String, children: Element) -> Element {
   let has_course =
     app_core::engines::module::default_module_specs().iter().any(|s| s.id == "course");
   rsx! {
+      document::Meta { name: "robots", content: "noindex, nofollow" }
       section { class: "min-h-screen bg-slate-50 dark:bg-slate-950",
           div { class: "max-w-7xl mx-auto flex",
               aside { class: "shrink-0 w-56 border-r border-slate-200 dark:border-slate-800 px-4 py-6 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto bg-white dark:bg-slate-950",

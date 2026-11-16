@@ -216,6 +216,7 @@ pub fn TopicsIndexPage() -> Element {
 
   let lang = use_language_ctx();
   let session_user = use_session_user_ctx();
+  let auth_modal = use_auth_modal_ctx();
   let is_logged_in = session_user.as_ref().map(|s| s.read().is_some()).unwrap_or(false);
 
   rsx! {
@@ -234,14 +235,27 @@ pub fn TopicsIndexPage() -> Element {
                   }
                   div { class: "flex items-center gap-3",
                       if is_logged_in {
-                          a { href: "/me/topics",
+                          a { href: "/me/topics", rel: "nofollow",
                               class: button_class(ButtonVariant::Outline, ButtonSize::Md, UiDensity::Comfortable, "font-semibold"),
                               "{t(lang, \"forum.my_topics\")}"
                           }
-                      }
-                      a { href: "/topics/new",
-                          class: "inline-flex items-center rounded-md btn-flow px-4 py-2 text-sm font-semibold transition-all",
-                          "{t(lang, \"forum.post_topic\")}"
+                          a { href: "/topics/new", rel: "nofollow",
+                              class: "inline-flex items-center rounded-md btn-flow px-4 py-2 text-sm font-semibold transition-all",
+                              "{t(lang, \"forum.post_topic\")}"
+                          }
+                      } else {
+                          button {
+                              r#type: "button",
+                              class: "inline-flex items-center rounded-md btn-flow px-4 py-2 text-sm font-semibold transition-all cursor-pointer",
+                              onclick: move |_| {
+                                  if let Some(mut a) = auth_modal {
+                                      a.set(true);
+                                  } else {
+                                      widgets::browser::navigate("/topics/new");
+                                  }
+                              },
+                              "{t(lang, \"forum.post_topic\")}"
+                          }
                       }
                   }
               }
@@ -367,6 +381,7 @@ pub fn MyTopicsPage() -> Element {
   let topics = res.read().as_ref().map(|r| r.as_ref().map_err(|_| ()).cloned());
 
   rsx! {
+      document::Meta { name: "robots", content: "noindex, nofollow" }
       section { class: "py-10 min-h-screen bg-white dark:bg-slate-950",
           LocalContainer {
               h1 { class: "text-2xl font-extrabold text-slate-900 dark:text-white mb-6", "{t(lang, \"forum.my_topics\")}" }
@@ -376,7 +391,7 @@ pub fn MyTopicsPage() -> Element {
                   Some(Ok(list)) if list.is_empty() => rsx! {
                       div { class: "text-center py-16",
                           p { class: "text-slate-500 dark:text-slate-400 mb-4", "{t(lang, \"forum.my_topics_empty\")}" }
-                          a { href: "/topics/new",
+                          a { href: "/topics/new", rel: "nofollow",
                               class: "inline-flex items-center px-4 py-2 rounded-lg btn-flow text-sm font-semibold transition-all",
                               "{t(lang, \"forum.post_first\")}"
                           }
@@ -700,6 +715,7 @@ pub fn NewTopicPage() -> Element {
 
   if !is_logged_in {
     return rsx! {
+        document::Meta { name: "robots", content: "noindex, nofollow" }
         section { class: "py-10 min-h-screen bg-white dark:bg-slate-950",
             LocalContainer {
                 div { class: card_class("max-w-md mx-auto rounded-xl p-8 text-center shadow-none"),
@@ -726,6 +742,7 @@ pub fn NewTopicPage() -> Element {
   let editor_tab = if is_preview() { "preview" } else { "edit" }.to_string();
 
   rsx! {
+      document::Meta { name: "robots", content: "noindex, nofollow" }
       section { class: "py-10 min-h-screen bg-white dark:bg-slate-950",
           LocalContainer {
               div { class: "mb-6",
@@ -828,6 +845,9 @@ pub fn NewTopicPage() -> Element {
 #[component]
 pub fn DiscussionPanel(resource_kind: String, resource_path: String) -> Element {
   let lang = use_language_ctx();
+  let session_user = use_session_user_ctx();
+  let auth_modal = use_auth_modal_ctx();
+  let is_logged_in = session_user.as_ref().map(|s| s.read().is_some()).unwrap_or(false);
   let kind_for_res = resource_kind.clone();
   let path_for_res = resource_path.clone();
   let res = use_resource(move || {
@@ -842,14 +862,30 @@ pub fn DiscussionPanel(resource_kind: String, resource_path: String) -> Element 
     urlencode(&resource_kind),
     urlencode(&resource_path)
   );
+  let nav_href = new_href.clone();
 
   rsx! {
       section { class: "mt-12 border-t border-slate-200 dark:border-slate-800 pt-8",
           div { class: "flex items-center justify-between mb-5",
               h3 { class: "text-lg font-bold text-slate-900 dark:text-white", "{t(lang, \"forum.related\")}" }
-              a { href: "{new_href}",
-                  class: "inline-flex items-center px-3 py-1.5 rounded-lg btn-flow text-xs font-semibold transition-all",
-                  "{t(lang, \"forum.start_discussion\")}"
+              if is_logged_in {
+                  a { href: "{new_href}", rel: "nofollow",
+                      class: "inline-flex items-center px-3 py-1.5 rounded-lg btn-flow text-xs font-semibold transition-all",
+                      "{t(lang, \"forum.start_discussion\")}"
+                  }
+              } else {
+                  button {
+                      r#type: "button",
+                      class: "inline-flex items-center px-3 py-1.5 rounded-lg btn-flow text-xs font-semibold transition-all cursor-pointer",
+                      onclick: move |_| {
+                          if let Some(mut a) = auth_modal {
+                              a.set(true);
+                          } else {
+                              widgets::browser::navigate(&nav_href);
+                          }
+                      },
+                      "{t(lang, \"forum.start_discussion\")}"
+                  }
               }
           }
           match topics {

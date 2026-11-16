@@ -1236,6 +1236,7 @@ pub fn MyAnnotationsPage() -> Element {
   let res = use_resource(|| async move { list_my_annotations().await.unwrap_or_default() });
   let state = res.read().as_ref().cloned();
   rsx! {
+      document::Meta { name: "robots", content: "noindex, nofollow" }
       section { class: "py-12 min-h-screen bg-[var(--color-bg)] transition-colors duration-300",
           LocalContainer {
               LocalSectionTitle {
