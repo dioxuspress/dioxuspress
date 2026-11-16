@@ -440,8 +440,8 @@ fn render_stream<'a>(
                         .split(|c: char| c == ',' || c == '{' || c.is_whitespace())
                         .next()
                         .filter(|lang| !lang.is_empty())
-                        .unwrap_or("text")
-                        .to_string(),
+                        .map(normalize_code_lang)
+                        .unwrap_or_else(|| "text".to_string()),
                     _ => "text".to_string(),
                 };
                 let mut code_text = String::new();
@@ -1004,12 +1004,31 @@ struct CodeTabItem {
   pub code: String,
 }
 
+fn normalize_code_lang(raw: &str) -> String {
+  match raw.to_ascii_lowercase().as_str() {
+    "c++" | "cc" | "cxx" | "hpp" => "cpp".to_string(),
+    "metal" => "msl".to_string(),
+    "cu" => "cuda".to_string(),
+    "typ" => "typst".to_string(),
+    "tex" => "latex".to_string(),
+    "md" | "mdx" => "markdown".to_string(),
+    other => other.to_string(),
+  }
+}
+
 fn default_code_tab_label(lang: &str) -> String {
   match lang.to_ascii_lowercase().as_str() {
     "typ" | "typst" => "Typst".to_string(),
     "tex" | "latex" => "LaTeX".to_string(),
     "md" | "mdx" | "markdown" => "Markdown".to_string(),
     "rs" | "rust" => "Rust".to_string(),
+    "c" => "C".to_string(),
+    "cpp" | "c++" | "cc" | "cxx" | "hpp" => "C++".to_string(),
+    "msl" | "metal" => "MSL".to_string(),
+    "cuda" | "cu" => "CUDA".to_string(),
+    "wgsl" => "WGSL".to_string(),
+    "sql" => "SQL".to_string(),
+    "diff" => "Diff".to_string(),
     "py" | "python" => "Python".to_string(),
     "js" | "javascript" => "JavaScript".to_string(),
     "ts" | "typescript" => "TypeScript".to_string(),
@@ -1029,12 +1048,7 @@ fn parse_code_fence_info(info: &str) -> (String, String) {
     .next()
     .filter(|s| !s.is_empty())
     .unwrap_or("text");
-  let lang = match lang_raw.to_ascii_lowercase().as_str() {
-    "typ" => "typst".to_string(),
-    "tex" => "latex".to_string(),
-    "md" => "markdown".to_string(),
-    other => other.to_string(),
-  };
+  let lang = normalize_code_lang(lang_raw);
   let label = if let Some(start) = trimmed.find('[') {
     let rest = &trimmed[start + 1..];
     rest.find(']').map(|end| rest[..end].trim().to_string()).filter(|s| !s.is_empty())
@@ -1539,6 +1553,19 @@ mod tests {
       render_markdown("```rust,ignore\nfn a() {}\n```\n\n```py title=\"x.py\"\npass\n```", false);
     assert!(html.contains("language-rust ") && html.contains("language-py "), "{html}");
     assert!(!html.contains("ignore") && !html.contains("title="), "{html}");
+  }
+
+  /// C++ / Metal / CUDA 别名统一归一化到符合 Prism `[\w-]+` 选择器的语言标识。
+  #[test]
+  fn shader_and_cpp_code_fence_aliases_normalize_for_prism() {
+    let html = render_markdown(
+      "```c++\nint x;\n```\n\n```metal\nkernel void k() {}\n```\n\n```cu\n__global__ void g() {}\n```\n\n```wgsl\n@compute fn m() {}\n```",
+      false,
+    );
+    assert!(html.contains("language-cpp "), "{html}");
+    assert!(html.contains("language-msl "), "{html}");
+    assert!(html.contains("language-cuda "), "{html}");
+    assert!(html.contains("language-wgsl "), "{html}");
   }
 
   /// M2：表格单元格里的 `<br/>` 是换行，不是文字。
