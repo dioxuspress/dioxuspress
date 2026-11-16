@@ -305,22 +305,45 @@ fn legacy_blog_target(path: &str) -> Option<String> {
   }
 }
 
-/// GET / HEAD 的旧博客地址与尾斜杠地址永久跳转到新地址。
+fn matches_seg(path: &str, prefix: &str) -> bool {
+  path == prefix
+    || (path.len() > prefix.len()
+      && path.starts_with(prefix)
+      && path.as_bytes().get(prefix.len()) == Some(&b'/'))
+}
+
+/// 私密后台、个人中心、发帖表单与登录/支付跳转端点不应进入搜索引擎索引：
+/// 通过 `X-Robots-Tag: noindex, nofollow` 明确告知爬虫不收录，避免依赖 `robots.txt`
+/// 屏蔽站内已链接的交互页而在 Search Console 触发「已被 robots.txt 屏蔽」告警。
+fn should_noindex_path(path: &str) -> bool {
+  path == "/topics/new"
+    || ["/admin", "/me", "/api/auth", "/pay", "/orders"].iter().any(|p| matches_seg(path, p))
+}
+
+/// GET / HEAD 的旧博客地址与尾斜杠地址永久跳转到新地址；对私密/交互表单路径下发 `X-Robots-Tag: noindex, nofollow`。
 pub async fn trailing_slash_mw(
   req: axum::extract::Request,
   next: axum::middleware::Next,
 ) -> axum::response::Response {
-  use axum::http::Method;
+  use axum::http::{HeaderName, HeaderValue, Method};
   use axum::response::{IntoResponse, Redirect};
+  let path = req.uri().path();
   if matches!(*req.method(), Method::GET | Method::HEAD) {
-    let path = req.uri().path();
     let target =
       legacy_blog_target(path).or_else(|| slash_redirect_target(path, req.uri().query()));
     if let Some(to) = target {
       return Redirect::permanent(&to).into_response();
     }
   }
-  next.run(req).await
+  let noindex = should_noindex_path(path);
+  let mut resp = next.run(req).await;
+  if noindex {
+    resp.headers_mut().insert(
+      HeaderName::from_static("x-robots-tag"),
+      HeaderValue::from_static("noindex, nofollow"),
+    );
+  }
+  resp
 }
 
 #[cfg(test)]
@@ -386,6 +409,83 @@ mod tests {
     ] {
       assert_eq!(t(keep), None, "{keep}");
     }
+  }
+
+  #[test]
+  fn noindex_paths_match_only_private_and_form_routes() {
+    for private_path in [
+      "/topics/new",
+      "/admin",
+      "/admin/users",
+      "/admin/moderation/settings",
+      "/me",
+      "/me/topics",
+      "/me/orders",
+      "/me/annotations",
+      "/api/auth/login/github",
+      "/api/auth/callback/google",
+      "/pay/checkout",
+      "/orders/123",
+    ] {
+      assert!(should_noindex_path(private_path), "expected noindex for {private_path}");
+    }
+
+    for public_path in [
+      "/",
+      "/topics",
+      "/topics/42",
+      "/topics/tag/rust",
+      "/docs",
+      "/docs/admin-guide",
+      "/blog/me-and-rust",
+      "/course/model-finetuning",
+      "/models/deepseek-v3",
+    ] {
+      assert!(!should_noindex_path(public_path), "unexpected noindex for {public_path}");
+    }
+  }
+
+  #[tokio::test]
+  async fn trailing_slash_mw_sets_x_robots_tag_on_noindex_routes_only() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let app = Router::new()
+      .route("/topics", get(|| async { "topics" }))
+      .route("/topics/new", get(|| async { "new topic" }))
+      .route("/admin/users", get(|| async { "admin users" }))
+      .layer(axum::middleware::from_fn(trailing_slash_mw));
+
+    let resp_new = app
+      .clone()
+      .oneshot(
+        Request::builder()
+          .uri("/topics/new?ref_kind=doc&ref_path=tokio")
+          .body(Body::empty())
+          .unwrap(),
+      )
+      .await
+      .unwrap();
+    assert_eq!(resp_new.status(), StatusCode::OK);
+    assert_eq!(
+      resp_new.headers().get("x-robots-tag").and_then(|v| v.to_str().ok()),
+      Some("noindex, nofollow")
+    );
+
+    let resp_admin = app
+      .clone()
+      .oneshot(Request::builder().uri("/admin/users").body(Body::empty()).unwrap())
+      .await
+      .unwrap();
+    assert_eq!(
+      resp_admin.headers().get("x-robots-tag").and_then(|v| v.to_str().ok()),
+      Some("noindex, nofollow")
+    );
+
+    let resp_public =
+      app.oneshot(Request::builder().uri("/topics").body(Body::empty()).unwrap()).await.unwrap();
+    assert!(resp_public.headers().get("x-robots-tag").is_none());
   }
 
   #[test]
