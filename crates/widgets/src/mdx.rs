@@ -1006,9 +1006,17 @@ struct CodeTabItem {
 
 fn normalize_code_lang(raw: &str) -> String {
   match raw.to_ascii_lowercase().as_str() {
+    "rs" => "rust".to_string(),
     "c++" | "cc" | "cxx" | "hpp" => "cpp".to_string(),
+    "c#" => "csharp".to_string(),
+    "golang" => "go".to_string(),
+    "zsh" => "bash".to_string(),
     "metal" => "msl".to_string(),
     "cu" => "cuda".to_string(),
+    "proto" => "protobuf".to_string(),
+    "gql" => "graphql".to_string(),
+    "make" => "makefile".to_string(),
+    "terraform" | "tf" => "hcl".to_string(),
     "typ" => "typst".to_string(),
     "tex" => "latex".to_string(),
     "md" | "mdx" => "markdown".to_string(),
@@ -1024,14 +1032,37 @@ fn default_code_tab_label(lang: &str) -> String {
     "rs" | "rust" => "Rust".to_string(),
     "c" => "C".to_string(),
     "cpp" | "c++" | "cc" | "cxx" | "hpp" => "C++".to_string(),
+    "csharp" | "cs" | "dotnet" | "c#" => "C#".to_string(),
+    "go" | "golang" => "Go".to_string(),
+    "java" => "Java".to_string(),
+    "kotlin" | "kt" | "kts" => "Kotlin".to_string(),
+    "zig" => "Zig".to_string(),
+    "dart" => "Dart".to_string(),
+    "swift" => "Swift".to_string(),
+    "ruby" | "rb" => "Ruby".to_string(),
+    "php" => "PHP".to_string(),
+    "lua" => "Lua".to_string(),
+    "r" => "R".to_string(),
     "msl" | "metal" => "MSL".to_string(),
     "cuda" | "cu" => "CUDA".to_string(),
     "wgsl" => "WGSL".to_string(),
     "sql" => "SQL".to_string(),
     "diff" => "Diff".to_string(),
+    "docker" | "dockerfile" => "Dockerfile".to_string(),
+    "protobuf" | "proto" => "Protobuf".to_string(),
+    "graphql" | "gql" => "GraphQL".to_string(),
+    "makefile" | "make" => "Makefile".to_string(),
+    "ini" => "INI".to_string(),
+    "hcl" | "terraform" | "tf" => "HCL".to_string(),
     "py" | "python" => "Python".to_string(),
     "js" | "javascript" => "JavaScript".to_string(),
+    "jsx" => "JSX".to_string(),
     "ts" | "typescript" => "TypeScript".to_string(),
+    "tsx" => "TSX".to_string(),
+    "html" | "markup" => "HTML".to_string(),
+    "xml" => "XML".to_string(),
+    "svg" => "SVG".to_string(),
+    "css" => "CSS".to_string(),
     "sh" | "bash" | "zsh" => "Bash".to_string(),
     "toml" => "TOML".to_string(),
     "json" => "JSON".to_string(),
@@ -1555,17 +1586,35 @@ mod tests {
     assert!(!html.contains("ignore") && !html.contains("title="), "{html}");
   }
 
-  /// C++ / Metal / CUDA 别名统一归一化到符合 Prism `[\w-]+` 选择器的语言标识。
+  /// C++ / C# / Metal / CUDA / Go / DevOps 常见别名统一归一化到符合 Prism `[\w-]+` 选择器的语言标识。
   #[test]
   fn shader_and_cpp_code_fence_aliases_normalize_for_prism() {
     let html = render_markdown(
-      "```c++\nint x;\n```\n\n```metal\nkernel void k() {}\n```\n\n```cu\n__global__ void g() {}\n```\n\n```wgsl\n@compute fn m() {}\n```",
+      "```c++\nint x;\n```\n\n```C#\nint y;\n```\n\n```golang\npackage p\n```\n\n```metal\nkernel void k() {}\n```\n\n```cu\n__global__ void g() {}\n```\n\n```wgsl\n@compute fn m() {}\n```\n\n```proto\nsyntax = \"proto3\";\n```\n\n```terraform\nresource \"x\" \"y\" {}\n```\n\n```rs\nfn main() {}\n```\n\n```zsh\necho hi\n```",
       false,
     );
-    assert!(html.contains("language-cpp "), "{html}");
-    assert!(html.contains("language-msl "), "{html}");
-    assert!(html.contains("language-cuda "), "{html}");
-    assert!(html.contains("language-wgsl "), "{html}");
+    for expected in [
+      "language-cpp ",
+      "language-csharp ",
+      "language-go ",
+      "language-msl ",
+      "language-cuda ",
+      "language-wgsl ",
+      "language-protobuf ",
+      "language-hcl ",
+      "language-rust ",
+      "language-bash ",
+    ] {
+      assert!(html.contains(expected), "missing {expected} in {html}");
+    }
+
+    let tabs_html = render_markdown(
+      ":::code-tabs\n```golang\npackage main\n```\n\n```kt\nfun main() {}\n```\n\n```c#\nclass P {}\n```\n\n```dockerfile\nFROM scratch\n```\n:::\n",
+      false,
+    );
+    for label in [">Go</button>", ">Kotlin</button>", ">C#</button>", ">Dockerfile</button>"] {
+      assert!(tabs_html.contains(label), "missing {label} in {tabs_html}");
+    }
   }
 
   /// M2：表格单元格里的 `<br/>` 是换行，不是文字。
