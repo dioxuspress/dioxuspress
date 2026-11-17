@@ -58,8 +58,8 @@ Root `Cargo.toml` defines `[profile.wasm-release]` (`opt-level = "z"`, `lto = "f
 
 | Client Build Tier | Raw `.wasm` (pre-`wasm-opt`) | `gzip -9` Transfer Size | `brotli -q 11` Transfer Size | CI Gzip Ceiling |
 | :--- | :--- | :--- | :--- | :--- |
-| **`basic` (Docs & Blog Hydration)** | `5.52 MiB` (`5,790,105 B`) | `1.54 MiB` | **`1.04 MiB`** | `1.86 MiB` (`1,950,000 B`) |
-| **`full` (Community, Courses & Admin)** | `7.59 MiB` (`7,958,284 B`) | `2.07 MiB` | **`1.35 MiB`** (~`1.19 MiB` after `dx bundle` `wasm-opt`) | `2.43 MiB` (`2,550,000 B`) |
+| **`basic` (Docs, Blog & Interactive AI Labs)** | `6.77 MiB` (`7,100,737 B`) | `1.89 MiB` | **`1.28 MiB`** | `2.10 MiB` (`2,200,000 B`) |
+| **`full` (Community, Courses & Admin)** | `9.04 MiB` (`9,477,449 B`) | `2.48 MiB` | **`1.62 MiB`** | `2.77 MiB` (`2,900,000 B`) |
 
 ---
 

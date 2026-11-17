@@ -27,6 +27,21 @@ pub struct Theme {
   pub css: &'static str,
 }
 
+/// 主题 CSS 仅在服务端（SSR 内联与 `/api/theme/css` 聚合）及单元测试中读取；
+/// 客户端 WASM 始终通过 `get_aggregated_theme_css` 接收服务端聚合好的样式，省略静态 CSS 可减少前端包体积。
+macro_rules! theme_css {
+  ($path:literal) => {{
+    #[cfg(any(feature = "server", test))]
+    {
+      include_str!($path)
+    }
+    #[cfg(not(any(feature = "server", test)))]
+    {
+      ""
+    }
+  }};
+}
+
 /// 全部内置主题（打通 `dioxus-ui` 语义调色盘并合成亮暗双模），顺序即切换菜单默认顺序。
 /// 第一个是 `site.json` 未配置或配错时的安全回退。
 pub const THEMES: &[Theme] = &[
@@ -39,7 +54,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#0e7490",
     dark_bg: "#09090b",
     dark_primary: "#22d3ee",
-    css: include_str!("themes/ocean.css"),
+    css: theme_css!("themes/ocean.css"),
   },
   Theme {
     id: "emerald",
@@ -50,7 +65,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#047857",
     dark_bg: "#0b1310",
     dark_primary: "#34d399",
-    css: include_str!("themes/emerald.css"),
+    css: theme_css!("themes/emerald.css"),
   },
   Theme {
     id: "nord",
@@ -61,7 +76,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#3b6ea5",
     dark_bg: "#242933",
     dark_primary: "#88c0d0",
-    css: include_str!("themes/nord.css"),
+    css: theme_css!("themes/nord.css"),
   },
   Theme {
     id: "corporate",
@@ -72,7 +87,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#0969da",
     dark_bg: "#0d1117",
     dark_primary: "#58a6ff",
-    css: include_str!("themes/corporate.css"),
+    css: theme_css!("themes/corporate.css"),
   },
   Theme {
     id: "winter",
@@ -83,7 +98,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#4338ca",
     dark_bg: "#16161e",
     dark_primary: "#7aa2f7",
-    css: include_str!("themes/winter.css"),
+    css: theme_css!("themes/winter.css"),
   },
   Theme {
     id: "dracula",
@@ -94,7 +109,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#6d28d9",
     dark_bg: "#1e1f29",
     dark_primary: "#bd93f9",
-    css: include_str!("themes/dracula.css"),
+    css: theme_css!("themes/dracula.css"),
   },
   Theme {
     id: "sunset",
@@ -105,7 +120,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#d97706",
     dark_bg: "#1c0d05",
     dark_primary: "#fb923c",
-    css: include_str!("themes/sunset.css"),
+    css: theme_css!("themes/sunset.css"),
   },
   Theme {
     id: "coffee",
@@ -116,7 +131,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#854d0e",
     dark_bg: "#181310",
     dark_primary: "#ddb892",
-    css: include_str!("themes/coffee.css"),
+    css: theme_css!("themes/coffee.css"),
   },
   Theme {
     id: "catppuccin",
@@ -127,7 +142,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#1e66f5",
     dark_bg: "#24273a",
     dark_primary: "#8aadf4",
-    css: include_str!("themes/catppuccin.css"),
+    css: theme_css!("themes/catppuccin.css"),
   },
   Theme {
     id: "silk",
@@ -138,7 +153,7 @@ pub const THEMES: &[Theme] = &[
     light_primary: "#be123c",
     dark_bg: "#191724",
     dark_primary: "#ebbcba",
-    css: include_str!("themes/silk.css"),
+    css: theme_css!("themes/silk.css"),
   },
 ];
 

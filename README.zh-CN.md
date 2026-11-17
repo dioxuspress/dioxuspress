@@ -98,7 +98,7 @@ dx serve
 | **首屏完整 SSR（`/` / `/docs/*`）** | `2.79 ms` / `4.04 ms` P50（`1,832` / `1,236 QPS`） | `2.90 ms` / `4.02 ms` P50（`1,764` / `1,234 QPS`） | 实时 Markdown 解析 + 三级侧栏 + VirtualDOM 渲染 |
 | **匿名条件缓存（`ETag` → `304`）** | **`0.096 ms` P50（`13,636 QPS`）** | **`0.093 ms` P50（`13,462 QPS`）** | 仅限纯匿名只读请求；登录态与私密路径严格 `private, no-store` |
 | **Tantivy 全文检索（`/api/search/query`）** | **`0.314 ms` P50（`9,215 QPS`）** | **`0.317 ms` P50（`9,326 QPS`）** | 中英 BM25 + 摘要提取；支持 `SIGHUP` 零停机增量热刷新 |
-| **前端 WASM 传输体积（`brotli -q 11`）** | **`1.04 MiB`**（`1.54 MiB` gzip） | **`1.35 MiB`**（`2.07 MiB` gzip） | CI 每次 PR 执行 `scripts/check_wasm_size.sh` 硬性体积门禁 |
+| **前端 WASM 传输体积（`brotli -q 11`）** | **`1.28 MiB`**（`1.89 MiB` gzip） | **`1.62 MiB`**（`2.48 MiB` gzip） | CI 每次 PR 执行 `scripts/check_wasm_size.sh` 硬性体积门禁 |
 
 ## 提交前检查
 

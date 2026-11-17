@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::f64::consts::PI;
+use std::fmt::Write as _;
 
 use app_core::i18n::Language;
 use dioxus::prelude::*;
@@ -17,6 +18,54 @@ use serde::{Deserialize, Serialize};
 
 fn current_lang() -> Language {
   try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default()
+}
+
+/// 无堆重分配地向 SVG `polyline` 点集缓冲追加坐标对，同时消除多处内联 `format!` 代码膨胀。
+#[inline(never)]
+fn push_svg_pt(buf: &mut String, first: bool, x: f64, y: f64) {
+  if !first {
+    buf.push(' ');
+  }
+  let _ = write!(buf, "{x:.1},{y:.1}");
+}
+
+/// 跨算子实验台复用的单个 SVG 特征网格单元（消除多处嵌套循环产生的重复 VirtualDOM 模板代码）。
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn svg_grid_cell(
+  key_id: &str,
+  x: f64,
+  y: f64,
+  w: f64,
+  h: f64,
+  rect_cls: &str,
+  stroke_w: &str,
+  label: &str,
+  text_cls: &str,
+) -> Element {
+  let tx = x + w * 0.5;
+  let ty = y + h * 0.64;
+  rsx! {
+    g { key: "{key_id}",
+      rect {
+        x: "{x:.1}",
+        y: "{y:.1}",
+        width: "{w:.1}",
+        height: "{h:.1}",
+        rx: "3.5",
+        class: "{rect_cls}",
+        stroke_width: "{stroke_w}",
+      }
+      text {
+        x: "{tx:.1}",
+        y: "{ty:.1}",
+        text_anchor: "middle",
+        font_size: "9",
+        class: "{text_cls}",
+        "{label}"
+      }
+    }
+  }
 }
 
 /// 八大可复用算子交互内核分类（M1 完整交付前 4 套高频空间/数值/几何内核，M2 补齐后 4 套序列/注意力/音频/路由内核）。
@@ -343,22 +392,14 @@ fn ActivationCurveLab(initial_mode: String) -> Element {
     let y = p_fn.eval(x, alpha);
     let dy = p_fn.deriv(x, alpha);
     let sx = map_x(x);
-    let sy = map_y(y);
-    let sdy = map_y(dy);
-    if step > 0 {
-      pts_primary.push(' ');
-      pts_deriv.push(' ');
-    }
-    pts_primary.push_str(&format!("{sx:.1},{sy:.1}"));
-    pts_deriv.push_str(&format!("{sx:.1},{sdy:.1}"));
+    let first = step == 0;
+    push_svg_pt(&mut pts_primary, first, sx, map_y(y));
+    push_svg_pt(&mut pts_deriv, first, sx, map_y(dy));
 
     if let Some(cf) = cmp_fn {
       let cy = cf.eval(x, alpha);
       max_cmp_diff = max_cmp_diff.max((y - cy).abs());
-      if step > 0 {
-        pts_cmp.push(' ');
-      }
-      pts_cmp.push_str(&format!("{sx:.1},{:.1}", map_y(cy)));
+      push_svg_pt(&mut pts_cmp, first, sx, map_y(cy));
     }
 
     if dy.abs() < 0.05 {
@@ -784,15 +825,21 @@ fn GridSlidingKernelLab(initial_mode: String) -> Element {
 
       match cur_mode {
         GridKernelMode::StandardConv => {
-          // 收集当前输出格 (out_r, out_c) 命中的 9 个采样坐标及乘累加值
-          let mut hits: HashMap<(usize, usize), f64> = HashMap::new();
+          // 累加当前输出格 (out_r, out_c) 命中的 9 个采样坐标乘积（零堆分配算术判定感受野）
+          let base_r = out_r * s;
+          let base_c = out_c * s;
+          let in_rf = |pr: usize, pc: usize| -> bool {
+            pr >= base_r
+              && pc >= base_c
+              && (pr - base_r).is_multiple_of(d)
+              && (pc - base_c).is_multiple_of(d)
+              && (pr - base_r) / d < 3
+              && (pc - base_c) / d < 3
+          };
           let mut mac_sum = 0.0_f64;
           for (kr, k_row) in KERNEL_EDGE_3X3.iter().enumerate() {
             for (kc, &w) in k_row.iter().enumerate() {
-              let pr = out_r * s + kr * d;
-              let pc = out_c * s + kc * d;
-              let (val, _) = get_padded(pr, pc);
-              hits.insert((pr, pc), w);
+              let (val, _) = get_padded(base_r + kr * d, base_c + kc * d);
               mac_sum += val * w;
             }
           }
@@ -886,35 +933,27 @@ fn GridSlidingKernelLab(initial_mode: String) -> Element {
                         let x = 20.0 + (pc as f64) * cell_sz;
                         let y = 30.0 + (pr as f64) * cell_sz;
                         let (val, is_pad) = get_padded(pr, pc);
-                        let hit_w = hits.get(&(pr, pc)).copied();
-                        let rect_cls = if hit_w.is_some() {
+                        let is_hit = in_rf(pr, pc);
+                        let rect_cls = if is_hit {
                           "fill-indigo-500/25 dark:fill-indigo-500/40 stroke-indigo-600 dark:stroke-indigo-400"
                         } else if is_pad {
                           "fill-slate-100/70 dark:fill-slate-900/50 stroke-slate-300 dark:stroke-slate-800"
                         } else {
                           "fill-slate-50 dark:fill-slate-900 stroke-slate-300 dark:stroke-slate-700"
                         };
-                        rsx! {
-                          g { key: "in-{pr}-{pc}",
-                            rect {
-                              x: "{x:.1}",
-                              y: "{y:.1}",
-                              width: "{cell_sz - 2.0:.1}",
-                              height: "{cell_sz - 2.0:.1}",
-                              rx: "3",
-                              class: "{rect_cls}",
-                              stroke_width: if hit_w.is_some() { "2" } else { "1" },
-                            }
-                            text {
-                              x: "{x + (cell_sz - 2.0) * 0.5:.1}",
-                              y: "{y + (cell_sz - 2.0) * 0.62:.1}",
-                              text_anchor: "middle",
-                              font_size: "9",
-                              class: if is_pad { "fill-slate-400" } else { "fill-slate-800 dark:fill-slate-100" },
-                              "{val:.1}"
-                            }
-                          }
-                        }
+                        let t_cls =
+                          if is_pad { "fill-slate-400" } else { "fill-slate-800 dark:fill-slate-100" };
+                        svg_grid_cell(
+                          &format!("in-{pr}-{pc}"),
+                          x,
+                          y,
+                          cell_sz - 2.0,
+                          cell_sz - 2.0,
+                          rect_cls,
+                          if is_hit { "2" } else { "1" },
+                          &format!("{val:.1}"),
+                          t_cls,
+                        )
                       }
                     }
                   }
@@ -923,18 +962,20 @@ fn GridSlidingKernelLab(initial_mode: String) -> Element {
                   text { x: "335", y: "52", text_anchor: "middle", font_size: "11", class: "fill-amber-600 dark:fill-amber-400 font-bold",
                     "Kernel [3×3] (eff {eff_k}×{eff_k})"
                   }
-                  for kr in 0..3 {
-                    for kc in 0..3 {
+                  for (kr, k_row) in KERNEL_EDGE_3X3.iter().enumerate() {
+                    for (kc, &w) in k_row.iter().enumerate() {
                       {
-                        let kx = 290.0 + (kc as f64) * 30.0;
-                        let ky = 64.0 + (kr as f64) * 30.0;
-                        let w = KERNEL_EDGE_3X3[kr][kc];
-                        rsx! {
-                          g { key: "k-{kr}-{kc}",
-                            rect { x: "{kx}", y: "{ky}", width: "28", height: "28", rx: "4", class: "fill-amber-50 dark:fill-amber-950/60 stroke-amber-500", stroke_width: "1.5" }
-                            text { x: "{kx + 14.0}", y: "{ky + 18.0}", text_anchor: "middle", font_size: "10", class: "fill-amber-800 dark:fill-amber-200 font-bold", "{w:+.0}" }
-                          }
-                        }
+                        svg_grid_cell(
+                          &format!("k-{kr}-{kc}"),
+                          290.0 + (kc as f64) * 30.0,
+                          64.0 + (kr as f64) * 30.0,
+                          28.0,
+                          28.0,
+                          "fill-amber-50 dark:fill-amber-950/60 stroke-amber-500",
+                          "1.5",
+                          &format!("{w:+.0}"),
+                          "fill-amber-800 dark:fill-amber-200 font-bold",
+                        )
                       }
                     }
                   }
@@ -1153,24 +1194,26 @@ fn GridSlidingKernelLab(initial_mode: String) -> Element {
                   text { x: "340", y: "20", text_anchor: "middle", font_size: "11", class: "fill-slate-800 dark:fill-slate-200 font-bold",
                     "输出像素累加覆盖次数热力图 [{out_sz}×{out_sz}]（全 1 输入 × 全 1 核）"
                   }
-                  for r in 0..out_sz {
-                    for c in 0..out_sz {
+                  for (r, row) in counts.iter().enumerate() {
+                    for (c, &cnt) in row.iter().enumerate() {
                       {
-                        let cnt = counts[r][c];
-                        let ox = 205.0 + (c as f64) * 28.0;
-                        let oy = 32.0 + (r as f64) * 24.0;
                         let cls = match cnt {
                           1 => "fill-slate-100 dark:fill-slate-900 stroke-slate-300 dark:stroke-slate-700",
                           2 => "fill-sky-200/80 dark:fill-sky-900/70 stroke-sky-500",
                           4 => "fill-emerald-400/80 dark:fill-emerald-700 stroke-emerald-600",
                           _ => "fill-rose-500/85 stroke-rose-700",
                         };
-                        rsx! {
-                          g { key: "dc-{r}-{c}",
-                            rect { x: "{ox}", y: "{oy}", width: "26", height: "22", rx: "3", class: "{cls}", stroke_width: "1" }
-                            text { x: "{ox + 13.0}", y: "{oy + 15.0}", text_anchor: "middle", font_size: "10", class: "fill-slate-900 dark:fill-white font-bold", "{cnt}×" }
-                          }
-                        }
+                        svg_grid_cell(
+                          &format!("dc-{r}-{c}"),
+                          205.0 + (c as f64) * 28.0,
+                          32.0 + (r as f64) * 24.0,
+                          26.0,
+                          22.0,
+                          cls,
+                          "1",
+                          &format!("{cnt}×"),
+                          "fill-slate-900 dark:fill-white font-bold",
+                        )
                       }
                     }
                   }
@@ -1639,8 +1682,6 @@ fn NormAndPrecisionLab(initial_mode: String) -> Element {
                   for c in 0..4_usize {
                     for s in 0..4_usize {
                       {
-                        let cx = base_x + (s as f64) * 35.0;
-                        let cy = 32.0 + (c as f64) * 34.0;
                         let active = cur_mode.in_same_group(n, c, s);
                         let is_spike = n == 0 && c == 0 && s == 0;
                         let cls = if is_spike {
@@ -1650,19 +1691,21 @@ fn NormAndPrecisionLab(initial_mode: String) -> Element {
                         } else {
                           "fill-slate-100 dark:fill-slate-900 stroke-slate-300 dark:stroke-slate-800"
                         };
-                        rsx! {
-                          g { key: "cell-{n}-{c}-{s}",
-                            rect { x: "{cx}", y: "{cy}", width: "31", height: "28", rx: "4", class: "{cls}", stroke_width: if active { "1.8" } else { "1" } }
-                            text {
-                              x: "{cx + 15.5}",
-                              y: "{cy + 18.0}",
-                              text_anchor: "middle",
-                              font_size: "8.5",
-                              class: if is_spike { "fill-white font-bold" } else { "fill-slate-700 dark:fill-slate-200" },
-                              "{cell_val(n, c, s):.1}"
-                            }
-                          }
-                        }
+                        svg_grid_cell(
+                          &format!("cell-{n}-{c}-{s}"),
+                          base_x + (s as f64) * 35.0,
+                          32.0 + (c as f64) * 34.0,
+                          31.0,
+                          28.0,
+                          cls,
+                          if active { "1.8" } else { "1" },
+                          &format!("{:.1}", cell_val(n, c, s)),
+                          if is_spike {
+                            "fill-white font-bold"
+                          } else {
+                            "fill-slate-700 dark:fill-slate-200"
+                          },
+                        )
                       }
                     }
                   }
@@ -1813,12 +1856,9 @@ fn PositionalGeometryLab(initial_mode: String) -> Element {
     let y_base =
       225.0 - ((score_at_delta(d_step as f64, PosLabMode::Rope1d, 1.0) + 0.5) / 1.65) * 185.0;
     let y_cur = 225.0 - ((score_at_delta(d_step as f64, cur_mode, s) + 0.5) / 1.65) * 185.0;
-    if d_step > 0 {
-      curve_base.push(' ');
-      curve_cur.push(' ');
-    }
-    curve_base.push_str(&format!("{x:.1},{y_base:.1}"));
-    curve_cur.push_str(&format!("{x:.1},{y_cur:.1}"));
+    let first = d_step == 0;
+    push_svg_pt(&mut curve_base, first, x, y_base);
+    push_svg_pt(&mut curve_cur, first, x, y_cur);
   }
   let abs_delta = delta.unsigned_abs().min(64) as f64;
   let marker_x = 355.0 + (abs_delta / 64.0) * 300.0;

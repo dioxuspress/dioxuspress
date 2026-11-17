@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use widgets::{Markdown, OnThisPage, PageMeta};
 
 use crate::arch::{InspectorFocus, ModelBlueprint, OutputHeadSpec};
+#[cfg(feature = "server")]
 use crate::atlas::CuratedModelSummary;
 use crate::component_labs::{ComponentLabKind, ComponentLabWorkbench};
 
@@ -113,19 +114,15 @@ impl ComponentFamily {
   }
 }
 
-/// 组件列表卡片摘要元数据。
+/// 组件列表卡片摘要元数据（精简跨端 CBOR 载荷，排序与关联匹配字段仅驻留服务端）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComponentSummary {
   pub slug: String,
   pub title: String,
   pub title_en: String,
   pub family: ComponentFamily,
-  /// `"classic"` | `"modern"` | `"frontier"`
-  pub era: String,
   /// `"vision"` | `"nlp"` | `"audio"` | `"video"` | `"multimodal"` | `"graph"` | `"general"`
   pub modalities: Vec<String>,
-  pub order: i32,
-  pub featured: bool,
   pub lab_kind: ComponentLabKind,
   pub lab_mode: String,
   pub formula_short: String,
@@ -133,7 +130,6 @@ pub struct ComponentSummary {
   pub summary: String,
   pub summary_en: String,
   pub tags: Vec<String>,
-  pub model_keywords: Vec<String>,
 }
 
 impl ComponentSummary {
@@ -152,13 +148,39 @@ impl ComponentSummary {
   }
 }
 
+/// 同族兄弟算子轻量导航项（避免在详情页重复反序列化整套 `ComponentSummary`）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SiblingComponentLink {
+  pub slug: String,
+  pub title: String,
+  pub title_en: String,
+}
+
+impl SiblingComponentLink {
+  pub fn localized_title(&self, lang: Language) -> &str {
+    match lang {
+      Language::En if !self.title_en.trim().is_empty() => &self.title_en,
+      _ => &self.title,
+    }
+  }
+}
+
+/// 关联旗舰模型轻量跳转项（避免在客户端额外单态化 `Vec<CuratedModelSummary>` CBOR 解码器）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelatedModelLink {
+  pub slug: String,
+  pub name: String,
+  pub family_badge: String,
+  pub spec_line: String,
+}
+
 /// 单个算子/组件详情页完整载荷。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ComponentDetail {
   pub meta: ComponentSummary,
   pub body_md: String,
-  pub related_models: Vec<CuratedModelSummary>,
-  pub siblings: Vec<ComponentSummary>,
+  pub related_models: Vec<RelatedModelLink>,
+  pub siblings: Vec<SiblingComponentLink>,
 }
 
 /// 根据组件 `slug` 推断 `<ComponentLab id="..." />` 的默认交互内核与模式（纯前端与服务端双端确定性一致）。
@@ -265,14 +287,10 @@ struct RawComponentFrontmatter {
   title_en: String,
   #[serde(default)]
   family: String,
-  #[serde(default = "default_era")]
-  era: String,
   #[serde(default)]
   modalities: Vec<String>,
   #[serde(default = "default_order")]
   order: i32,
-  #[serde(default)]
-  featured: bool,
   #[serde(default)]
   lab_kind: String,
   #[serde(default)]
@@ -292,11 +310,6 @@ struct RawComponentFrontmatter {
 }
 
 #[cfg(feature = "server")]
-fn default_era() -> String {
-  "modern".to_string()
-}
-
-#[cfg(feature = "server")]
 fn default_order() -> i32 {
   100
 }
@@ -305,6 +318,8 @@ fn default_order() -> i32 {
 #[derive(Debug, Clone)]
 pub struct StoredComponentEntry {
   pub meta: ComponentSummary,
+  pub order: i32,
+  pub model_keywords: Vec<String>,
   pub body_md: String,
 }
 
@@ -350,10 +365,7 @@ fn parse_component_dir(dir: &Path, slug_fallback: &str) -> Result<StoredComponen
     title: if fm.title.trim().is_empty() { slug } else { fm.title },
     title_en: fm.title_en,
     family: ComponentFamily::parse_str(&fm.family),
-    era: fm.era,
     modalities,
-    order: fm.order,
-    featured: fm.featured,
     lab_kind,
     lab_mode: inferred_mode,
     formula_short: fm.formula_short,
@@ -361,10 +373,14 @@ fn parse_component_dir(dir: &Path, slug_fallback: &str) -> Result<StoredComponen
     summary: fm.summary,
     summary_en: fm.summary_en,
     tags: fm.tags,
-    model_keywords: fm.model_keywords,
   };
 
-  Ok(StoredComponentEntry { meta, body_md: body.trim_start().to_string() })
+  Ok(StoredComponentEntry {
+    meta,
+    order: fm.order,
+    model_keywords: fm.model_keywords,
+    body_md: body.trim_start().to_string(),
+  })
 }
 
 #[cfg(feature = "server")]
@@ -408,8 +424,7 @@ pub fn load_all_components() -> Arc<Vec<StoredComponentEntry>> {
       scan_dir_into(&content_root, &mut map);
     }
     let mut items: Vec<StoredComponentEntry> = map.into_values().collect();
-    items
-      .sort_by(|a, b| a.meta.order.cmp(&b.meta.order).then_with(|| a.meta.slug.cmp(&b.meta.slug)));
+    items.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.meta.slug.cmp(&b.meta.slug)));
     items
   })
 }
@@ -441,7 +456,7 @@ pub fn search_docs() -> Vec<app_core::engines::doc_source::ExternalIndexedDoc> {
 }
 
 #[cfg(feature = "server")]
-fn model_matches_component(model: &CuratedModelSummary, comp: &ComponentSummary) -> bool {
+fn model_matches_component(model: &CuratedModelSummary, comp: &StoredComponentEntry) -> bool {
   let hay = format!(
     "{} {} {} {} {} {} {}",
     model.slug,
@@ -461,7 +476,7 @@ fn model_matches_component(model: &CuratedModelSummary, comp: &ComponentSummary)
     return true;
   }
 
-  match comp.family {
+  match comp.meta.family {
     ComponentFamily::Activation => {
       hay.contains("swiglu") || hay.contains("gelu") || hay.contains("silu")
     }
@@ -495,13 +510,26 @@ pub async fn get_ai_component_detail(
   let Some(found) = all.iter().find(|e| e.meta.slug == clean) else {
     return Ok(None);
   };
-  let siblings: Vec<ComponentSummary> =
-    all.iter().filter(|e| e.meta.family == found.meta.family).map(|e| e.meta.clone()).collect();
+  let siblings: Vec<SiblingComponentLink> = all
+    .iter()
+    .filter(|e| e.meta.family == found.meta.family)
+    .map(|e| SiblingComponentLink {
+      slug: e.meta.slug.clone(),
+      title: e.meta.title.clone(),
+      title_en: e.meta.title_en.clone(),
+    })
+    .collect();
   let curated_models = crate::atlas_store::list_curated_models_merged().await;
-  let related_models: Vec<CuratedModelSummary> = curated_models
+  let related_models: Vec<RelatedModelLink> = curated_models
     .into_iter()
-    .filter(|m| model_matches_component(m, &found.meta))
+    .filter(|m| model_matches_component(m, found))
     .take(6)
+    .map(|m| RelatedModelLink {
+      spec_line: format!("Attn: {} · FFN: {}", m.attention_short, m.ffn_short),
+      slug: m.slug,
+      name: m.name,
+      family_badge: m.family_badge,
+    })
     .collect();
 
   Ok(Some(ComponentDetail {
@@ -933,7 +961,7 @@ fn AiComponentDetailLoaded(slug: String) -> Element {
                   }
                 }
                 div { class: "mt-1.5 text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate",
-                  "Attn: {m.attention_short} · FFN: {m.ffn_short}"
+                  "{m.spec_line}"
                 }
               }
             }
