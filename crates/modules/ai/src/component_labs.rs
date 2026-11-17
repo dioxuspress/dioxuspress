@@ -16,13 +16,13 @@ use dioxus::prelude::*;
 use dioxus_shadcn::card_class;
 use serde::{Deserialize, Serialize};
 
-fn current_lang() -> Language {
+pub(crate) fn current_lang() -> Language {
   try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default()
 }
 
 /// 无堆重分配地向 SVG `polyline` 点集缓冲追加坐标对，同时消除多处内联 `format!` 代码膨胀。
 #[inline(never)]
-fn push_svg_pt(buf: &mut String, first: bool, x: f64, y: f64) {
+pub(crate) fn push_svg_pt(buf: &mut String, first: bool, x: f64, y: f64) {
   if !first {
     buf.push(' ');
   }
@@ -32,7 +32,7 @@ fn push_svg_pt(buf: &mut String, first: bool, x: f64, y: f64) {
 /// 跨算子实验台复用的单个 SVG 特征网格单元（消除多处嵌套循环产生的重复 VirtualDOM 模板代码）。
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-fn svg_grid_cell(
+pub(crate) fn svg_grid_cell(
   key_id: &str,
   x: f64,
   y: f64,
@@ -64,6 +64,69 @@ fn svg_grid_cell(
         class: "{text_cls}",
         "{label}"
       }
+    }
+  }
+}
+
+/// 跨算子实验台复用的 SVG 垂直柱状条（带顶值与底标），大幅收敛 WASM VirtualDOM 静态模板体积。
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn svg_vbar(
+  key_id: &str,
+  x: f64,
+  base_y: f64,
+  w: f64,
+  h: f64,
+  bar_cls: &str,
+  top_text: &str,
+  bottom_text: &str,
+) -> Element {
+  let hh = h.max(1.5);
+  let y = base_y - hh;
+  let cx = x + w * 0.5;
+  let top_y = (y - 4.0).max(12.0);
+  let bot_y = base_y + 12.0;
+  rsx! {
+    g { key: "{key_id}",
+      rect {
+        x: "{x:.1}",
+        y: "{y:.1}",
+        width: "{w:.1}",
+        height: "{hh:.1}",
+        rx: "3",
+        class: "{bar_cls}",
+      }
+      if !top_text.is_empty() {
+        text {
+          x: "{cx:.1}",
+          y: "{top_y:.1}",
+          text_anchor: "middle",
+          font_size: "8.5",
+          class: "fill-slate-600 dark:fill-slate-300 font-semibold",
+          "{top_text}"
+        }
+      }
+      if !bottom_text.is_empty() {
+        text {
+          x: "{cx:.1}",
+          y: "{bot_y:.1}",
+          text_anchor: "middle",
+          font_size: "8.5",
+          class: "fill-slate-500 dark:fill-slate-400",
+          "{bottom_text}"
+        }
+      }
+    }
+  }
+}
+
+/// 跨算子实验台复用的四宫格数值指标卡片（单份 VirtualDOM 模板消除重复代码）。
+#[inline(never)]
+pub(crate) fn lab_metric_card(title: &str, value: &str, val_cls: &str) -> Element {
+  rsx! {
+    div { class: "rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 p-2.5",
+      div { class: "text-[10px] text-slate-400", "{title}" }
+      div { class: "mt-0.5 font-bold tabular-nums {val_cls}", "{value}" }
     }
   }
 }
@@ -147,12 +210,18 @@ pub fn ComponentLabWorkbench(
         ComponentLabKind::GridKernel => rsx! { GridSlidingKernelLab { initial_mode } },
         ComponentLabKind::NormPrecision => rsx! { NormAndPrecisionLab { initial_mode } },
         ComponentLabKind::Positional => rsx! { PositionalGeometryLab { initial_mode } },
-        ComponentLabKind::SequenceState
-        | ComponentLabKind::AttentionMatrix
-        | ComponentLabKind::AudioSpectral
-        | ComponentLabKind::RoutingSampling => rsx! {
-          PositionalGeometryLab { initial_mode }
-        },
+        ComponentLabKind::SequenceState => {
+          rsx! { crate::component_labs_m2::SequenceStateLab { initial_mode } }
+        }
+        ComponentLabKind::AttentionMatrix => {
+          rsx! { crate::component_labs_m2::AttentionMatrixLab { initial_mode } }
+        }
+        ComponentLabKind::AudioSpectral => {
+          rsx! { crate::component_labs_m2::AudioSpectralAndCodecLab { initial_mode } }
+        }
+        ComponentLabKind::RoutingSampling => {
+          rsx! { crate::component_labs_m2::RoutingAndSamplingLab { initial_mode } }
+        }
       }
     }
   }
@@ -330,7 +399,7 @@ impl ActivationFn {
   }
 }
 
-fn sigmoid(x: f64) -> f64 {
+pub(crate) fn sigmoid(x: f64) -> f64 {
   if x >= 0.0 {
     1.0 / (1.0 + (-x).exp())
   } else {
@@ -339,7 +408,7 @@ fn sigmoid(x: f64) -> f64 {
   }
 }
 
-fn softplus(x: f64) -> f64 {
+pub(crate) fn softplus(x: f64) -> f64 {
   x.max(0.0) + (1.0 + (-x.abs()).exp()).ln()
 }
 
@@ -2137,7 +2206,7 @@ mod tests {
   }
 
   #[test]
-  fn ssr_renders_all_four_m1_interactive_labs_deterministically() {
+  fn ssr_renders_all_eight_interactive_labs_deterministically() {
     #[component]
     fn AllLabsHost() -> Element {
       rsx! {
@@ -2162,6 +2231,26 @@ mod tests {
             initial_mode: "yarn".to_string(),
             embedded: true,
           }
+          ComponentLabWorkbench {
+            kind: ComponentLabKind::SequenceState,
+            initial_mode: "deltanet".to_string(),
+            embedded: true,
+          }
+          ComponentLabWorkbench {
+            kind: ComponentLabKind::AttentionMatrix,
+            initial_mode: "flash".to_string(),
+            embedded: true,
+          }
+          ComponentLabWorkbench {
+            kind: ComponentLabKind::AudioSpectral,
+            initial_mode: "stft".to_string(),
+            embedded: true,
+          }
+          ComponentLabWorkbench {
+            kind: ComponentLabKind::RoutingSampling,
+            initial_mode: "moe".to_string(),
+            embedded: true,
+          }
         }
       }
     }
@@ -2173,5 +2262,9 @@ mod tests {
     assert!(html.contains("Depthwise"));
     assert!(html.contains("RMSNorm"));
     assert!(html.contains("YaRN"));
+    assert!(html.contains("DeltaNet"));
+    assert!(html.contains("FlashAttention"));
+    assert!(html.contains("STFT"));
+    assert!(html.contains("DeepSeek"));
   }
 }

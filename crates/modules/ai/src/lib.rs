@@ -10,6 +10,7 @@ pub mod arch;
 pub mod atlas;
 pub mod atlas_store;
 pub mod component_labs;
+pub mod component_labs_m2;
 pub mod components_atlas;
 pub mod diagram;
 pub mod safetensors_meta;
@@ -79,7 +80,7 @@ pub fn AiIndexPage() -> Element {
           div {
             div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400",
               span { class: "px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[10px]", "Operators Lab" }
-              span { "Conv · Pool · Norm · RoPE · SwiGLU" }
+              span { "Conv · MLA · FlashAttn · MoE · Mamba · RVQ" }
             }
             h2 { class: "mt-1.5 text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors",
               {lang.pick("组件与算子动态实验室", "Interactive Operators & Primitives Lab")}

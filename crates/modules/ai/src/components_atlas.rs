@@ -186,9 +186,82 @@ pub struct ComponentDetail {
 /// 根据组件 `slug` 推断 `<ComponentLab id="..." />` 的默认交互内核与模式（纯前端与服务端双端确定性一致）。
 pub fn infer_lab_preset_by_slug(slug: &str, mode_override: &str) -> (ComponentLabKind, String) {
   let s = slug.trim().to_ascii_lowercase();
-  let (kind, default_mode) = if s.contains("rope") || s.contains("yarn") || s.contains("pos") {
+  let (kind, default_mode) = if s.contains("deltanet")
+    || s.contains("mamba")
+    || s.contains("ssm")
+    || s.contains("lstm")
+    || s.contains("rnn")
+    || s.contains("gru")
+    || s.contains("rwkv")
+  {
+    let m = if s.contains("mamba") || s.contains("ssm") {
+      "mamba"
+    } else if s.contains("lstm") || s.contains("gru") {
+      "lstm"
+    } else if s.contains("rnn") {
+      "rnn"
+    } else {
+      "deltanet"
+    };
+    (ComponentLabKind::SequenceState, m)
+  } else if s.contains("mla")
+    || s.contains("flash")
+    || s.contains("paged")
+    || s.contains("gqa")
+    || s.contains("mha")
+    || s.contains("mmdit")
+    || s.contains("attention")
+    || s.contains("attn")
+  {
+    let m = if s.contains("mla") || s.contains("gqa") {
+      "mla"
+    } else if s.contains("paged") || s.contains("swa") || s.contains("sink") {
+      "paged"
+    } else if s.contains("scaled") || s.contains("additive") {
+      "sdpa"
+    } else {
+      "flash"
+    };
+    (ComponentLabKind::AttentionMatrix, m)
+  } else if s.contains("stft")
+    || s.contains("mel")
+    || s.contains("ctc")
+    || s.contains("conformer")
+    || s.contains("rvq")
+    || s.contains("vq")
+    || s.contains("vocoder")
+    || s.contains("audio")
+  {
+    let m = if s.contains("ctc") || s.contains("transducer") {
+      "ctc"
+    } else if s.contains("rvq") || s.contains("vq") || s.contains("vocoder") {
+      "rvq"
+    } else {
+      "stft"
+    };
+    (ComponentLabKind::AudioSpectral, m)
+  } else if s.contains("moe")
+    || s.contains("speculative")
+    || s.contains("mtp")
+    || s.contains("sampler")
+    || s.contains("cfg")
+    || s.contains("scheduler")
+    || s.contains("lora")
+    || s.contains("peft")
+  {
+    let m = if s.contains("speculative") || s.contains("mtp") {
+      "speculative"
+    } else if s.contains("sampler") {
+      "sampling"
+    } else if s.contains("cfg") || s.contains("scheduler") {
+      "cfg"
+    } else {
+      "moe"
+    };
+    (ComponentLabKind::RoutingSampling, m)
+  } else if s.contains("rope") || s.contains("yarn") || s.contains("pos") {
     (ComponentLabKind::Positional, "yarn")
-  } else if s.contains("norm") || s.contains("adaln") || s.contains("film") {
+  } else if s.contains("norm") || s.contains("adaln") || s.contains("film") || s.contains("quant") {
     (ComponentLabKind::NormPrecision, "rmsnorm")
   } else if s.contains("conv") || s.contains("pool") || s.contains("roi") || s.contains("shuffle") {
     (ComponentLabKind::GridKernel, "depthwise_separable")
@@ -212,18 +285,41 @@ pub fn recommended_component_links(
   let mut out = Vec::new();
   match focus {
     InspectorFocus::Attention => {
+      if bp.has_linear_recurrent() {
+        out.push((
+          "/ai/components/lstm-deltanet-and-mamba-ssm",
+          "SSM & DeltaNet Lab",
+          lang.pick(
+            "Gated DeltaNet 矩阵擦写与 Mamba 选择性状态空间实验台",
+            "Gated DeltaNet & Selective Mamba State Lab",
+          ),
+        ));
+      }
+      out.push((
+        "/ai/components/attention-mla-and-flash-online-softmax",
+        "MLA & FlashAttn Lab",
+        lang.pick(
+          "MLA 矩阵吸收、GQA 与 FlashAttention 在线重缩放实验台",
+          "MLA Matrix Absorption, GQA & FlashAttention Lab",
+        ),
+      ));
       out.push((
         "/ai/components/rope-and-yarn-extrapolation",
         "Positional Lab",
         lang.pick("旋转位置编码 RoPE / YaRN 外推实验台", "RoPE & YaRN Extrapolation Lab"),
       ));
-      out.push((
-        "/ai/components/rmsnorm-and-adaln-zero",
-        "QK-Norm & FP16",
-        lang.pick("注意力 QK-Norm 与半精度溢出防线", "QK-Norm & FP16 Overflow Guard"),
-      ));
     }
     InspectorFocus::FfnOrMoe => {
+      if bp.has_moe() {
+        out.push((
+          "/ai/components/moe-routing-quant-and-speculative-decoding",
+          "Sparse MoE Lab",
+          lang.pick(
+            "无辅助损失动态偏置 MoE 路由与负载均衡实验台",
+            "Aux-Loss-Free Sparse MoE Routing Lab",
+          ),
+        ));
+      }
       out.push((
         "/ai/components/activations-gelu-silu-swiglu",
         "Activation Lab",
@@ -241,7 +337,22 @@ pub fn recommended_component_links(
         },
       ));
     }
-    InspectorFocus::Vision | InspectorFocus::Audio => {
+    InspectorFocus::Audio => {
+      out.push((
+        "/ai/components/audio-stft-conformer-ctc-and-rvq",
+        "Audio & RVQ Lab",
+        lang.pick(
+          "加窗 STFT 梅尔语谱、CTC 空白符网格与 RVQ 神经码本实验台",
+          "STFT, Mel Filterbank, CTC Lattice & RVQ Lab",
+        ),
+      ));
+      out.push((
+        "/ai/components/conv-and-depthwise-separable",
+        "Conv & Pool Lab",
+        lang.pick("Conformer 深度可分离卷积与下采样实验台", "Depthwise Conv & Pooling Lab"),
+      ));
+    }
+    InspectorFocus::Vision => {
       out.push((
         "/ai/components/conv-and-depthwise-separable",
         "Conv & Pool Lab",
@@ -254,7 +365,23 @@ pub fn recommended_component_links(
       ));
     }
     InspectorFocus::Embedding | InspectorFocus::LmHead | InspectorFocus::MtpHead => {
-      if matches!(bp.output_head, OutputHeadSpec::LatentDecoder { .. }) {
+      if matches!(bp.output_head, OutputHeadSpec::SpeechSynthesizer { .. }) {
+        out.push((
+          "/ai/components/audio-stft-conformer-ctc-and-rvq",
+          "RVQ & Vocoder Lab",
+          lang.pick("多级残差向量量化 RVQ 与声码重建实验台", "RVQ Multi-Codebook & Vocoder Lab"),
+        ));
+      } else if matches!(bp.output_head, OutputHeadSpec::LatentDecoder { .. })
+        || bp.is_diffusion_pipeline()
+      {
+        out.push((
+          "/ai/components/moe-routing-quant-and-speculative-decoding",
+          "CFG & Flow Shift",
+          lang.pick(
+            "扩散 CFG 向量外推与高分流匹配 Time-Shift 实验台",
+            "Diffusion CFG Extrapolation & Flow Time-Shift Lab",
+          ),
+        ));
         out.push((
           "/ai/components/conv-and-depthwise-separable",
           "Deconv Checkerboard",
@@ -262,9 +389,12 @@ pub fn recommended_component_links(
         ));
       } else {
         out.push((
-          "/ai/components/rope-and-yarn-extrapolation",
-          "RoPE Geometry",
-          lang.pick("序列位置几何与上下文窗口扩展实验台", "Positional Geometry Lab"),
+          "/ai/components/moe-routing-quant-and-speculative-decoding",
+          "Samplers & MTP Lab",
+          lang.pick(
+            "Top-P / Min-P 解码采样器与无损投机采样校验实验台",
+            "Token Samplers & Lossless Speculative Decoding Lab",
+          ),
         ));
       }
     }
@@ -977,13 +1107,28 @@ mod tests {
   use super::*;
 
   #[test]
-  fn builtin_ai_components_parse_and_load_without_errors() {
+  fn builtin_ai_components_parse_and_cover_all_eight_wasm_lab_kernels() {
     let loaded = load_all_components();
     assert!(
-      loaded.len() >= 4,
-      "expected at least 4 builtin flagship ai-components exemplars, got {}",
+      loaded.len() >= 8,
+      "expected at least 8 builtin flagship ai-components exemplars covering all 8 kernels, got {}",
       loaded.len()
     );
+    for expected_kind in [
+      ComponentLabKind::Activation,
+      ComponentLabKind::GridKernel,
+      ComponentLabKind::NormPrecision,
+      ComponentLabKind::Positional,
+      ComponentLabKind::SequenceState,
+      ComponentLabKind::AttentionMatrix,
+      ComponentLabKind::AudioSpectral,
+      ComponentLabKind::RoutingSampling,
+    ] {
+      assert!(
+        loaded.iter().any(|e| e.meta.lab_kind == expected_kind),
+        "missing builtin exemplar for lab kernel {expected_kind:?}"
+      );
+    }
     for item in loaded.iter() {
       assert!(!item.meta.slug.is_empty());
       assert!(!item.meta.title.is_empty());
