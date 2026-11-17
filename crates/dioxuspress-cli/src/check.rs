@@ -48,7 +48,11 @@ const BUILTIN_MDX_COMPONENTS: &[&str] = &[
 /// 框架镜像内置标杆算子词条：允许外部内容仓库在尚未覆盖同名目录时直接链接内置词条。
 const BUILTIN_AI_COMPONENTS: &[&str] = &[
   "activations-gelu-silu-swiglu",
+  "attention-mla-and-flash-online-softmax",
+  "audio-stft-conformer-ctc-and-rvq",
   "conv-and-depthwise-separable",
+  "lstm-deltanet-and-mamba-ssm",
+  "moe-routing-quant-and-speculative-decoding",
   "rmsnorm-and-adaln-zero",
   "rope-and-yarn-extrapolation",
 ];
