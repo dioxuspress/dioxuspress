@@ -288,9 +288,11 @@ fn main() {
       .collect()
   });
 
-  // 3b) 把模型图鉴（`/models/:slug`，含静态 models/ 与 PostgreSQL 在线收录）注册进全文检索索引。
+  // 3b) 把模型图鉴（`/models/:slug`，含静态 models/ 与 PostgreSQL 在线收录）与算子图鉴（`/ai/components/:slug`）注册进全文检索索引。
   #[cfg(feature = "server")]
   app_core::engines::doc_source::register_async_doc_source(module_ai::atlas_store::search_docs);
+  #[cfg(feature = "server")]
+  app_core::engines::doc_source::register_doc_source(module_ai::components_atlas::search_docs);
 
   // 论文解读在数据库里，异步取。
   #[cfg(all(feature = "server", feature = "papers"))]

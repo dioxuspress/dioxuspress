@@ -112,7 +112,7 @@ Reproduce every metric locally with [`./scripts/bench_ssr.sh`](scripts/bench_ssr
 | **First-Paint SSR (`GET /` / `/docs/*`)** | `2.79 ms` / `4.04 ms` P50 (`1,832` / `1,236 QPS`) | `2.90 ms` / `4.02 ms` P50 (`1,764` / `1,234 QPS`) | Full Markdown parse + 3-level sidebar + VirtualDOM SSR |
 | **Conditional `ETag` (`304`)** | **`0.096 ms` P50 (`13,636 QPS`)** | **`0.093 ms` P50 (`13,462 QPS`)** | Anonymous-only; auth/dynamic routes strictly emit `private, no-store` |
 | **Tantivy Search (`POST /api/search/query`)** | **`0.314 ms` P50 (`9,215 QPS`)** | **`0.317 ms` P50 (`9,326 QPS`)** | Bilingual BM25 + snippet highlighting; `SIGHUP` hot-reloads with `0` dropped requests |
-| **Frontend WASM (`brotli -q 11`)** | **`1.04 MiB`** (`1.54 MiB` gzip) | **`1.35 MiB`** (`2.07 MiB` gzip) | Guarded on every PR in CI by `scripts/check_wasm_size.sh` |
+| **Frontend WASM (`brotli -q 11`)** | **`1.28 MiB`** (`1.89 MiB` gzip) | **`1.62 MiB`** (`2.48 MiB` gzip) | Guarded on every PR in CI by `scripts/check_wasm_size.sh` |
 
 ## Pre-Commit Verification
 

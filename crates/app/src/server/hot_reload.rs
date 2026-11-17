@@ -29,6 +29,7 @@ pub fn invalidate_all_in_memory_caches() -> u64 {
   module_docs::server::invalidate_doc_caches();
   module_blog::server::invalidate_blog_cache();
   module_ai::atlas::invalidate_models_cache();
+  module_ai::components_atlas::invalidate_components_cache();
   board::server::invalidate_board_cache();
   crate::server::conditional_cache::bump_content_epoch()
 }
@@ -93,7 +94,18 @@ pub fn compute_content_root_stamp(root: &Path) -> u128 {
   }
 
   let mut mtimes: u128 = mtime_ns(&root.join("site.json"));
-  for sub in ["docs", "posts", "courses", "cases", "models", "podcasts", "topics", "images"] {
+  for sub in [
+    "docs",
+    "posts",
+    "courses",
+    "cases",
+    "models",
+    "ai-components",
+    "ai-math",
+    "podcasts",
+    "topics",
+    "images",
+  ] {
     mtimes = mtimes.wrapping_mul(1_000_003) ^ mtime_ns(&root.join(sub));
   }
   (u128::from(git_sig) << 64) ^ mtimes

@@ -41,6 +41,16 @@ const BUILTIN_MDX_COMPONENTS: &[&str] = &[
   "PodcastCard",
   "ThemeShowcase",
   "ModelArch",
+  "ComponentLab",
+  "MathLab",
+];
+
+/// 框架镜像内置标杆算子词条：允许外部内容仓库在尚未覆盖同名目录时直接链接内置词条。
+const BUILTIN_AI_COMPONENTS: &[&str] = &[
+  "activations-gelu-silu-swiglu",
+  "conv-and-depthwise-separable",
+  "rmsnorm-and-adaln-zero",
+  "rope-and-yarn-extrapolation",
 ];
 
 /// 框架镜像自带的兜底默认图：外部内容仓库在 `site.json` 未覆盖或显式引用这两个默认路径时不误报缺失。
@@ -116,9 +126,10 @@ pub fn resolve_target_root(input: &Path) -> Result<PathBuf, String> {
   {
     return Ok(assets);
   }
-  let has_direct_content = ["site.json", "docs", "posts", "courses", "cases", "models"]
-    .iter()
-    .any(|name| input.join(name).exists());
+  let has_direct_content =
+    ["site.json", "docs", "posts", "courses", "cases", "models", "ai-components", "ai-math"]
+      .iter()
+      .any(|name| input.join(name).exists());
   if has_direct_content {
     return Ok(input.to_path_buf());
   }
@@ -356,6 +367,56 @@ pub fn check_site(input: &Path) -> Result<CheckSummary, String> {
             &mut internal_links_checked,
             &mut diagnostics,
           );
+        }
+      }
+    }
+  }
+
+  for atlas_sub in ["ai-components", "ai-math"] {
+    let sub_dir = root.join(atlas_sub);
+    if sub_dir.is_dir() {
+      if let Ok(entries) = fs::read_dir(&sub_dir) {
+        let mut dirs: Vec<PathBuf> =
+          entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        for dir in dirs {
+          let slug = dir.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+          if slug.starts_with('.') || slug.starts_with('_') {
+            continue;
+          }
+          if !is_safe_slug(slug) {
+            diagnostics.push(Diagnostic {
+              file: dir.clone(),
+              line: 1,
+              message: format!(
+                "{atlas_sub} directory '{slug}' is not a valid URL slug (only ASCII [A-Za-z0-9_-] allowed)"
+              ),
+            });
+          }
+          let md_file = if dir.join("index.mdx").is_file() {
+            Some(dir.join("index.mdx"))
+          } else if dir.join("index.md").is_file() {
+            Some(dir.join("index.md"))
+          } else {
+            None
+          };
+          match md_file {
+            Some(f) => {
+              files_checked += 1;
+              check_markdown_file(
+                &f,
+                root.as_path(),
+                ContentKind::FreePage,
+                &mut internal_links_checked,
+                &mut diagnostics,
+              );
+            }
+            None => diagnostics.push(Diagnostic {
+              file: dir.clone(),
+              line: 1,
+              message: format!("{atlas_sub} entry directory is missing index.md (or index.mdx)"),
+            }),
+          }
         }
       }
     }
@@ -1185,6 +1246,24 @@ fn verify_target_url(
           model_dir.display()
         ));
       }
+    }
+    return None;
+  }
+
+  if let Some(slug) = without_frag.strip_prefix("/ai/components/") {
+    *internal_links_checked += 1;
+    let comp_dir = root.join("ai-components").join(slug);
+    if comp_dir.join("index.md").is_file()
+      || comp_dir.join("index.mdx").is_file()
+      || BUILTIN_AI_COMPONENTS.contains(&slug)
+    {
+      return None;
+    }
+    if root.join("ai-components").is_dir() {
+      return Some(format!(
+        "broken ai-component link '{raw_url}': expected {}/index.md",
+        comp_dir.display()
+      ));
     }
     return None;
   }
