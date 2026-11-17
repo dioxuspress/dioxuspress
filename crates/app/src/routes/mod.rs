@@ -18,7 +18,10 @@ use crate::components::nav::Navbar;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n, Language};
 use crate::server::get_about_page;
-use module_ai::{AiArticlePage, AiIndexPage, AiVisualizerPage, ModelDetailPage, ModelsAtlasPage};
+use module_ai::{
+  AiArticlePage, AiComponentDetailPage, AiComponentsAtlasPage, AiIndexPage, AiVisualizerPage,
+  ModelDetailPage, ModelsAtlasPage,
+};
 use module_blog::server::{get_blog_content, list_blog_page};
 use module_cases::cases::{CaseDetailPage, CasesIndexPage};
 use module_cli::{CliArticlePage, CliIndexPage};
@@ -238,6 +241,10 @@ mod route_def {
         Ai {},
         #[route("/ai/visualizer")]
         AiVisualizer {},
+        #[route("/ai/components")]
+        AiComponents {},
+        #[route("/ai/components/:slug")]
+        AiComponentDetail { slug: String },
         #[route("/ai/:slug")]
         AiArticle { slug: String },
 
@@ -735,6 +742,16 @@ pub fn Ai() -> Element {
 #[component]
 pub fn AiVisualizer() -> Element {
   rsx! { ModuleGate { id: "ai".to_string(), AiVisualizerPage {} } }
+}
+
+#[component]
+pub fn AiComponents() -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), AiComponentsAtlasPage {} } }
+}
+
+#[component]
+pub fn AiComponentDetail(slug: String) -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), AiComponentDetailPage { slug } } }
 }
 
 #[component]

@@ -78,6 +78,12 @@ pub fn ecosystems() -> Vec<Ecosystem> {
       // 标签本身已体现分类法，待 M3 再改成 `/ai?d=<id>` 之类的筛选视图。
       domains: vec![
         Domain { id: "models", label_key: "nav.models", route: Route::Models {}, module_id: "ai" },
+        Domain {
+          id: "components",
+          label_key: "nav.ai.components",
+          route: Route::AiComponents {},
+          module_id: "ai",
+        },
         Domain { id: "llm", label_key: "nav.ai.llm", route: Route::Ai {}, module_id: "ai" },
         Domain {
           id: "inference",

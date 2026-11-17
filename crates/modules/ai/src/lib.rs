@@ -9,6 +9,8 @@
 pub mod arch;
 pub mod atlas;
 pub mod atlas_store;
+pub mod component_labs;
+pub mod components_atlas;
 pub mod diagram;
 pub mod safetensors_meta;
 pub mod server;
@@ -19,6 +21,7 @@ use board::{Board, BoardArticle, BoardIndex, FeaturedCrate};
 use dioxus::prelude::*;
 
 pub use atlas::{ModelDetailPage, ModelsAtlasPage};
+pub use components_atlas::{AiComponentDetailPage, AiComponentsAtlasPage};
 pub use visualizer::AiVisualizerPage;
 
 pub const BOARD: Board = Board {
@@ -35,9 +38,10 @@ pub const BOARD: Board = Board {
   ],
 };
 
-/// 启动期向 `widgets` 全局注册表注入 `<ModelArch ... />` MDX 组件（服务端与客户端双端幂等调用）。
+/// 启动期向 `widgets` 全局注册表注入 `<ModelArch ... />` 与 `<ComponentLab ... />` MDX 组件（服务端与客户端双端幂等调用）。
 pub fn register_components() {
   widgets::register(Box::new(visualizer::ModelArchComponent));
+  widgets::register(Box::new(component_labs::ComponentLabMdx));
 }
 
 #[component]
@@ -45,17 +49,17 @@ pub fn AiIndexPage() -> Element {
   let lang = try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default();
   rsx! {
     div { class: "bg-white dark:bg-slate-950 pt-8",
-      div { class: "max-w-6xl mx-auto px-4 sm:px-6 grid grid-cols-1 md:grid-cols-2 gap-4",
+      div { class: "max-w-6xl mx-auto px-4 sm:px-6 grid grid-cols-1 md:grid-cols-3 gap-4",
         Link {
           to: "/models",
           class: "group flex flex-col justify-between gap-4 rounded-2xl border border-indigo-200 dark:border-indigo-900/70 bg-linear-to-r from-indigo-50/90 via-white to-violet-50/80 dark:from-indigo-950/50 dark:via-slate-900 dark:to-slate-900 p-5 hover:border-indigo-400 dark:hover:border-indigo-600 transition-all shadow-xs",
           div {
             div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400",
               span { class: "px-2 py-0.5 rounded-full bg-indigo-600 text-white text-[10px]", "Model Atlas" }
-              span { "DeepSeek · Qwen3 · Llama 4 · Gemma 3" }
+              span { "DeepSeek · Qwen3 · FLUX · Wan" }
             }
             h2 { class: "mt-1.5 text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors",
-              {lang.pick("主流大模型架构图鉴（支持折叠/展开观察）", "Flagship LLM Architecture Atlas")}
+              {lang.pick("主流大模型架构图鉴", "Flagship Model Architecture Atlas")}
             }
             p { class: "mt-1 text-sm text-slate-600 dark:text-slate-400",
               {lang.pick(
@@ -66,6 +70,29 @@ pub fn AiIndexPage() -> Element {
           }
           span { class: "inline-flex items-center gap-1 text-xs font-bold text-indigo-600 dark:text-indigo-400",
             {lang.pick("浏览模型图鉴 →", "Browse Model Atlas →")}
+          }
+        }
+
+        Link {
+          to: "/ai/components",
+          class: "group flex flex-col justify-between gap-4 rounded-2xl border border-emerald-200 dark:border-emerald-900/70 bg-linear-to-r from-emerald-50/90 via-white to-teal-50/80 dark:from-emerald-950/40 dark:via-slate-900 dark:to-slate-900 p-5 hover:border-emerald-400 dark:hover:border-emerald-600 transition-all shadow-xs",
+          div {
+            div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400",
+              span { class: "px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[10px]", "Operators Lab" }
+              span { "Conv · Pool · Norm · RoPE · SwiGLU" }
+            }
+            h2 { class: "mt-1.5 text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors",
+              {lang.pick("组件与算子动态实验室", "Interactive Operators & Primitives Lab")}
+            }
+            p { class: "mt-1 text-sm text-slate-600 dark:text-slate-400",
+              {lang.pick(
+                "从卷积、池化、激活函数到归一化、位置外推与大模型原语的纯 Rust WASM 动态交互、数学推导与代码对照。",
+                "Pure Rust WASM interactive visualizations, derivations, and PyTorch/Rust code across classic DL & LLM primitives."
+              )}
+            }
+          }
+          span { class: "inline-flex items-center gap-1 text-xs font-bold text-emerald-600 dark:text-emerald-400",
+            {lang.pick("进入算子实验室 →", "Explore Operators Lab →")}
           }
         }
 
