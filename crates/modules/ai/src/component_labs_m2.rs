@@ -16,7 +16,7 @@ use crate::component_labs::{
 
 /// 跨 M2 四大实验台共享的模式切换按钮（收敛重复 class 字符串与 VirtualDOM 模板）。
 #[inline(never)]
-fn mode_btn(label: &str, active: bool, onclick: EventHandler<MouseEvent>) -> Element {
+pub(crate) fn mode_btn(label: &str, active: bool, onclick: EventHandler<MouseEvent>) -> Element {
   let cls = if active {
     "px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white cursor-pointer"
   } else {

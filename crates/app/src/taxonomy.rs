@@ -84,6 +84,7 @@ pub fn ecosystems() -> Vec<Ecosystem> {
           route: Route::AiComponents {},
           module_id: "ai",
         },
+        Domain { id: "math", label_key: "nav.ai.math", route: Route::AiMath {}, module_id: "ai" },
         Domain { id: "llm", label_key: "nav.ai.llm", route: Route::Ai {}, module_id: "ai" },
         Domain {
           id: "inference",

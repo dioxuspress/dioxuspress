@@ -30,6 +30,7 @@ pub fn invalidate_all_in_memory_caches() -> u64 {
   module_blog::server::invalidate_blog_cache();
   module_ai::atlas::invalidate_models_cache();
   module_ai::components_atlas::invalidate_components_cache();
+  module_ai::math_atlas::invalidate_math_cache();
   board::server::invalidate_board_cache();
   crate::server::conditional_cache::bump_content_epoch()
 }
