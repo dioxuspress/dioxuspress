@@ -769,6 +769,11 @@ fn AiComponentsLoaded(title: String, desc: String) -> Element {
           }
           div { class: "flex flex-wrap gap-2",
             Link {
+              to: "/ai/math",
+              class: "px-3.5 py-2 rounded-xl border border-violet-200 dark:border-violet-800 bg-white dark:bg-slate-900 text-xs font-bold text-violet-700 dark:text-violet-300 hover:border-violet-500 transition-colors",
+              {lang.pick("📐 AI 数学基石 (/ai/math)", "📐 AI Math Foundations")}
+            }
+            Link {
               to: "/models",
               class: "px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-700 dark:text-slate-200 hover:border-indigo-400 transition-colors",
               {lang.pick("← 宏观整机架构图鉴 (/models)", "← Flagship Model Atlas")}

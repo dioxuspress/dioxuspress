@@ -19,8 +19,8 @@ use crate::components::view::Container;
 use crate::i18n::{t, use_i18n, Language};
 use crate::server::get_about_page;
 use module_ai::{
-  AiArticlePage, AiComponentDetailPage, AiComponentsAtlasPage, AiIndexPage, AiVisualizerPage,
-  ModelDetailPage, ModelsAtlasPage,
+  AiArticlePage, AiComponentDetailPage, AiComponentsAtlasPage, AiIndexPage, AiMathAtlasPage,
+  AiMathDetailPage, AiVisualizerPage, ModelDetailPage, ModelsAtlasPage,
 };
 use module_blog::server::{get_blog_content, list_blog_page};
 use module_cases::cases::{CaseDetailPage, CasesIndexPage};
@@ -245,6 +245,10 @@ mod route_def {
         AiComponents {},
         #[route("/ai/components/:slug")]
         AiComponentDetail { slug: String },
+        #[route("/ai/math")]
+        AiMath {},
+        #[route("/ai/math/:slug")]
+        AiMathDetail { slug: String },
         #[route("/ai/:slug")]
         AiArticle { slug: String },
 
@@ -752,6 +756,16 @@ pub fn AiComponents() -> Element {
 #[component]
 pub fn AiComponentDetail(slug: String) -> Element {
   rsx! { ModuleGate { id: "ai".to_string(), AiComponentDetailPage { slug } } }
+}
+
+#[component]
+pub fn AiMath() -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), AiMathAtlasPage {} } }
+}
+
+#[component]
+pub fn AiMathDetail(slug: String) -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), AiMathDetailPage { slug } } }
 }
 
 #[component]

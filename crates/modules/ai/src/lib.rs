@@ -13,6 +13,8 @@ pub mod component_labs;
 pub mod component_labs_m2;
 pub mod components_atlas;
 pub mod diagram;
+pub mod math_atlas;
+pub mod math_labs;
 pub mod safetensors_meta;
 pub mod server;
 pub mod visualizer;
@@ -23,6 +25,7 @@ use dioxus::prelude::*;
 
 pub use atlas::{ModelDetailPage, ModelsAtlasPage};
 pub use components_atlas::{AiComponentDetailPage, AiComponentsAtlasPage};
+pub use math_atlas::{AiMathAtlasPage, AiMathDetailPage};
 pub use visualizer::AiVisualizerPage;
 
 pub const BOARD: Board = Board {
@@ -39,10 +42,11 @@ pub const BOARD: Board = Board {
   ],
 };
 
-/// 启动期向 `widgets` 全局注册表注入 `<ModelArch ... />` 与 `<ComponentLab ... />` MDX 组件（服务端与客户端双端幂等调用）。
+/// 启动期向 `widgets` 全局注册表注入 `<ModelArch ... />`、`<ComponentLab ... />` 与 `<MathLab ... />` MDX 组件（服务端与客户端双端幂等调用）。
 pub fn register_components() {
   widgets::register(Box::new(visualizer::ModelArchComponent));
   widgets::register(Box::new(component_labs::ComponentLabMdx));
+  widgets::register(Box::new(math_labs::MathLabMdx));
 }
 
 #[component]
@@ -50,7 +54,7 @@ pub fn AiIndexPage() -> Element {
   let lang = try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default();
   rsx! {
     div { class: "bg-white dark:bg-slate-950 pt-8",
-      div { class: "max-w-6xl mx-auto px-4 sm:px-6 grid grid-cols-1 md:grid-cols-3 gap-4",
+      div { class: "max-w-6xl mx-auto px-4 sm:px-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4",
         Link {
           to: "/models",
           class: "group flex flex-col justify-between gap-4 rounded-2xl border border-indigo-200 dark:border-indigo-900/70 bg-linear-to-r from-indigo-50/90 via-white to-violet-50/80 dark:from-indigo-950/50 dark:via-slate-900 dark:to-slate-900 p-5 hover:border-indigo-400 dark:hover:border-indigo-600 transition-all shadow-xs",
@@ -94,6 +98,29 @@ pub fn AiIndexPage() -> Element {
           }
           span { class: "inline-flex items-center gap-1 text-xs font-bold text-emerald-600 dark:text-emerald-400",
             {lang.pick("进入算子实验室 →", "Explore Operators Lab →")}
+          }
+        }
+
+        Link {
+          to: "/ai/math",
+          class: "group flex flex-col justify-between gap-4 rounded-2xl border border-violet-200 dark:border-violet-900/70 bg-linear-to-r from-violet-50/90 via-white to-amber-50/70 dark:from-violet-950/40 dark:via-slate-900 dark:to-slate-900 p-5 hover:border-violet-400 dark:hover:border-violet-600 transition-all shadow-xs",
+          div {
+            div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-violet-600 dark:text-violet-400",
+              span { class: "px-2 py-0.5 rounded-full bg-violet-600 text-white text-[10px]", "Math Proof Lab" }
+              span { "SVD · VJP · KL · SDE · PPO · FP8" }
+            }
+            h2 { class: "mt-1.5 text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-violet-600 dark:group-hover:text-violet-400 transition-colors",
+              {lang.pick("AI 数学基石与色标推导", "AI Math Foundations & Proof Lab")}
+            }
+            p { class: "mt-1 text-sm text-slate-600 dark:text-slate-400",
+              {lang.pick(
+                "零跳步色标同步证明链配纯 Rust WASM 几何、概率变分、频谱图论、扩散流与强化对齐动态画布。",
+                "Zero-skip color-synced proofs paired with interactive WASM geometry, divergence, flow, and RL canvases."
+              )}
+            }
+          }
+          span { class: "inline-flex items-center gap-1 text-xs font-bold text-violet-600 dark:text-violet-400",
+            {lang.pick("进入数学推导实验室 →", "Open Math Proof Lab →")}
           }
         }
 

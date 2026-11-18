@@ -57,6 +57,13 @@ const BUILTIN_AI_COMPONENTS: &[&str] = &[
   "rope-and-yarn-extrapolation",
 ];
 
+/// 框架镜像内置标杆数学推导词条：允许外部内容仓库直接链接内置推导专题。
+const BUILTIN_AI_MATH: &[&str] = &[
+  "computational-graph-vjp-vs-jvp",
+  "forward-reverse-kl-and-k3",
+  "svd-eckart-young-pseudoinverse",
+];
+
 /// 框架镜像自带的兜底默认图：外部内容仓库在 `site.json` 未覆盖或显式引用这两个默认路径时不误报缺失。
 const BUILTIN_FALLBACK_IMAGES: &[&str] = &["/images/favicon.ico", "/images/og-default.jpg"];
 
@@ -1267,6 +1274,24 @@ fn verify_target_url(
       return Some(format!(
         "broken ai-component link '{raw_url}': expected {}/index.md",
         comp_dir.display()
+      ));
+    }
+    return None;
+  }
+
+  if let Some(slug) = without_frag.strip_prefix("/ai/math/") {
+    *internal_links_checked += 1;
+    let math_dir = root.join("ai-math").join(slug);
+    if math_dir.join("index.md").is_file()
+      || math_dir.join("index.mdx").is_file()
+      || BUILTIN_AI_MATH.contains(&slug)
+    {
+      return None;
+    }
+    if root.join("ai-math").is_dir() {
+      return Some(format!(
+        "broken ai-math link '{raw_url}': expected {}/index.md",
+        math_dir.display()
       ));
     }
     return None;

@@ -842,21 +842,45 @@ pub fn ModelVisualizerWorkbench(
               let lang_here = current_lang();
               let comp_links =
                 crate::components_atlas::recommended_component_links(&blueprint, focus(), lang_here);
-              if !comp_links.is_empty() {
+              let math_links =
+                crate::math_atlas::recommended_math_links(&blueprint, focus(), lang_here);
+              if !comp_links.is_empty() || !math_links.is_empty() {
                 rsx! {
-                  div { class: "mt-3.5 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex flex-wrap items-center gap-2 text-xs",
-                    span { class: "text-[11px] font-bold text-emerald-700 dark:text-emerald-400 shrink-0",
-                      {lang_here.pick("🔬 深入算子动态原理：", "🔬 Interactive Operator Lab:")}
-                    }
-                    for (href, badge_txt, link_title) in comp_links {
-                      Link {
-                        key: "{href}-{badge_txt}",
-                        to: href,
-                        class: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/70 dark:bg-emerald-950/30 text-slate-800 dark:text-slate-200 hover:border-emerald-500 transition-colors",
-                        span { class: "px-1.5 py-0.2 rounded bg-emerald-600 text-white text-[10px] font-mono font-bold",
-                          "{badge_txt}"
+                  div { class: "mt-3.5 pt-3 border-t border-slate-100 dark:border-slate-800/80 space-y-2 text-xs",
+                    if !comp_links.is_empty() {
+                      div { class: "flex flex-wrap items-center gap-2",
+                        span { class: "text-[11px] font-bold text-emerald-700 dark:text-emerald-400 shrink-0",
+                          {lang_here.pick("🔬 深入算子动态原理：", "🔬 Interactive Operator Lab:")}
                         }
-                        span { class: "font-medium", "{link_title} →" }
+                        for (href, badge_txt, link_title) in comp_links {
+                          Link {
+                            key: "{href}-{badge_txt}",
+                            to: href,
+                            class: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/70 dark:bg-emerald-950/30 text-slate-800 dark:text-slate-200 hover:border-emerald-500 transition-colors",
+                            span { class: "px-1.5 py-0.2 rounded bg-emerald-600 text-white text-[10px] font-mono font-bold",
+                              "{badge_txt}"
+                            }
+                            span { class: "font-medium", "{link_title} →" }
+                          }
+                        }
+                      }
+                    }
+                    if !math_links.is_empty() {
+                      div { class: "flex flex-wrap items-center gap-2",
+                        span { class: "text-[11px] font-bold text-violet-700 dark:text-violet-400 shrink-0",
+                          {lang_here.pick("📐 底层数学定理推导：", "📐 Mathematical Proof Lab:")}
+                        }
+                        for (href, badge_txt, link_title) in math_links {
+                          Link {
+                            key: "{href}-{badge_txt}",
+                            to: href,
+                            class: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-violet-200 dark:border-violet-900/70 bg-violet-50/70 dark:bg-violet-950/30 text-slate-800 dark:text-slate-200 hover:border-violet-500 transition-colors",
+                            span { class: "px-1.5 py-0.2 rounded bg-violet-600 text-white text-[10px] font-mono font-bold",
+                              "{badge_txt}"
+                            }
+                            span { class: "font-medium", "{link_title} →" }
+                          }
+                        }
                       }
                     }
                   }
