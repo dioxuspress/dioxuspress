@@ -362,7 +362,7 @@ pub fn recommended_math_links(
   lang: Language,
 ) -> Vec<(&'static str, &'static str, &'static str)> {
   match focus {
-    InspectorFocus::Attention | InspectorFocus::Vision => vec![(
+    InspectorFocus::Attention => vec![(
       "/ai/math/svd-eckart-young-pseudoinverse",
       "SVD & Low-Rank Proof",
       lang.pick(
@@ -370,7 +370,31 @@ pub fn recommended_math_links(
         "SVD Geometry & Eckart-Young Low-Rank Theorem",
       ),
     )],
-    InspectorFocus::FfnOrMoe | InspectorFocus::NormAndResidual | InspectorFocus::Audio => vec![(
+    InspectorFocus::Vision => vec![(
+      "/ai/math/continuity-equation-cfm-theorem",
+      "CFM & Rectified Flow Proof",
+      lang.pick(
+        "连续性方程与条件流匹配（CFM）梯度等价性核心定理（FLUX / Wan 地基）",
+        "Continuity Equation & Conditional Flow Matching Equivalence Proof",
+      ),
+    )],
+    InspectorFocus::Audio => vec![(
+      "/ai/math/fourier-convolution-aliasing",
+      "DFT & Aliasing Proof",
+      lang.pick(
+        "复平面傅里叶缠绕正交性、卷积定理与奈奎斯特混叠证明",
+        "Complex DFT Winding, Convolution Theorem & Nyquist Aliasing Proof",
+      ),
+    )],
+    InspectorFocus::FfnOrMoe => vec![(
+      "/ai/math/ieee754-bf16-fp8-numerical-math",
+      "IEEE-754 & BF16/FP8 Proof",
+      lang.pick(
+        "IEEE-754 位域解剖、BF16 梯度吞没与 FP32 主权重必选定理",
+        "IEEE-754 Anatomy, BF16 Swamping & FP32 Master Weights Proof",
+      ),
+    )],
+    InspectorFocus::NormAndResidual => vec![(
       "/ai/math/computational-graph-vjp-vs-jvp",
       "Autograd VJP Proof",
       lang.pick(
@@ -1198,17 +1222,20 @@ mod tests {
   use super::*;
 
   #[test]
-  fn builtin_ai_math_entries_parse_and_cover_all_m1_wasm_kernels() {
+  fn builtin_ai_math_entries_parse_and_cover_all_six_wasm_kernels() {
     let loaded = load_all_math_entries();
     assert!(
-      loaded.len() >= 3,
-      "expected at least 3 builtin flagship ai-math exemplars covering M1 kernels, got {}",
+      loaded.len() >= 6,
+      "expected at least 6 builtin flagship ai-math exemplars covering all 6 M1+M2 kernels, got {}",
       loaded.len()
     );
     for expected_kind in [
       MathLabKind::LinearTransform2d,
       MathLabKind::AutogradAndLoss,
       MathLabKind::DistributionDivergence,
+      MathLabKind::SpectralAndGraph,
+      MathLabKind::OptimizerAndFlow,
+      MathLabKind::RlAndBitPrecision,
     ] {
       assert!(
         loaded.iter().any(|e| e.meta.lab_kind == expected_kind),

@@ -197,15 +197,14 @@ pub fn MathLabWorkbench(
         MathLabKind::LinearTransform2d => rsx! { LinearTransform2dLab { initial_mode } },
         MathLabKind::AutogradAndLoss => rsx! { AutogradAndLossLab { initial_mode } },
         MathLabKind::DistributionDivergence => rsx! { DistributionDivergenceLab { initial_mode } },
-        // M2 三套画布在 M2 里程碑独立挂载前先安全回退至对应近邻数学沙盒，确保全枚举零死分支
         MathLabKind::SpectralAndGraph => {
-          rsx! { LinearTransform2dLab { initial_mode: "householder".to_string() } }
+          rsx! { crate::math_labs_m2::SpectralAndGraphSignalLab { initial_mode } }
         }
         MathLabKind::OptimizerAndFlow => {
-          rsx! { AutogradAndLossLab { initial_mode: "vjp_graph".to_string() } }
+          rsx! { crate::math_labs_m2::OptimizerAndFlowTrajectoryLab { initial_mode } }
         }
         MathLabKind::RlAndBitPrecision => {
-          rsx! { DistributionDivergenceLab { initial_mode: "kl_modes_k3".to_string() } }
+          rsx! { crate::math_labs_m2::RlPolicyAndBitPrecisionLab { initial_mode } }
         }
       }
     }
@@ -1563,7 +1562,7 @@ mod tests {
   }
 
   #[test]
-  fn ssr_renders_all_m1_math_labs_deterministically() {
+  fn ssr_renders_all_six_math_labs_deterministically() {
     #[component]
     fn Host() -> Element {
       rsx! {
@@ -1583,6 +1582,21 @@ mod tests {
             initial_mode: "kl_modes_k3".to_string(),
             embedded: true,
           }
+          MathLabWorkbench {
+            kind: MathLabKind::SpectralAndGraph,
+            initial_mode: "dft_winding".to_string(),
+            embedded: true,
+          }
+          MathLabWorkbench {
+            kind: MathLabKind::OptimizerAndFlow,
+            initial_mode: "rectified_flow".to_string(),
+            embedded: true,
+          }
+          MathLabWorkbench {
+            kind: MathLabKind::RlAndBitPrecision,
+            initial_mode: "ieee754_bits".to_string(),
+            embedded: true,
+          }
         }
       }
     }
@@ -1592,5 +1606,8 @@ mod tests {
     assert!(html.contains("Eckart-Young"));
     assert!(html.contains("SiLU"));
     assert!(html.contains("Reverse KL"));
+    assert!(html.contains("f_Nyq"));
+    assert!(html.contains("Reflow"));
+    assert!(html.contains("BF16"));
   }
 }
