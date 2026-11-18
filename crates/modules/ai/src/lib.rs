@@ -15,6 +15,7 @@ pub mod components_atlas;
 pub mod diagram;
 pub mod math_atlas;
 pub mod math_labs;
+pub mod math_labs_m2;
 pub mod safetensors_meta;
 pub mod server;
 pub mod visualizer;

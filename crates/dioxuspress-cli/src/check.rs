@@ -60,7 +60,10 @@ const BUILTIN_AI_COMPONENTS: &[&str] = &[
 /// 框架镜像内置标杆数学推导词条：允许外部内容仓库直接链接内置推导专题。
 const BUILTIN_AI_MATH: &[&str] = &[
   "computational-graph-vjp-vs-jvp",
+  "continuity-equation-cfm-theorem",
   "forward-reverse-kl-and-k3",
+  "fourier-convolution-aliasing",
+  "ieee754-bf16-fp8-numerical-math",
   "svd-eckart-young-pseudoinverse",
 ];
 
