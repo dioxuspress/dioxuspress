@@ -432,6 +432,7 @@ fn CaseDetailLoaded(slug: String, footer: Element) -> Element {
             title: case.name.clone(),
             description: case.description.clone(),
             path: format!("/case/{}", case.slug),
+            image: case.cover_url.clone(),
         }
         CaseDetailBody { case, footer: footer.clone() }
     },
@@ -512,8 +513,8 @@ fn CaseDetailBody(case: Case, footer: Element) -> Element {
                       }
                   }
                   if let Some(cover) = case.cover_url.as_ref() {
-                      div { class: "min-h-72",
-                          img { src: "{cover}", alt: "{case.name}", class: "h-full w-full object-cover" }
+                      div { class: "flex items-center justify-center bg-slate-100/70 dark:bg-slate-950/60 p-4 lg:p-6",
+                          img { src: "{cover}", alt: "{case.name}", class: "max-h-80 w-full rounded-2xl object-contain" }
                       }
                   }
               }

@@ -244,8 +244,12 @@ fn resolve_ref_title(kind: &str, path: &str) -> String {
       fallback()
     }
     "case" => {
-      let Some(case_dir) = resolve_in(root.join("cases")) else { return fallback() };
-      let yaml = case_dir.join("case.yaml");
+      let primary_yaml =
+        resolve_in(app_core::utils::content_dir("cases")).map(|d| d.join("case.yaml"));
+      let fallback_yaml = resolve_in(root.join("cases")).map(|d| d.join("case.yaml"));
+      let yaml =
+        primary_yaml.filter(|p| p.is_file()).or_else(|| fallback_yaml.filter(|p| p.is_file()));
+      let Some(yaml) = yaml else { return fallback() };
       if let Ok(content) = std::fs::read_to_string(&yaml) {
         for line in content.lines() {
           let line = line.trim();

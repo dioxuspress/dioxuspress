@@ -133,13 +133,33 @@ struct CaseMeta {
 }
 
 #[cfg(feature = "server")]
-pub fn get_cases_root() -> PathBuf {
-  let p = PathBuf::from("assets/cases");
-  if p.exists() {
-    p
+fn has_valid_cases(dir: &Path) -> bool {
+  let Ok(entries) = fs::read_dir(dir) else {
+    return false;
+  };
+  entries.flatten().any(|entry| {
+    let path = entry.path();
+    let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
+      return false;
+    };
+    path.is_dir() && !skip_entry(name) && path.join("case.yaml").is_file()
+  })
+}
+
+#[cfg(feature = "server")]
+pub fn resolve_cases_root(primary: &Path, fallback: &Path) -> PathBuf {
+  if has_valid_cases(primary) {
+    primary.to_path_buf()
   } else {
-    PathBuf::from("../../assets/cases")
+    fallback.to_path_buf()
   }
+}
+
+#[cfg(feature = "server")]
+pub fn get_cases_root() -> PathBuf {
+  let primary = app_core::utils::content_dir("cases");
+  let fallback = app_core::utils::get_asset_root().join("cases");
+  resolve_cases_root(&primary, &fallback)
 }
 
 #[cfg(feature = "server")]
@@ -550,6 +570,25 @@ mod tests {
     );
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].slug, "b");
+  }
+
+  #[test]
+  fn resolve_cases_root_prefers_valid_content_dir_and_falls_back_when_empty() {
+    let primary = temp_root();
+    let fallback = temp_root();
+    write_file(&fallback.path().join("burn/case.yaml"), "name: Burn\nrepo: https://example.com\n");
+
+    // 外部目录不存在有效 case.yaml（含隐藏目录或空目录）时回退到框架 assets/cases
+    write_file(&primary.path().join(".hidden/case.yaml"), "name: Hidden\n");
+    write_file(&primary.path().join("no-yaml/README.md"), "# Empty\n");
+    assert_eq!(resolve_cases_root(primary.path(), fallback.path()), fallback.path());
+
+    // 外部目录一旦包含有效 case.yaml，优先启用外部内容库
+    write_file(
+      &primary.path().join("dioxuspress/case.yaml"),
+      "name: DioxusPress\nrepo: https://github.com/dioxuspress/dioxuspress\n",
+    );
+    assert_eq!(resolve_cases_root(primary.path(), fallback.path()), primary.path());
   }
 
   #[test]
