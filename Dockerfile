@@ -117,8 +117,12 @@ COPY assets ./assets
 # `build.rs` 期望根 assets 同步到 crates/app/assets
 RUN cp -r assets/* crates/app/assets/ 2>/dev/null || true
 
-# 1. 编译 Tailwind CSS（产物落到 crates/app/assets/tailwind.css）
-RUN cd crates/app && npm run build
+# 1. 预拉依赖进 BuildKit cargo 缓存并编译 Tailwind CSS（产物落到 crates/app/assets/tailwind.css）：
+#    共享 rie-cargo-registry 避免 tw-sources.mjs 与后续 dx bundle 重复拉取 crates.io，
+#    并防止缓存被 prune 清理后触发 dx bundle 内置的 200s cargo metadata 超时失败。
+RUN --mount=type=cache,id=rie-cargo-registry,target=/usr/local/cargo/registry \
+    cargo fetch --locked \
+ && cd crates/app && npm run build
 
 # dx bundle 自己去 registry.npmjs.org 下 esbuild（dioxus-cli 0.7.9 的 src/esbuild.rs 写死了地址和 0.27.3），
 # 不走 NPM_CONFIG_REGISTRY。这里先用 npm 按同一个源取下来，放进 dx 的工具缓存目录，dx 看到就不再下载
@@ -145,7 +149,7 @@ ARG APP_FEATURES=""
 RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=rie-cargo-registry,target=/usr/local/cargo/registry \
     rm -rf /tmp/target/dx/app/release/web \
  && cd crates/app \
- && { dx bundle --platform web --release --package app ${APP_FEATURES} > /tmp/bundle.log 2>&1; status=$?; } \
+ && { CARGO_NET_OFFLINE=true dx bundle --platform web --release --package app ${APP_FEATURES} > /tmp/bundle.log 2>&1; status=$?; } \
  ; cat /tmp/bundle.log \
  && [ "$status" -eq 0 ] \
  && if grep -q 'wasm-opt failed' /tmp/bundle.log; then echo 'dx bundle: wasm-opt failed' >&2; exit 1; fi
@@ -155,7 +159,7 @@ RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=ri
 ARG INCLUDE_PAPERS_INGEST=1
 RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=rie-cargo-registry,target=/usr/local/cargo/registry \
     if [ "$INCLUDE_PAPERS_INGEST" = "1" ]; then \
-      cargo build --release -p module-papers --features ingest --bin papers-ingest; \
+      CARGO_NET_OFFLINE=true cargo build --release -p module-papers --features ingest --bin papers-ingest; \
     fi
 
 # 4. 收敛产物到统一目录，方便 runtime 阶段单层 COPY
