@@ -17,14 +17,21 @@ pub fn mount(router: Router, assets_root: &str) -> Router {
 }
 
 fn mount_with_content(router: Router, assets_root: &str, content_root: Option<&Path>) -> Router {
-  // `/images` 支持双仓叠加：设了 `CONTENT_DIR` 时优先命中 `$CONTENT_DIR/images`（站点私有品牌视觉），
-  // 未命中再回退到框架自带的 `assets/images`，从而让公开框架与私有站点品牌彻底解耦且支持热更新。
+  // `/images` 与 `/cases` 支持双仓叠加：设了 `CONTENT_DIR` 时优先命中 `$CONTENT_DIR/{images,cases}`，
+  // 未命中再回退到框架自带的 `assets/{images,cases}`，从而让公开框架与私有站点资产彻底解耦且支持热更新。
   let asset_images = ServeDir::new(format!("{}/images", assets_root));
   let images_router = match content_root {
     Some(root) => Router::new()
       .fallback_service(ServeDir::new(root.join("images")).fallback(asset_images))
       .layer(middleware::map_response(cache_control(DAY))),
     None => cached(asset_images, DAY),
+  };
+  let asset_cases = ServeDir::new(format!("{}/cases", assets_root));
+  let cases_router = match content_root {
+    Some(root) => Router::new()
+      .fallback_service(ServeDir::new(root.join("cases")).fallback(asset_cases))
+      .layer(middleware::map_response(cache_control(DAY))),
+    None => cached(asset_cases, DAY),
   };
 
   // 文件名不带哈希：浏览器缓存一段时间，过期后靠 Last-Modified 复验（304）。
@@ -43,7 +50,7 @@ fn mount_with_content(router: Router, assets_root: &str, content_root: Option<&P
     )
     .nest("/audio", cached(ServeDir::new(format!("{}/audio", assets_root)), DAY))
     .nest("/podcasts", cached(ServeDir::new(format!("{}/podcasts", assets_root)), DAY))
-    .nest("/cases", cached(ServeDir::new(format!("{}/cases", assets_root)), DAY))
+    .nest("/cases", cases_router)
     .nest(
       "/assets/font",
       cached(ServeDir::new(format!("{}/font", assets_root)), "public, max-age=2592000"),
@@ -187,6 +194,53 @@ mod tests {
       .await
       .unwrap();
     assert_eq!(res_missing.status(), StatusCode::NOT_FOUND);
+  }
+
+  /// `$CONTENT_DIR/cases` 存在同名静态文件（封面 / 双主题架构图）时优先覆盖 `assets/cases`，未命中回退。
+  #[tokio::test]
+  async fn content_cases_override_assets_with_fallback() {
+    let assets = tempfile::TempDir::new().unwrap();
+    let content = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(assets.path().join("cases/burn")).unwrap();
+    std::fs::create_dir_all(content.path().join("cases/burn")).unwrap();
+    std::fs::create_dir_all(content.path().join("cases/dioxuspress")).unwrap();
+    std::fs::write(assets.path().join("cases/burn/cover.png"), "framework-burn").unwrap();
+    std::fs::write(assets.path().join("cases/burn/legacy.png"), "framework-only").unwrap();
+    std::fs::write(content.path().join("cases/burn/cover.png"), "content-burn").unwrap();
+    std::fs::write(content.path().join("cases/dioxuspress/arch.light.svg"), "<svg/>").unwrap();
+
+    let app = super::mount_with_content(
+      axum::Router::new(),
+      assets.path().to_str().unwrap(),
+      Some(content.path()),
+    );
+
+    let res_override = app
+      .clone()
+      .oneshot(Request::builder().uri("/cases/burn/cover.png").body(Body::empty()).unwrap())
+      .await
+      .unwrap();
+    assert_eq!(res_override.status(), StatusCode::OK);
+    assert_eq!(cache_control(&res_override), Some("public, max-age=86400"));
+    let body_override = axum::body::to_bytes(res_override.into_body(), 1024).await.unwrap();
+    assert_eq!(&body_override[..], b"content-burn");
+
+    let res_content_only = app
+      .clone()
+      .oneshot(
+        Request::builder().uri("/cases/dioxuspress/arch.light.svg").body(Body::empty()).unwrap(),
+      )
+      .await
+      .unwrap();
+    assert_eq!(res_content_only.status(), StatusCode::OK);
+
+    let res_fallback = app
+      .oneshot(Request::builder().uri("/cases/burn/legacy.png").body(Body::empty()).unwrap())
+      .await
+      .unwrap();
+    assert_eq!(res_fallback.status(), StatusCode::OK);
+    let body_fallback = axum::body::to_bytes(res_fallback.into_body(), 1024).await.unwrap();
+    assert_eq!(&body_fallback[..], b"framework-only");
   }
 
   /// 课时文件按用户鉴权，共享缓存（CDN / 反代）不得存，否则会把付费内容发给未购用户。
