@@ -12,7 +12,16 @@ pub fn Papers() -> Element {
 
 #[component]
 pub fn PaperDetail(arxiv_id: String) -> Element {
-  rsx! { ModuleGate { id: "papers".to_string(), PaperDetailPage { arxiv_id } } }
+  rsx! {
+      ModuleGate { id: "papers".to_string(),
+          PaperDetailPage {
+              arxiv_id: arxiv_id.clone(),
+              footer: rsx! {
+                  {super::discussion("paper", arxiv_id.clone())}
+              },
+          }
+      }
+  }
 }
 
 #[component]

@@ -132,24 +132,58 @@ pub fn version_in_html(html: &str, arxiv_id: &str) -> Option<i32> {
     .max()
 }
 
-/// 下载全文。没有 HTML 版（404）时返回 `Ok(None)`。
+/// arXiv 瞬时错误退避重试间隔（仅对传输层/429/5xx 重试）。
+const FETCH_BACKOFF: [std::time::Duration; 2] =
+  [std::time::Duration::from_secs(2), std::time::Duration::from_secs(6)];
+
+/// 状态码是否属于可重试的瞬时错误（429 / 5xx）。
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+  status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// 下载全文。没有 HTML 版（404）时返回 `Ok(None)`；遇到连接超时或 5xx 最多指数退避重试 2 次。
 pub async fn fetch(
   client: &reqwest::Client,
   arxiv_id: &str,
 ) -> Result<Option<(FullText, Option<i32>)>, String> {
   let url = format!("https://arxiv.org/html/{arxiv_id}");
-  let resp =
-    client.get(&url).send().await.map_err(|e| format!("arXiv 请求失败：{}", with_sources(&e)))?;
-  let status = resp.status();
-  if status == reqwest::StatusCode::NOT_FOUND {
-    return Ok(None);
+  let mut last_err = String::new();
+  for attempt in 0..=FETCH_BACKOFF.len() {
+    if attempt > 0 {
+      let delay = FETCH_BACKOFF[attempt - 1];
+      tracing::warn!(%arxiv_id, attempt, delay_secs = delay.as_secs(), error = %last_err, "papers: retrying arXiv fetch");
+      tokio::time::sleep(delay).await;
+    }
+    let resp = match client.get(&url).send().await {
+      Ok(r) => r,
+      Err(e) => {
+        last_err = format!("arXiv 请求失败：{}", with_sources(&e));
+        continue;
+      }
+    };
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+      return Ok(None);
+    }
+    if !status.is_success() {
+      let err = format!("arXiv 返回 {status}");
+      if is_retryable_status(status) {
+        last_err = err;
+        continue;
+      }
+      return Err(err);
+    }
+    match resp.text().await {
+      Ok(html) => {
+        let version = version_in_html(&html, arxiv_id);
+        return Ok(parse(&html).map(|ft| (ft, version)));
+      }
+      Err(e) => {
+        last_err = format!("arXiv 响应读取失败：{}", with_sources(&e));
+      }
+    }
   }
-  if !status.is_success() {
-    return Err(format!("arXiv 返回 {status}"));
-  }
-  let html = resp.text().await.map_err(|e| format!("arXiv 响应读取失败：{}", with_sources(&e)))?;
-  let version = version_in_html(&html, arxiv_id);
-  Ok(parse(&html).map(|ft| (ft, version)))
+  Err(last_err)
 }
 
 #[cfg(test)]

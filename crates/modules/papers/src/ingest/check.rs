@@ -14,6 +14,77 @@ pub struct Checked {
   pub unverified_numbers: Vec<String>,
 }
 
+/// 把模型写出的节号归并到原文已知节号（精确匹配优先；未命中时允许剥离
+/// `Section` / `Appendix` 前缀与节号后面的标题，前提是能归并到已知节号，
+/// 且节号后紧跟空白或分隔符，不会把 `"4.1"` 误判成 `"4"`）。
+pub fn resolve_section<'a>(raw: &str, sections: &'a [String]) -> Option<&'a str> {
+  let cleaned = clean_section(raw);
+  if cleaned.is_empty() {
+    return None;
+  }
+  if cleaned == "Abstract" {
+    return Some("Abstract");
+  }
+  if let Some(exact) = sections.iter().find(|x| x.as_str() == cleaned) {
+    return Some(exact.as_str());
+  }
+
+  let candidate = strip_section_prefix(cleaned);
+  if let Some(exact) = sections.iter().find(|x| x.as_str() == candidate) {
+    return Some(exact.as_str());
+  }
+
+  // 允许 `"4.6 Intra-Model ..."` / `"H Appendix H ..."` / `"4.6: Title"` 匹配已知节号，
+  // 但禁止 `"4.1"` 匹配 `"4"`（`.` 不是边界分隔符）。取最长已知节号避免歧义。
+  sections
+    .iter()
+    .filter(|known| {
+      let Some(rest) = candidate.strip_prefix(known.as_str()) else {
+        return false;
+      };
+      if rest.is_empty() {
+        return true;
+      }
+      // 末尾仅多了一个点（如 `"4.6."`）或后接空白/冒号/破折号
+      if rest == "." {
+        return true;
+      }
+      let mut chars = rest.chars();
+      match chars.next() {
+        Some(c) if c.is_whitespace() || matches!(c, ':' | '—' | '–' | '-') => true,
+        Some('.') => chars.next().is_some_and(char::is_whitespace),
+        _ => false,
+      }
+    })
+    .max_by_key(|known| known.len())
+    .map(String::as_str)
+}
+
+fn strip_section_prefix(s: &str) -> &str {
+  for prefix in
+    ["Section ", "section ", "Sec. ", "sec. ", "Appendix ", "appendix ", "App. ", "app. "]
+  {
+    if let Some(rest) = s.strip_prefix(prefix) {
+      return rest.trim_start();
+    }
+  }
+  s
+}
+
+/// 将解读里能归并的节号规范化回原文节号（例如 `"4.6 Intra-Model ..."` → `"4.6"`）。
+pub fn normalize_sections(d: &mut PaperDigest, sections: &[String]) {
+  for r in &mut d.results {
+    if let Some(canonical) = resolve_section(&r.section, sections) {
+      r.section = canonical.to_string();
+    }
+  }
+  for k in &mut d.key_points {
+    if let Some(canonical) = resolve_section(&k.section, sections) {
+      k.section = canonical.to_string();
+    }
+  }
+}
+
 /// 校验英文解读。`sections` 是原文里存在的节号（含无编号节的标题），
 /// `source` 是喂给模型的全文。返回 `Err` 时列出全部问题，用来让模型重写一次。
 pub fn check_digest(
@@ -35,7 +106,7 @@ pub fn check_digest(
     .chain(d.key_points.iter().map(|k| ("key_points", &k.section)));
   for (kind, section) in cited {
     let s = clean_section(section);
-    if s != "Abstract" && !sections.iter().any(|x| x == s) {
+    if resolve_section(s, sections).is_none() {
       problems.push(format!("{kind}: section \"{s}\" does not exist in the paper"));
     }
   }
@@ -67,26 +138,55 @@ pub fn check_digest(
 }
 
 /// 翻译只能改文字：条目数、节号、数字、导图形状都要和英文版一样。
+/// 发现差异时指明具体索引与期望值，让二次重试精准修正。
 pub fn check_translation(en: &PaperDigest, tr: &PaperDigest) -> Result<(), Vec<String>> {
   let mut problems = Vec::new();
-  let same_results = en.results.len() == tr.results.len()
-    && en.results.iter().zip(&tr.results).all(|(a, b)| {
-      clean_section(&a.section) == clean_section(&b.section) && a.numbers == b.numbers
-    });
-  if !same_results {
-    problems.push("results: count, sections or numbers changed".to_string());
+  if en.results.len() != tr.results.len() {
+    problems.push(format!(
+      "results: expected {} items, got {}",
+      en.results.len(),
+      tr.results.len()
+    ));
+  } else {
+    for (i, (a, b)) in en.results.iter().zip(&tr.results).enumerate() {
+      if clean_section(&a.section) != clean_section(&b.section) {
+        problems.push(format!(
+          "results[{i}].section changed: expected \"{}\", got \"{}\"",
+          clean_section(&a.section),
+          clean_section(&b.section)
+        ));
+      }
+      if a.numbers != b.numbers {
+        problems.push(format!(
+          "results[{i}].numbers changed: expected {:?}, got {:?} (copy numbers verbatim without translating)",
+          a.numbers, b.numbers
+        ));
+      }
+    }
   }
-  let same_points = en.key_points.len() == tr.key_points.len()
-    && en
-      .key_points
-      .iter()
-      .zip(&tr.key_points)
-      .all(|(a, b)| clean_section(&a.section) == clean_section(&b.section));
-  if !same_points {
-    problems.push("key_points: count or sections changed".to_string());
+  if en.key_points.len() != tr.key_points.len() {
+    problems.push(format!(
+      "key_points: expected {} items, got {}",
+      en.key_points.len(),
+      tr.key_points.len()
+    ));
+  } else {
+    for (i, (a, b)) in en.key_points.iter().zip(&tr.key_points).enumerate() {
+      if clean_section(&a.section) != clean_section(&b.section) {
+        problems.push(format!(
+          "key_points[{i}].section changed: expected \"{}\", got \"{}\"",
+          clean_section(&a.section),
+          clean_section(&b.section)
+        ));
+      }
+    }
   }
   if en.limitations.len() != tr.limitations.len() {
-    problems.push("limitations: count changed".to_string());
+    problems.push(format!(
+      "limitations: expected {} items, got {}",
+      en.limitations.len(),
+      tr.limitations.len()
+    ));
   }
   if !same_shape(&en.mindmap, &tr.mindmap) {
     problems.push("mindmap: shape changed".to_string());
@@ -179,6 +279,41 @@ mod tests {
     d.key_points[0].section = "9.9".into();
     let err = check_digest(&d, &sections(), SOURCE).unwrap_err();
     assert!(err[0].contains("\"9.9\""), "{err:?}");
+
+    let mut d2 = digest();
+    d2.key_points[0].section = "9.9 Fake Title".into();
+    let err2 = check_digest(&d2, &sections(), SOURCE).unwrap_err();
+    assert!(err2[0].contains("\"9.9 Fake Title\""), "{err2:?}");
+
+    // 存在 "3" 时绝不能把不存在的子节 "3.1" 误匹配到 "3"
+    let mut d3 = digest();
+    d3.key_points[0].section = "3.1".into();
+    assert!(check_digest(&d3, &sections(), SOURCE).is_err());
+    d3.key_points[0].section = "3.1 Sub".into();
+    assert!(check_digest(&d3, &sections(), SOURCE).is_err());
+  }
+
+  #[test]
+  fn overqualified_section_citations_resolve_and_normalize() {
+    let secs: Vec<String> = vec!["4".into(), "4.6".into(), "H".into(), "Limitations".into()];
+    // 线上实证失败案例：模型把节号连同标题一起写出
+    assert_eq!(resolve_section("4.6 Intra-Model Recurrence Depth Scaling", &secs), Some("4.6"));
+    assert_eq!(resolve_section("H Appendix H FFT Hyperparameter Sweeps", &secs), Some("H"));
+    assert_eq!(resolve_section("Section 4.6: Scaling", &secs), Some("4.6"));
+    assert_eq!(resolve_section("Appendix H Extra", &secs), Some("H"));
+    assert_eq!(resolve_section("§4.6.", &secs), Some("4.6"));
+    // 不存在的节号依然拒绝
+    assert_eq!(resolve_section("4.1", &secs), None);
+    assert_eq!(resolve_section("4.1 Setup", &secs), None);
+    assert_eq!(resolve_section("9.9 Fake Title", &secs), None);
+
+    let mut d = digest();
+    d.results[0].section = "4.6 Intra-Model Recurrence Depth Scaling".into();
+    d.key_points[0].section = "H Appendix H FFT Hyperparameter Sweeps".into();
+    assert!(check_digest(&d, &secs, SOURCE).is_ok());
+    normalize_sections(&mut d, &secs);
+    assert_eq!(d.results[0].section, "4.6");
+    assert_eq!(d.key_points[0].section, "H");
   }
 
   #[test]
@@ -207,6 +342,9 @@ mod tests {
     let mut bad = zh.clone();
     bad.results[0].numbers[0] = "49 倍".into();
     bad.mindmap.children.pop();
-    assert_eq!(check_translation(&en, &bad).unwrap_err().len(), 2);
+    let errs = check_translation(&en, &bad).unwrap_err();
+    assert_eq!(errs.len(), 2);
+    assert!(errs[0].contains("results[0].numbers"), "{errs:?}");
+    assert!(errs[0].contains("49×"), "{errs:?}");
   }
 }

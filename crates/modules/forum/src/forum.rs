@@ -125,6 +125,7 @@ fn ref_link_for(kind: &str, path: &str) -> (&'static str, String) {
     "doc" => ("DOC", format!("/docs/{}", path)),
     "course" => ("COURSE", format!("/course/{}", path)),
     "case" => ("CASE", format!("/case/{}", path)),
+    "paper" => ("PAPER", format!("/papers/{}", path)),
     "lesson" => {
       // path = "<slug>/<chapter>/<lesson>"
       ("LESSON", format!("/course/{}", path))

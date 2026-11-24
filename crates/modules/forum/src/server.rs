@@ -130,7 +130,7 @@ pub fn validate_new_topic(input: &NewTopicInput) -> Result<(), String> {
   // 引用必须 kind 与 path 同时存在或同时不存在
   match (&input.ref_kind, &input.ref_path) {
     (Some(k), Some(p)) => {
-      if !matches!(k.as_str(), "blog" | "doc" | "course" | "lesson" | "case") {
+      if !matches!(k.as_str(), "blog" | "doc" | "course" | "lesson" | "case" | "paper") {
         return Err(format!("不支持的引用类型: {}", k));
       }
       if p.trim().is_empty() {
@@ -263,6 +263,7 @@ fn resolve_ref_title(kind: &str, path: &str) -> String {
       }
       fallback()
     }
+    "paper" => format!("arXiv:{path}"),
     _ => fallback(),
   }
 }
@@ -840,6 +841,11 @@ mod tests {
     i.ref_kind = Some("blog".to_string());
     i.ref_path = Some("hello-rust".to_string());
     assert!(validate_new_topic(&i).is_ok());
+
+    i.ref_kind = Some("paper".to_string());
+    i.ref_path = Some("2611.15789".to_string());
+    assert!(validate_new_topic(&i).is_ok());
+    assert_eq!(resolve_ref_title("paper", "2611.15789"), "arXiv:2611.15789");
   }
 
   #[test]
