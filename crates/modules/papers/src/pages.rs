@@ -37,20 +37,10 @@ pub fn PapersIndexPage() -> Element {
           bilingual: Some(lang == Language::En),
       }
       section { class: "py-12 min-h-screen bg-white dark:bg-slate-950",
-          div { class: "mx-auto max-w-4xl px-4 sm:px-6 lg:px-8",
+          div { class: "mx-auto max-w-6xl px-4 sm:px-6 lg:px-8",
               div { class: "flex flex-wrap items-center justify-between gap-3",
                   h1 { class: "text-3xl md:text-4xl font-extrabold text-slate-900 dark:text-white", "{title}" }
-                  a {
-                      href: "/papers/feed.xml",
-                      target: "_blank",
-                      rel: "noopener noreferrer",
-                      title: lang.pick("订阅论文 Atom RSS", "Subscribe to Papers Atom Feed"),
-                      class: "inline-flex items-center gap-1.5 rounded-full border border-slate-200 dark:border-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:border-slate-400 dark:hover:border-slate-500 transition-colors",
-                      svg { class: "w-3.5 h-3.5 text-amber-500", fill: "none", stroke: "currentColor", view_box: "0 0 24 24", stroke_width: "2",
-                          path { stroke_linecap: "round", stroke_linejoin: "round", d: "M6 18a2 2 0 100-4 2 2 0 000 4zM4 11a9 9 0 019 9M4 4a16 16 0 0116 16" }
-                      }
-                      "RSS"
-                  }
+                  RssFeedLink {}
               }
               p { class: "mt-3 text-slate-600 dark:text-slate-400", "{subtitle}" }
               SuspenseBoundary { fallback: |_| rsx! {}, PaperList { topic: String::new() } }
@@ -77,12 +67,33 @@ pub fn PaperTopicPage(slug: String) -> Element {
           bilingual: Some(lang == Language::En),
       }
       section { class: "py-12 min-h-screen bg-white dark:bg-slate-950",
-          div { class: "mx-auto max-w-4xl px-4 sm:px-6 lg:px-8",
+          div { class: "mx-auto max-w-6xl px-4 sm:px-6 lg:px-8",
               a { href: "/papers", class: "text-sm text-slate-500 hover:underline", {lang.pick("← 论文速递", "← Papers")} }
-              h1 { class: "mt-4 text-3xl md:text-4xl font-extrabold text-slate-900 dark:text-white", "{name}" }
+              div { class: "mt-4 flex flex-wrap items-center justify-between gap-3",
+                  h1 { class: "text-3xl md:text-4xl font-extrabold text-slate-900 dark:text-white", "{name}" }
+                  RssFeedLink {}
+              }
               p { class: "mt-3 text-slate-600 dark:text-slate-400", "{about}" }
               SuspenseBoundary { fallback: |_| rsx! {}, PaperList { topic: topic.slug.to_string() } }
           }
+      }
+  }
+}
+
+#[component]
+fn RssFeedLink() -> Element {
+  let lang = use_language_signal()();
+  rsx! {
+      a {
+          href: "/papers/feed.xml",
+          target: "_blank",
+          rel: "noopener noreferrer",
+          title: lang.pick("订阅论文 Atom RSS", "Subscribe to Papers Atom Feed"),
+          class: "inline-flex items-center gap-1.5 rounded-full border border-slate-200 dark:border-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:border-slate-400 dark:hover:border-slate-500 transition-colors",
+          svg { class: "w-3.5 h-3.5 text-amber-500", fill: "none", stroke: "currentColor", view_box: "0 0 24 24", stroke_width: "2",
+              path { stroke_linecap: "round", stroke_linejoin: "round", d: "M6 18a2 2 0 100-4 2 2 0 000 4zM4 11a9 9 0 019 9M4 4a16 16 0 0116 16" }
+          }
+          "RSS"
       }
   }
 }
@@ -94,16 +105,38 @@ fn topic_name(t: &Topic, lang: Language) -> &'static str {
   }
 }
 
-/// 全部主题的链接（带真实篇数）；`current` 是当前主题页的 slug，总览页为空（高亮「全部」）。
+/// 桌面端左侧粘性垂直主题菜单 + 移动端顶部单行横向可滚动胶囊条。
+/// `current` 是当前主题页的 slug，总览页为空（高亮「全部」）。
 #[component]
 fn TopicNav(current: String, all_total: u64, topic_counts: Vec<(String, u64)>) -> Element {
   let lang = use_language_signal()();
-  let all_class = if current.is_empty() { "pt-chip pt-chip-on" } else { "pt-chip" };
+  let is_all = current.is_empty();
   let count_for =
     |slug: &str| topic_counts.iter().find(|(s, _)| s == slug).map(|(_, n)| *n).unwrap_or(0);
+  let sidebar_link_class = |active: bool| {
+    if active {
+      "flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-sm font-semibold bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 transition-colors"
+    } else {
+      "flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800/80 hover:text-slate-900 dark:hover:text-white transition-colors"
+    }
+  };
+  let sidebar_count_class = |active: bool| {
+    if active {
+      "text-xs opacity-75 tabular-nums shrink-0"
+    } else {
+      "text-xs text-slate-400 dark:text-slate-500 tabular-nums shrink-0"
+    }
+  };
+
   rsx! {
-      nav { class: "pt-nav mt-6 mb-6", aria_label: lang.pick("主题", "Topics"),
-          a { class: all_class, href: "/papers",
+      // 移动端：顶部单行横向可滚动胶囊，避免折成多行挤占首屏
+      nav {
+          class: "flex lg:hidden items-center gap-2 overflow-x-auto pb-2 -mx-1 px-1",
+          aria_label: lang.pick("主题", "Topics"),
+          a {
+              class: if is_all { "pt-chip pt-chip-on" } else { "pt-chip" },
+              href: "/papers",
+              aria_current: if is_all { Some("page") } else { None },
               {lang.pick("全部", "All")}
               if all_total > 0 {
                   span { class: "ml-1.5 text-xs opacity-65 tabular-nums", "{all_total}" }
@@ -112,14 +145,57 @@ fn TopicNav(current: String, all_total: u64, topic_counts: Vec<(String, u64)>) -
           for t in TOPICS {
               {
                   let cnt = count_for(t.slug);
+                  let active = t.slug == current;
                   rsx! {
                       a {
-                          key: "{t.slug}",
-                          class: if t.slug == current { "pt-chip pt-chip-on" } else { "pt-chip" },
+                          key: "m-{t.slug}",
+                          class: if active { "pt-chip pt-chip-on" } else { "pt-chip" },
                           href: "/papers/topic/{t.slug}",
+                          aria_current: if active { Some("page") } else { None },
                           {topic_name(t, lang)}
                           if all_total > 0 {
                               span { class: "ml-1.5 text-xs opacity-65 tabular-nums", "{cnt}" }
+                          }
+                      }
+                  }
+              }
+          }
+      }
+
+      // 桌面端：左侧粘性垂直导航列表
+      nav {
+          class: "hidden lg:block rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 p-3",
+          aria_label: lang.pick("主题分类", "Topics"),
+          div { class: "px-2.5 pb-2 text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-400",
+              {lang.pick("主题分类", "Topics")}
+          }
+          ul { class: "space-y-0.5",
+              li {
+                  a {
+                      class: sidebar_link_class(is_all),
+                      href: "/papers",
+                      aria_current: if is_all { Some("page") } else { None },
+                      span { class: "truncate", {lang.pick("全部", "All")} }
+                      if all_total > 0 {
+                          span { class: sidebar_count_class(is_all), "{all_total}" }
+                      }
+                  }
+              }
+              for t in TOPICS {
+                  {
+                      let cnt = count_for(t.slug);
+                      let active = t.slug == current;
+                      rsx! {
+                          li { key: "s-{t.slug}",
+                              a {
+                                  class: sidebar_link_class(active),
+                                  href: "/papers/topic/{t.slug}",
+                                  aria_current: if active { Some("page") } else { None },
+                                  span { class: "truncate", {topic_name(t, lang)} }
+                                  if all_total > 0 {
+                                      span { class: sidebar_count_class(active), "{cnt}" }
+                                  }
+                              }
                           }
                       }
                   }
@@ -260,100 +336,106 @@ fn PaperList(topic: String) -> Element {
   };
 
   rsx! {
-      TopicNav {
-          current: topic.clone(),
-          all_total: page_data.all_total,
-          topic_counts: page_data.topic_counts.clone(),
-      }
-      // 工具栏：排序切换 + 仅看有代码 + 命中篇数
-      div { class: "mb-8 flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800",
-          div { class: "flex flex-wrap items-center gap-2",
-              button {
-                  r#type: "button",
-                  "aria-pressed": (cur_sort == "latest").to_string(),
-                  class: sort_btn_class(cur_sort == "latest"),
-                  onclick: move |_| load_latest("latest".to_string(), code_only(), 1),
-                  {lang.pick("最新", "Latest")}
-              }
-              button {
-                  r#type: "button",
-                  "aria-pressed": (cur_sort == "top_week").to_string(),
-                  class: sort_btn_class(cur_sort == "top_week"),
-                  onclick: move |_| load_week("top_week".to_string(), code_only(), 1),
-                  {lang.pick("近 7 天最热", "Top 7d")}
-              }
-              button {
-                  r#type: "button",
-                  "aria-pressed": (cur_sort == "top_all").to_string(),
-                  class: sort_btn_class(cur_sort == "top_all"),
-                  onclick: move |_| load_all("top_all".to_string(), code_only(), 1),
-                  {lang.pick("历史最热", "Top all")}
-              }
-              button {
-                  r#type: "button",
-                  "aria-pressed": cur_code.to_string(),
-                  class: code_btn_class,
-                  onclick: move |_| load_code(sort(), !code_only(), 1),
-                  {lang.pick("仅看有代码", "Code only")}
+      div { class: "mt-8 grid grid-cols-1 lg:grid-cols-[15rem_minmax(0,1fr)] gap-8 items-start",
+          aside { class: "min-w-0 lg:sticky lg:top-20",
+              TopicNav {
+                  current: topic.clone(),
+                  all_total: page_data.all_total,
+                  topic_counts: page_data.topic_counts.clone(),
               }
           }
-          span { class: "text-xs text-slate-500 dark:text-slate-400 tabular-nums",
-              {if loading() { lang.pick("加载中…", "Loading…").to_string() } else { count_summary }}
-          }
-      }
-      if load_err() {
-          p { class: "mb-6 text-sm text-rose-600 dark:text-rose-400",
-              {lang.pick("刷新列表失败，请重试。", "Failed to refresh list. Please try again.")}
-          }
-      }
-      if page_data.items.is_empty() {
-          Empty { class: "rounded-2xl py-20",
-              EmptyDescription { {lang.pick("当前筛选条件下还没有论文", "No papers match this filter")} }
-          }
-      } else if cur_sort == "latest" {
-          for (date, day) in group_by_date(page_data.items) {
-              section { key: "{date}", class: "mb-10",
-                  h2 { class: "text-sm font-semibold text-slate-500 dark:text-slate-400 mb-3", "{date}" }
-                  ul { class: "divide-y divide-slate-200 dark:divide-slate-800",
-                      for p in day {
-                          PaperRow { key: "{p.arxiv_id}", p, show_date: false }
+          div { class: "min-w-0",
+              // 工具栏：排序切换 + 仅看有代码 + 命中篇数
+              div { class: "mb-8 flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800",
+                  div { class: "flex flex-wrap items-center gap-2",
+                      button {
+                          r#type: "button",
+                          "aria-pressed": (cur_sort == "latest").to_string(),
+                          class: sort_btn_class(cur_sort == "latest"),
+                          onclick: move |_| load_latest("latest".to_string(), code_only(), 1),
+                          {lang.pick("最新", "Latest")}
+                      }
+                      button {
+                          r#type: "button",
+                          "aria-pressed": (cur_sort == "top_week").to_string(),
+                          class: sort_btn_class(cur_sort == "top_week"),
+                          onclick: move |_| load_week("top_week".to_string(), code_only(), 1),
+                          {lang.pick("近 7 天最热", "Top 7d")}
+                      }
+                      button {
+                          r#type: "button",
+                          "aria-pressed": (cur_sort == "top_all").to_string(),
+                          class: sort_btn_class(cur_sort == "top_all"),
+                          onclick: move |_| load_all("top_all".to_string(), code_only(), 1),
+                          {lang.pick("历史最热", "Top all")}
+                      }
+                      button {
+                          r#type: "button",
+                          "aria-pressed": cur_code.to_string(),
+                          class: code_btn_class,
+                          onclick: move |_| load_code(sort(), !code_only(), 1),
+                          {lang.pick("仅看有代码", "Code only")}
+                      }
+                  }
+                  span { class: "text-xs text-slate-500 dark:text-slate-400 tabular-nums",
+                      {if loading() { lang.pick("加载中…", "Loading…").to_string() } else { count_summary }}
+                  }
+              }
+              if load_err() {
+                  p { class: "mb-6 text-sm text-rose-600 dark:text-rose-400",
+                      {lang.pick("刷新列表失败，请重试。", "Failed to refresh list. Please try again.")}
+                  }
+              }
+              if page_data.items.is_empty() {
+                  Empty { class: "rounded-2xl py-20",
+                      EmptyDescription { {lang.pick("当前筛选条件下还没有论文", "No papers match this filter")} }
+                  }
+              } else if cur_sort == "latest" {
+                  for (date, day) in group_by_date(page_data.items) {
+                      section { key: "{date}", class: "mb-10",
+                          h2 { class: "text-sm font-semibold text-slate-500 dark:text-slate-400 mb-3", "{date}" }
+                          ul { class: "divide-y divide-slate-200 dark:divide-slate-800",
+                              for p in day {
+                                  PaperRow { key: "{p.arxiv_id}", p, show_date: false }
+                              }
+                          }
+                      }
+                  }
+              } else {
+                  ul { class: "divide-y divide-slate-200 dark:divide-slate-800 mb-10",
+                      for p in page_data.items {
+                          PaperRow { key: "{p.arxiv_id}", p, show_date: true }
                       }
                   }
               }
-          }
-      } else {
-          ul { class: "divide-y divide-slate-200 dark:divide-slate-800 mb-10",
-              for p in page_data.items {
-                  PaperRow { key: "{p.arxiv_id}", p, show_date: true }
-              }
-          }
-      }
-      if pages_total > 1 {
-          nav {
-              class: "mt-8 pt-6 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4",
-              aria_label: lang.pick("分页导航", "Pagination"),
-              button {
-                  r#type: "button",
-                  disabled: cur_page <= 1 || loading(),
-                  class: "rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-1.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:border-slate-400 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors",
-                  onclick: move |_| {
-                      if cur_page > 1 {
-                          load_prev(sort(), code_only(), cur_page - 1);
+              if pages_total > 1 {
+                  nav {
+                      class: "mt-8 pt-6 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4",
+                      aria_label: lang.pick("分页导航", "Pagination"),
+                      button {
+                          r#type: "button",
+                          disabled: cur_page <= 1 || loading(),
+                          class: "rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-1.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:border-slate-400 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors",
+                          onclick: move |_| {
+                              if cur_page > 1 {
+                                  load_prev(sort(), code_only(), cur_page - 1);
+                              }
+                          },
+                          {lang.pick("← 上一页", "← Prev")}
                       }
-                  },
-                  {lang.pick("← 上一页", "← Prev")}
-              }
-              span { class: "text-xs text-slate-500 dark:text-slate-400 tabular-nums", "{page_indicator}" }
-              button {
-                  r#type: "button",
-                  disabled: !page_data.has_more || loading(),
-                  class: "rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-1.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:border-slate-400 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors",
-                  onclick: move |_| {
-                      if page_data.has_more {
-                          load_next(sort(), code_only(), cur_page + 1);
+                      span { class: "text-xs text-slate-500 dark:text-slate-400 tabular-nums", "{page_indicator}" }
+                      button {
+                          r#type: "button",
+                          disabled: !page_data.has_more || loading(),
+                          class: "rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-1.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:border-slate-400 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors",
+                          onclick: move |_| {
+                              if page_data.has_more {
+                                  load_next(sort(), code_only(), cur_page + 1);
+                              }
+                          },
+                          {lang.pick("下一页 →", "Next →")}
                       }
-                  },
-                  {lang.pick("下一页 →", "Next →")}
+                  }
               }
           }
       }
