@@ -196,6 +196,7 @@ a {
 .pt-chip {
   display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 14px; line-height: 1.4;
   border: 1px solid var(--border); color: var(--foreground); text-decoration: none;
+  white-space: nowrap; flex-shrink: 0;
 }
 .pt-chip:hover { border-color: var(--foreground); }
 .pt-chip-on, .pt-chip-on:hover { background: var(--foreground); color: var(--background); border-color: var(--foreground); }
