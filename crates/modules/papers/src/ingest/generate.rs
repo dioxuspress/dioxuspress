@@ -1,13 +1,19 @@
 //! 调模型：全文 → 英文解读，英文解读 → 其他语言；标题 + 摘要 → 主题与中文标题。
 //! 不合格时把问题告诉模型重写一次。
 
-use llm::{LlmClient, LlmMessage, LlmUsage};
+use std::time::Duration;
+
+use app_core::error::AppError;
+use llm::{LlmClient, LlmMessage, LlmReply, LlmUsage};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
-use super::check::{check_digest, check_translation, Checked};
+use super::check::{check_digest, check_translation, normalize_sections, Checked};
 use crate::digest::PaperDigest;
 use crate::topics::{MAX_TOPICS, TOPICS};
+
+/// LLM 瞬时网络/5xx 错退避间隔（2s → 6s，4xx 立即失败不重试）。
+const LLM_RETRY_BACKOFF: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(6)];
 
 /// 提示词版本，记进 `paper_summaries.prompt_version`；改提示词时加一。
 pub const PROMPT_VERSION: i32 = 1;
@@ -56,6 +62,53 @@ fn add(total: &mut LlmUsage, u: LlmUsage) {
   total.output_tokens += u.output_tokens;
 }
 
+/// 判断 LLM 调用错误是否属于可重试的瞬时故障（连接/超时/429/5xx）；
+/// 4xx（如 400/401/403/404）与参数校验错误立即失败，不空等重试。
+pub(crate) fn is_transient_llm_error(err: &AppError) -> bool {
+  match err {
+    AppError::Validation(_) => false,
+    _ => {
+      let msg = err.to_string();
+      if msg.contains("LLM HTTP 请求失败") || msg.contains("LLM 响应读取失败") {
+        return true;
+      }
+      if let Some(after) = msg.split("LLM 服务返回 ").nth(1) {
+        let code: Option<u16> =
+          after.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok();
+        return matches!(code, Some(429) | Some(500..=599));
+      }
+      false
+    }
+  }
+}
+
+/// 带指数退避的模型调用：仅针对传输层/429/5xx 重试，4xx 立即返回错误。
+async fn complete_with_retry(
+  llm: &dyn LlmClient,
+  stage: &'static str,
+  messages: Vec<LlmMessage>,
+  backoff: &[Duration],
+) -> Result<LlmReply, String> {
+  let mut last_err = String::new();
+  for attempt in 0..=backoff.len() {
+    if attempt > 0 {
+      let delay = backoff[attempt - 1];
+      tracing::warn!(stage, attempt, delay_secs = delay.as_secs(), error = %last_err, "papers: retrying llm call");
+      tokio::time::sleep(delay).await;
+    }
+    match llm.complete(messages.clone()).await {
+      Ok(reply) => return Ok(reply),
+      Err(e) => {
+        last_err = format!("模型调用失败：{e}");
+        if !is_transient_llm_error(&e) {
+          return Err(last_err);
+        }
+      }
+    }
+  }
+  Err(last_err)
+}
+
 /// 先问一次，`validate` 不过就带上问题再问一次。两次都不过返回最后的问题。
 async fn ask_validated<R: DeserializeOwned, T>(
   llm: &dyn LlmClient,
@@ -65,12 +118,24 @@ async fn ask_validated<R: DeserializeOwned, T>(
   usage: &mut LlmUsage,
   validate: impl Fn(&R) -> Result<T, Vec<String>>,
 ) -> Result<(R, T), String> {
+  ask_validated_with_backoff(llm, stage, system, user, usage, &LLM_RETRY_BACKOFF, validate).await
+}
+
+async fn ask_validated_with_backoff<R: DeserializeOwned, T>(
+  llm: &dyn LlmClient,
+  stage: &'static str,
+  system: &str,
+  user: String,
+  usage: &mut LlmUsage,
+  backoff: &[Duration],
+  validate: impl Fn(&R) -> Result<T, Vec<String>>,
+) -> Result<(R, T), String> {
   let mut messages = vec![LlmMessage::system(system), LlmMessage::user(user)];
   let mut last_problems = String::new();
   for attempt in 0..2 {
     let input_chars: usize = messages.iter().map(|m| m.text_only().chars().count()).sum();
     let started = std::time::Instant::now();
-    let reply = llm.complete(messages.clone()).await.map_err(|e| format!("模型调用失败：{e}"))?;
+    let reply = complete_with_retry(llm, stage, messages.clone(), backoff).await?;
     // 单次调用的长度：自托管负载估算要用。output_tokens 远大于 reply_chars 时，多出来的是推理 token。
     tracing::info!(
       stage,
@@ -101,6 +166,7 @@ async fn ask_validated<R: DeserializeOwned, T>(
 }
 
 /// 英文解读：校验节号与导图，数字找不到的记进 `Checked`。
+/// 校验通过后将可归并的节号（如 `"4.6 Intra-Model ..."`）规范化回原文节号。
 pub async fn digest_en(
   llm: &dyn LlmClient,
   title: &str,
@@ -108,7 +174,7 @@ pub async fn digest_en(
   sections: &[String],
   usage: &mut LlmUsage,
 ) -> Result<(PaperDigest, Checked), String> {
-  ask_validated(
+  let (mut d, checked) = ask_validated(
     llm,
     "extract",
     &extract_system(),
@@ -116,7 +182,9 @@ pub async fn digest_en(
     usage,
     |d| check_digest(d, sections, text),
   )
-  .await
+  .await?;
+  normalize_sections(&mut d, sections);
+  Ok((d, checked))
 }
 
 /// 中文版：只翻译文字，结构、节号、数字不变。
@@ -275,5 +343,78 @@ mod tests {
     assert!(check_classified(&c(&["llm", "llm"], "标题")).is_err());
     assert!(check_classified(&c(&["llm", "other"], "标题")).is_err());
     assert!(check_classified(&c(&["llm"], " ")).is_err());
+  }
+
+  /// 依次返回预设的成功或错误，用于测试瞬时故障退避重试与 4xx 快速失败。
+  struct FallibleScripted(Mutex<Vec<AppResult<&'static str>>>);
+
+  #[async_trait::async_trait]
+  impl LlmClient for FallibleScripted {
+    fn provider(&self) -> LlmProvider {
+      LlmProvider::OpenAi
+    }
+    async fn complete(&self, _: Vec<LlmMessage>) -> AppResult<LlmReply> {
+      let next = self.0.lock().map(|mut v| v.remove(0)).unwrap();
+      next.map(|text| LlmReply {
+        text: text.into(),
+        usage: LlmUsage { input_tokens: 10, output_tokens: 5 },
+      })
+    }
+  }
+
+  #[test]
+  fn transient_llm_error_classification() {
+    assert!(is_transient_llm_error(&AppError::other("LLM HTTP 请求失败: connection timed out")));
+    assert!(is_transient_llm_error(&AppError::other("LLM 响应读取失败: unexpected EOF")));
+    assert!(is_transient_llm_error(&AppError::other("LLM 服务返回 503 Service Unavailable: busy")));
+    assert!(is_transient_llm_error(&AppError::other("LLM 服务返回 429 Too Many Requests: slow")));
+    assert!(!is_transient_llm_error(&AppError::other("LLM 服务返回 400 Bad Request: bad")));
+    assert!(!is_transient_llm_error(&AppError::other("LLM 服务返回 401 Unauthorized: key")));
+    assert!(!is_transient_llm_error(&AppError::validation("empty")));
+  }
+
+  #[tokio::test]
+  async fn transient_error_retries_and_recovers() {
+    let llm = FallibleScripted(Mutex::new(vec![
+      Err(AppError::other("LLM HTTP 请求失败: connection reset")),
+      Err(AppError::other("LLM 服务返回 502 Bad Gateway: upstream")),
+      Ok(GOOD),
+    ]));
+    let mut usage = LlmUsage::default();
+    let (d, _) = ask_validated_with_backoff::<PaperDigest, Checked>(
+      &llm,
+      "extract",
+      "sys",
+      "user".into(),
+      &mut usage,
+      &[Duration::ZERO, Duration::ZERO],
+      |d| check_digest(d, &["3".into()], "[§3] Method\nscore 12.5"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(d.results[0].numbers, ["12.5"]);
+  }
+
+  #[tokio::test]
+  async fn client_4xx_fails_immediately_without_retry() {
+    let llm = FallibleScripted(Mutex::new(vec![
+      Err(AppError::other("LLM 服务返回 401 Unauthorized: invalid key")),
+      Ok(GOOD),
+    ]));
+    let mut usage = LlmUsage::default();
+    let err = ask_validated_with_backoff::<PaperDigest, Checked>(
+      &llm,
+      "extract",
+      "sys",
+      "user".into(),
+      &mut usage,
+      &[Duration::ZERO, Duration::ZERO],
+      |d| check_digest(d, &["3".into()], "[§3] Method\nscore 12.5"),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("401"), "{err}");
+    // 第二条预设结果未被消费，说明 401 没有触发重试
+    assert_eq!(llm.0.lock().unwrap().len(), 1);
   }
 }

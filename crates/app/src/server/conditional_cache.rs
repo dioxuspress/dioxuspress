@@ -92,6 +92,11 @@ fn matches_seg(path: &str, prefix: &str) -> bool {
 }
 
 fn classify_path(path: &str) -> RouteClass {
+  // 独立论文订阅源自带 `Cache-Control: public, max-age=3600`，直接透传，避免被 `/papers` 覆写为 no-store。
+  if path == "/papers/feed.xml" {
+    return RouteClass::StaticAsset;
+  }
+
   for static_prefix in [
     "/assets",
     "/images",
@@ -504,6 +509,7 @@ mod tests {
     assert_eq!(classify_path("/cases/demo/shot.png"), RouteClass::StaticAsset);
     assert_eq!(classify_path("/podcasts/ep1.mp3"), RouteClass::StaticAsset);
     assert_eq!(classify_path("/courses/rust/01/index.md"), RouteClass::StaticAsset);
+    assert_eq!(classify_path("/papers/feed.xml"), RouteClass::StaticAsset);
 
     assert_eq!(classify_path("/admin"), RouteClass::PrivateDynamic);
     assert_eq!(classify_path("/admin/users"), RouteClass::PrivateDynamic);
@@ -511,6 +517,8 @@ mod tests {
     assert_eq!(classify_path("/forum"), RouteClass::PrivateDynamic);
     assert_eq!(classify_path("/topics/42"), RouteClass::PrivateDynamic);
     assert_eq!(classify_path("/course/rust-basics"), RouteClass::PrivateDynamic);
+    assert_eq!(classify_path("/papers"), RouteClass::PrivateDynamic);
+    assert_eq!(classify_path("/papers/2611.15789"), RouteClass::PrivateDynamic);
     assert_eq!(classify_path("/api/docs/content"), RouteClass::PrivateDynamic);
   }
 

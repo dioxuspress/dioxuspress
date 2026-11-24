@@ -103,13 +103,34 @@ pub fn build_atom_feed(
   build_atom_feed_with_author(entries, site_title, site_description, "", base_url)
 }
 
-/// 构造带站点作者（`<author><name>`）的 Atom feed XML 字符串。
+/// 构造带站点作者（`<author><name>`）的 Atom feed XML 字符串（默认 `/feed.xml`）。
 pub fn build_atom_feed_with_author(
   entries: &[ContentEntry],
   site_title: &str,
   site_description: &str,
   site_author: &str,
   base_url: &str,
+) -> String {
+  build_atom_feed_for_path(
+    entries,
+    site_title,
+    site_description,
+    site_author,
+    base_url,
+    "/feed.xml",
+    "",
+  )
+}
+
+/// 构造指定自链接与频道主页路径的 Atom feed XML 字符串（用于独立频道订阅源，如 `/papers/feed.xml`）。
+pub fn build_atom_feed_for_path(
+  entries: &[ContentEntry],
+  site_title: &str,
+  site_description: &str,
+  site_author: &str,
+  base_url: &str,
+  self_path: &str,
+  html_path: &str,
 ) -> String {
   let mut out = String::with_capacity(512 + 256 * entries.len());
   out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -122,13 +143,18 @@ pub fn build_atom_feed_with_author(
   if !site_author.trim().is_empty() {
     out.push_str(&format!("  <author><name>{}</name></author>\n", xml_escape(site_author.trim())));
   }
-  out.push_str(&format!("  <link href=\"{}\"/>\n", xml_escape(base_url.trim_end_matches('/'))));
+  let channel_url = if html_path.is_empty() {
+    base_url.trim_end_matches('/').to_string()
+  } else {
+    join_url(base_url, html_path)
+  };
+  out.push_str(&format!("  <link href=\"{}\"/>\n", xml_escape(&channel_url)));
   out.push_str(&format!(
     "  <link rel=\"self\" href=\"{}\"/>\n",
-    xml_escape(&join_url(base_url, "/feed.xml"))
+    xml_escape(&join_url(base_url, self_path))
   ));
-  // feed 级 id：使用 base_url；若想更稳建议显式传入站点 UUID。
-  out.push_str(&format!("  <id>{}</id>\n", xml_escape(base_url.trim_end_matches('/'))));
+  // feed 级 id：使用频道 URL；主站为 base_url，独立频道为 base_url + html_path。
+  out.push_str(&format!("  <id>{}</id>\n", xml_escape(&channel_url)));
 
   // 取第一条 entry 的 date 作为 feed 最新更新；若全空回退到 1970-01-01。
   let updated = entries
@@ -260,6 +286,30 @@ mod tests {
     // category from tags
     assert!(xml.contains("<category term=\"rust\"/>"));
     assert!(xml.ends_with("</feed>\n"));
+  }
+
+  #[test]
+  fn atom_feed_for_custom_channel_path() {
+    let entries = vec![entry("/papers/2611.15789", "Paper A", "2026-11-19")];
+    let xml = build_atom_feed_for_path(
+      &entries,
+      "Rust in Everything · 论文速递",
+      "Daily papers",
+      "RIE",
+      "https://rustineverything.app/",
+      "/papers/feed.xml",
+      "/papers",
+    );
+    assert!(xml.contains("<link href=\"https://rustineverything.app/papers\"/>"), "{xml}");
+    assert!(
+      xml.contains("<link rel=\"self\" href=\"https://rustineverything.app/papers/feed.xml\"/>"),
+      "{xml}"
+    );
+    assert!(xml.contains("<id>https://rustineverything.app/papers</id>"), "{xml}");
+    assert!(
+      xml.contains("<link href=\"https://rustineverything.app/papers/2611.15789\"/>"),
+      "{xml}"
+    );
   }
 
   #[test]

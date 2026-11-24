@@ -441,6 +441,103 @@ pub fn EcosystemPage(id: String) -> Element {
               }
           }
       }
+
+      // AI 生态落地页：展示最新 4 篇前沿论文速递（仅 papers 模块启用时渲染）
+      if id == "ai" && enabled.iter().any(|e| e == "papers") {
+          {ecosystem_ai_papers_section()}
+      }
+  }
+}
+
+fn ecosystem_ai_papers_section() -> Element {
+  #[cfg(feature = "papers")]
+  {
+    rsx! { EcosystemAiPapersSection {} }
+  }
+  #[cfg(not(feature = "papers"))]
+  {
+    rsx! {}
+  }
+}
+
+#[cfg(feature = "papers")]
+#[component]
+fn EcosystemAiPapersSection() -> Element {
+  let lang = use_i18n();
+  rsx! {
+      section { class: "py-16 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800",
+          Container {
+              SectionHeader {
+                  title: lang().pick("前沿论文速递", "Latest AI Papers").to_string(),
+                  subtitle: lang().pick(
+                      "每日从 Hugging Face Daily Papers 精选并精读 arXiv 全文，整理带出处的要点与思维导图",
+                      "Daily curated arXiv paper digests from Hugging Face Daily Papers with cited key points",
+                  ).to_string(),
+                  all_label: lang().pick("查看全部论文", "All Papers").to_string(),
+                  to: Route::Papers {},
+              }
+              SuspenseBoundary {
+                  fallback: |_| loading_spinner(),
+                  EcosystemAiPapersInner {}
+              }
+          }
+      }
+  }
+}
+
+#[cfg(feature = "papers")]
+#[component]
+fn EcosystemAiPapersInner() -> Element {
+  let lang_sig = use_i18n();
+  let lang = lang_sig();
+  let res = use_server_future(move || {
+    let code = match lang_sig() {
+      crate::i18n::Language::En => "en",
+      crate::i18n::Language::Zh => "zh",
+    }
+    .to_string();
+    async move {
+      module_papers::server::list_papers_page(
+        code,
+        String::new(),
+        "latest".to_string(),
+        false,
+        1,
+        4,
+      )
+      .await
+      .map(|p| p.items)
+      .unwrap_or_default()
+    }
+  })?;
+  let papers = res().unwrap_or_default();
+  rsx! {
+      if papers.is_empty() {
+          p { class: "text-center text-slate-400 py-8 text-sm", {lang.pick("暂无论文数据", "No papers yet")} }
+      } else {
+          div { class: "grid grid-cols-1 md:grid-cols-2 gap-5",
+              for p in papers.into_iter() {
+                  Link {
+                      key: "{p.arxiv_id}",
+                      to: Route::PaperDetail { arxiv_id: p.arxiv_id.clone() },
+                      class: "group flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-900/50 p-5 hover:border-[var(--color-primary)] hover:shadow-md transition-all",
+                      div { class: "flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 tabular-nums mb-2",
+                          span { "{p.date}" }
+                          div { class: "flex items-center gap-2",
+                              if p.has_code {
+                                  span { class: "rounded-full bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/70 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300", "Code" }
+                              }
+                              span { "▲ {p.hf_upvotes}" }
+                          }
+                      }
+                      h3 { class: "font-bold text-slate-900 dark:text-white group-hover:text-[var(--color-primary)] transition-colors line-clamp-2", "{p.title}" }
+                      if !p.tldr.is_empty() {
+                          p { class: "mt-1.5 text-sm text-slate-600 dark:text-slate-400 line-clamp-2 flex-1", "{p.tldr}" }
+                      }
+                  }
+              }
+          }
+      }
   }
 }
 

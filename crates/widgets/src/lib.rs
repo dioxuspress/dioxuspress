@@ -36,7 +36,8 @@ pub mod toc;
 pub use components::register_default_components;
 pub use diagram::ZoomableDiagram;
 pub use feed::{
-  build_atom_feed, build_atom_feed_with_author, build_robots_txt, build_sitemap_xml, ContentEntry,
+  build_atom_feed, build_atom_feed_for_path, build_atom_feed_with_author, build_robots_txt,
+  build_sitemap_xml, ContentEntry,
 };
 pub use mdx::{
   heading_outline, normalize_date, parse_mdx, split_frontmatter, Markdown, MarkdownProps,

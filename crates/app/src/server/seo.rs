@@ -230,6 +230,40 @@ async fn feed_handler(base: String) -> axum::response::Response {
   xml_response("application/atom+xml; charset=utf-8", "public, max-age=3600", xml)
 }
 
+async fn papers_feed_handler(base: String) -> axum::response::Response {
+  use widgets::build_atom_feed_for_path;
+
+  let module_engine = app_core::engines::module::default_module_engine();
+  let enabled = module_engine.enabled_ids();
+  let is_on = |id: &str| enabled.iter().any(|s| s == id);
+
+  #[cfg(feature = "papers")]
+  let entries =
+    if is_on("papers") { module_papers::server::feed_entries(30).await } else { Vec::new() };
+  #[cfg(not(feature = "papers"))]
+  let entries: Vec<ContentEntry> = {
+    let _ = is_on("papers");
+    Vec::new()
+  };
+
+  let cfg = app_core::settings::SiteConfig::load_cached(
+    app_core::utils::site_json_path().to_str().unwrap_or_default(),
+  )
+  .unwrap_or_default();
+  let title = format!("{} · 论文速递", cfg.site_name_or_default());
+  let subtitle = "每天从 Hugging Face Daily Papers 选题，读 arXiv 全文生成的带出处论文解读。";
+  let xml = build_atom_feed_for_path(
+    &entries,
+    &title,
+    subtitle,
+    &cfg.author,
+    &base,
+    "/papers/feed.xml",
+    "/papers",
+  );
+  xml_response("application/atom+xml; charset=utf-8", "public, max-age=3600", xml)
+}
+
 async fn robots_handler(base: String) -> axum::response::Response {
   let body = widgets::build_robots_txt(&base);
   // robots.txt 几乎不变，6h 缓存。
@@ -240,6 +274,7 @@ async fn robots_handler(base: String) -> axum::response::Response {
 pub fn mount(router: Router, base_url: &str) -> Router {
   let sitemap_base = base_url.to_string();
   let feed_base = base_url.to_string();
+  let papers_feed_base = base_url.to_string();
   let robots_base = base_url.to_string();
   router
     .route(
@@ -254,6 +289,13 @@ pub fn mount(router: Router, base_url: &str) -> Router {
       get(move || {
         let base = feed_base.clone();
         async move { feed_handler(base).await }
+      }),
+    )
+    .route(
+      "/papers/feed.xml",
+      get(move || {
+        let base = papers_feed_base.clone();
+        async move { papers_feed_handler(base).await }
       }),
     )
     .route(

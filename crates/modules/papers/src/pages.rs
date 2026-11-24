@@ -3,7 +3,9 @@ use dioxus::prelude::*;
 use dioxus_shadcn::{Empty, EmptyDescription};
 
 use crate::digest::{MindNode, PaperDigest};
-use crate::server::{get_paper, list_papers, PaperCard, PaperDetail};
+use crate::server::{
+  get_paper, list_papers_page, total_pages, PaperCard, PaperDetail, PaperPage, DEFAULT_PAGE_SIZE,
+};
 use crate::topics::{self, Topic, TOPICS};
 
 fn use_language_signal() -> Signal<Language> {
@@ -18,7 +20,7 @@ fn lang_code(lang: Language) -> &'static str {
   }
 }
 
-/// `/papers`：按 HF 日期分组列出已生成解读的论文。
+/// `/papers`：按 HF 日期分组或热度排序分页列出已生成解读的论文。
 #[component]
 pub fn PapersIndexPage() -> Element {
   let lang = use_language_signal()();
@@ -36,9 +38,21 @@ pub fn PapersIndexPage() -> Element {
       }
       section { class: "py-12 min-h-screen bg-white dark:bg-slate-950",
           div { class: "mx-auto max-w-4xl px-4 sm:px-6 lg:px-8",
-              h1 { class: "text-3xl md:text-4xl font-extrabold text-slate-900 dark:text-white", "{title}" }
+              div { class: "flex flex-wrap items-center justify-between gap-3",
+                  h1 { class: "text-3xl md:text-4xl font-extrabold text-slate-900 dark:text-white", "{title}" }
+                  a {
+                      href: "/papers/feed.xml",
+                      target: "_blank",
+                      rel: "noopener noreferrer",
+                      title: lang.pick("订阅论文 Atom RSS", "Subscribe to Papers Atom Feed"),
+                      class: "inline-flex items-center gap-1.5 rounded-full border border-slate-200 dark:border-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:border-slate-400 dark:hover:border-slate-500 transition-colors",
+                      svg { class: "w-3.5 h-3.5 text-amber-500", fill: "none", stroke: "currentColor", view_box: "0 0 24 24", stroke_width: "2",
+                          path { stroke_linecap: "round", stroke_linejoin: "round", d: "M6 18a2 2 0 100-4 2 2 0 000 4zM4 11a9 9 0 019 9M4 4a16 16 0 0116 16" }
+                      }
+                      "RSS"
+                  }
+              }
               p { class: "mt-3 text-slate-600 dark:text-slate-400", "{subtitle}" }
-              TopicNav { current: String::new() }
               SuspenseBoundary { fallback: |_| rsx! {}, PaperList { topic: String::new() } }
           }
       }
@@ -67,7 +81,6 @@ pub fn PaperTopicPage(slug: String) -> Element {
               a { href: "/papers", class: "text-sm text-slate-500 hover:underline", {lang.pick("← 论文速递", "← Papers")} }
               h1 { class: "mt-4 text-3xl md:text-4xl font-extrabold text-slate-900 dark:text-white", "{name}" }
               p { class: "mt-3 text-slate-600 dark:text-slate-400", "{about}" }
-              TopicNav { current: topic.slug.to_string() }
               SuspenseBoundary { fallback: |_| rsx! {}, PaperList { topic: topic.slug.to_string() } }
           }
       }
@@ -81,20 +94,35 @@ fn topic_name(t: &Topic, lang: Language) -> &'static str {
   }
 }
 
-/// 全部主题的链接；`current` 是当前主题页的 slug，总览页为空（高亮「全部」）。
+/// 全部主题的链接（带真实篇数）；`current` 是当前主题页的 slug，总览页为空（高亮「全部」）。
 #[component]
-fn TopicNav(current: String) -> Element {
+fn TopicNav(current: String, all_total: u64, topic_counts: Vec<(String, u64)>) -> Element {
   let lang = use_language_signal()();
   let all_class = if current.is_empty() { "pt-chip pt-chip-on" } else { "pt-chip" };
+  let count_for =
+    |slug: &str| topic_counts.iter().find(|(s, _)| s == slug).map(|(_, n)| *n).unwrap_or(0);
   rsx! {
-      nav { class: "pt-nav mt-6 mb-10", aria_label: lang.pick("主题", "Topics"),
-          a { class: all_class, href: "/papers", {lang.pick("全部", "All")} }
+      nav { class: "pt-nav mt-6 mb-6", aria_label: lang.pick("主题", "Topics"),
+          a { class: all_class, href: "/papers",
+              {lang.pick("全部", "All")}
+              if all_total > 0 {
+                  span { class: "ml-1.5 text-xs opacity-65 tabular-nums", "{all_total}" }
+              }
+          }
           for t in TOPICS {
-              a {
-                  key: "{t.slug}",
-                  class: if t.slug == current { "pt-chip pt-chip-on" } else { "pt-chip" },
-                  href: "/papers/topic/{t.slug}",
-                  {topic_name(t, lang)}
+              {
+                  let cnt = count_for(t.slug);
+                  rsx! {
+                      a {
+                          key: "{t.slug}",
+                          class: if t.slug == current { "pt-chip pt-chip-on" } else { "pt-chip" },
+                          href: "/papers/topic/{t.slug}",
+                          {topic_name(t, lang)}
+                          if all_total > 0 {
+                              span { class: "ml-1.5 text-xs opacity-65 tabular-nums", "{cnt}" }
+                          }
+                      }
+                  }
               }
           }
       }
@@ -112,51 +140,220 @@ fn TopicTags(slugs: Vec<String>) -> Element {
   }
 }
 
+/// 论文列表单项（同时用于按日期分组列表和热度排行列表）。
+#[component]
+fn PaperRow(p: PaperCard, show_date: bool) -> Element {
+  let lang = use_language_signal()();
+  rsx! {
+      li { class: "py-4",
+          div { class: "flex items-baseline gap-3",
+              a {
+                  href: "/papers/{p.arxiv_id}",
+                  class: "flex-1 min-w-0 font-semibold text-slate-900 dark:text-slate-100 hover:underline break-words",
+                  "{p.title}"
+              }
+              div { class: "shrink-0 flex items-center gap-2 text-xs text-slate-500 tabular-nums",
+                  if p.has_code {
+                      span {
+                          class: "inline-flex items-center rounded-full bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/70 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300",
+                          {lang.pick("Code", "Code")}
+                      }
+                  }
+                  if show_date {
+                      span { "{p.date}" }
+                  }
+                  span { "▲ {p.hf_upvotes}" }
+              }
+          }
+          if !p.tldr.is_empty() {
+              p { class: "mt-1 text-sm text-slate-600 dark:text-slate-400", "{p.tldr}" }
+          }
+          if !p.topics.is_empty() {
+              div { class: "mt-2 flex flex-wrap gap-1.5", TopicTags { slugs: p.topics.clone() } }
+          }
+      }
+  }
+}
+
 #[component]
 fn PaperList(topic: String) -> Element {
   let lang_signal = use_language_signal();
   let lang = lang_signal();
-  let res = use_server_future(use_reactive!(|topic| {
+  let code_now = lang_code(lang).to_string();
+
+  let first = use_server_future(use_reactive!(|topic| {
     let code = lang_code(lang_signal()).to_string();
-    async move { list_papers(code, topic).await }
+    async move { list_papers_page(code, topic, "latest".to_string(), false, 1, DEFAULT_PAGE_SIZE).await }
   }))?;
-  let papers = match res() {
-    Some(Ok(list)) => list,
-    Some(Err(_)) => {
-      return rsx! { widgets::LoadFailed { message: lang.pick("加载失败", "Failed to load").to_string() } }
-    }
-    None => vec![],
+
+  let mut sort = use_signal(|| "latest".to_string());
+  let mut code_only = use_signal(|| false);
+  let mut loading = use_signal(|| false);
+  let mut load_err = use_signal(|| false);
+  // 连同 `(topic, lang)` 一起缓存，切主题或切语言时自然回退到 SSR/新语言首屏
+  let mut loaded = use_signal::<Option<((String, String), PaperPage)>>(|| None);
+
+  let cache_key = (topic.clone(), code_now.clone());
+  let topic_for_load = topic.clone();
+  let load = move |next_sort: String, next_code: bool, next_page: u64| {
+    sort.set(next_sort.clone());
+    code_only.set(next_code);
+    let t = topic_for_load.clone();
+    let code = lang_code(lang_signal()).to_string();
+    let key = (t.clone(), code.clone());
+    spawn(async move {
+      loading.set(true);
+      load_err.set(false);
+      match list_papers_page(code, t, next_sort, next_code, next_page, DEFAULT_PAGE_SIZE).await {
+        Ok(p) => loaded.set(Some((key, p))),
+        Err(_) => load_err.set(true),
+      }
+      loading.set(false);
+    });
   };
-  if papers.is_empty() {
-    return rsx! {
-        Empty { class: "rounded-2xl py-20",
-            EmptyDescription { {lang.pick("还没有论文", "No papers yet")} }
-        }
-    };
-  }
+
+  let active_loaded = loaded().filter(|(k, _)| *k == cache_key).map(|(_, p)| p);
+  let page_data = match active_loaded {
+    Some(p) => p,
+    None => match first() {
+      Some(Ok(p)) => p,
+      Some(Err(_)) => {
+        return rsx! { widgets::LoadFailed { message: lang.pick("加载失败", "Failed to load").to_string() } }
+      }
+      None => PaperPage::default(),
+    },
+  };
+
+  let cur_sort = sort();
+  let cur_code = code_only();
+  let cur_page = page_data.page.max(1);
+  let pages_total = total_pages(page_data.total, page_data.page_size);
+  let sort_btn_class = |active: bool| {
+    if active {
+      "rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer"
+    } else {
+      "rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-400 dark:hover:border-slate-500 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer"
+    }
+  };
+  let code_btn_class = if cur_code {
+    "rounded-lg bg-emerald-600 text-white px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer"
+  } else {
+    "rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer"
+  };
+
+  let mut load_latest = load.clone();
+  let mut load_week = load.clone();
+  let mut load_all = load.clone();
+  let mut load_code = load.clone();
+  let mut load_prev = load.clone();
+  let mut load_next = load;
+
+  let count_summary = if lang == Language::En {
+    format!("{} papers", page_data.total)
+  } else {
+    format!("共 {} 篇", page_data.total)
+  };
+  let page_indicator = if lang == Language::En {
+    format!("Page {} / {}", cur_page, pages_total.max(1))
+  } else {
+    format!("第 {} / {} 页", cur_page, pages_total.max(1))
+  };
+
   rsx! {
-      for (date, day) in group_by_date(papers) {
-          section { key: "{date}", class: "mb-10",
-              h2 { class: "text-sm font-semibold text-slate-500 dark:text-slate-400 mb-3", "{date}" }
-              ul { class: "divide-y divide-slate-200 dark:divide-slate-800",
-                  for p in day {
-                      li { key: "{p.arxiv_id}", class: "py-4",
-                          div { class: "flex items-baseline gap-3",
-                              a {
-                                  href: "/papers/{p.arxiv_id}",
-                                  class: "flex-1 min-w-0 font-semibold text-slate-900 dark:text-slate-100 hover:underline break-words",
-                                  "{p.title}"
-                              }
-                              span { class: "shrink-0 text-xs text-slate-500", "▲ {p.hf_upvotes}" }
-                          }
-                          if !p.tldr.is_empty() {
-                              p { class: "mt-1 text-sm text-slate-600 dark:text-slate-400", "{p.tldr}" }
-                          }
-                          if !p.topics.is_empty() {
-                              div { class: "mt-2 flex flex-wrap gap-1.5", TopicTags { slugs: p.topics.clone() } }
-                          }
+      TopicNav {
+          current: topic.clone(),
+          all_total: page_data.all_total,
+          topic_counts: page_data.topic_counts.clone(),
+      }
+      // 工具栏：排序切换 + 仅看有代码 + 命中篇数
+      div { class: "mb-8 flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800",
+          div { class: "flex flex-wrap items-center gap-2",
+              button {
+                  r#type: "button",
+                  "aria-pressed": (cur_sort == "latest").to_string(),
+                  class: sort_btn_class(cur_sort == "latest"),
+                  onclick: move |_| load_latest("latest".to_string(), code_only(), 1),
+                  {lang.pick("最新", "Latest")}
+              }
+              button {
+                  r#type: "button",
+                  "aria-pressed": (cur_sort == "top_week").to_string(),
+                  class: sort_btn_class(cur_sort == "top_week"),
+                  onclick: move |_| load_week("top_week".to_string(), code_only(), 1),
+                  {lang.pick("近 7 天最热", "Top 7d")}
+              }
+              button {
+                  r#type: "button",
+                  "aria-pressed": (cur_sort == "top_all").to_string(),
+                  class: sort_btn_class(cur_sort == "top_all"),
+                  onclick: move |_| load_all("top_all".to_string(), code_only(), 1),
+                  {lang.pick("历史最热", "Top all")}
+              }
+              button {
+                  r#type: "button",
+                  "aria-pressed": cur_code.to_string(),
+                  class: code_btn_class,
+                  onclick: move |_| load_code(sort(), !code_only(), 1),
+                  {lang.pick("仅看有代码", "Code only")}
+              }
+          }
+          span { class: "text-xs text-slate-500 dark:text-slate-400 tabular-nums",
+              {if loading() { lang.pick("加载中…", "Loading…").to_string() } else { count_summary }}
+          }
+      }
+      if load_err() {
+          p { class: "mb-6 text-sm text-rose-600 dark:text-rose-400",
+              {lang.pick("刷新列表失败，请重试。", "Failed to refresh list. Please try again.")}
+          }
+      }
+      if page_data.items.is_empty() {
+          Empty { class: "rounded-2xl py-20",
+              EmptyDescription { {lang.pick("当前筛选条件下还没有论文", "No papers match this filter")} }
+          }
+      } else if cur_sort == "latest" {
+          for (date, day) in group_by_date(page_data.items) {
+              section { key: "{date}", class: "mb-10",
+                  h2 { class: "text-sm font-semibold text-slate-500 dark:text-slate-400 mb-3", "{date}" }
+                  ul { class: "divide-y divide-slate-200 dark:divide-slate-800",
+                      for p in day {
+                          PaperRow { key: "{p.arxiv_id}", p, show_date: false }
                       }
                   }
+              }
+          }
+      } else {
+          ul { class: "divide-y divide-slate-200 dark:divide-slate-800 mb-10",
+              for p in page_data.items {
+                  PaperRow { key: "{p.arxiv_id}", p, show_date: true }
+              }
+          }
+      }
+      if pages_total > 1 {
+          nav {
+              class: "mt-8 pt-6 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4",
+              aria_label: lang.pick("分页导航", "Pagination"),
+              button {
+                  r#type: "button",
+                  disabled: cur_page <= 1 || loading(),
+                  class: "rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-1.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:border-slate-400 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors",
+                  onclick: move |_| {
+                      if cur_page > 1 {
+                          load_prev(sort(), code_only(), cur_page - 1);
+                      }
+                  },
+                  {lang.pick("← 上一页", "← Prev")}
+              }
+              span { class: "text-xs text-slate-500 dark:text-slate-400 tabular-nums", "{page_indicator}" }
+              button {
+                  r#type: "button",
+                  disabled: !page_data.has_more || loading(),
+                  class: "rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-1.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:border-slate-400 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors",
+                  onclick: move |_| {
+                      if page_data.has_more {
+                          load_next(sort(), code_only(), cur_page + 1);
+                      }
+                  },
+                  {lang.pick("下一页 →", "Next →")}
               }
           }
       }
@@ -175,20 +372,48 @@ fn group_by_date(papers: Vec<PaperCard>) -> Vec<(String, Vec<PaperCard>)> {
   groups
 }
 
-/// `/papers/:arxiv_id`：单篇解读。
+/// 拼装论文的 BibTeX 引用文本（纯 Rust，无需外部依赖）。
+pub fn format_bibtex(paper: &PaperDetail) -> String {
+  let key_suffix: String =
+    paper.arxiv_id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+  let year: String = paper
+    .published
+    .chars()
+    .take(4)
+    .collect::<String>()
+    .chars()
+    .filter(|c| c.is_ascii_digit())
+    .collect();
+  let year = if year.len() == 4 { year } else { paper.date.chars().take(4).collect() };
+  let escape = |s: &str| s.replace('{', "\\{").replace('}', "\\}");
+  let authors = escape(&paper.authors.join(" and "));
+  let title = escape(&paper.title);
+  format!(
+    "@article{{arxiv_{key_suffix},\n  title={{{title}}},\n  author={{{authors}}},\n  year={{{year}}},\n  eprint={{{id}}},\n  archivePrefix={{arXiv}},\n  url={{https://arxiv.org/abs/{id}}}\n}}",
+    id = paper.arxiv_id
+  )
+}
+
+/// `/papers/:arxiv_id`：单篇解读。`footer` 插槽由组合根 app 注入论坛讨论面板。
 #[component]
-pub fn PaperDetailPage(arxiv_id: String) -> Element {
+pub fn PaperDetailPage(
+  arxiv_id: String,
+  #[props(default = VNode::empty())] footer: Element,
+) -> Element {
   rsx! {
       section { class: "py-12 min-h-screen bg-white dark:bg-slate-950",
           div { class: "mx-auto max-w-3xl px-4 sm:px-6 lg:px-8",
-              SuspenseBoundary { fallback: |_| rsx! {}, PaperDetailLoaded { arxiv_id } }
+              SuspenseBoundary {
+                  fallback: |_| rsx! {},
+                  PaperDetailLoaded { arxiv_id, footer: footer.clone() }
+              }
           }
       }
   }
 }
 
 #[component]
-fn PaperDetailLoaded(arxiv_id: String) -> Element {
+fn PaperDetailLoaded(arxiv_id: String, footer: Element) -> Element {
   let lang_signal = use_language_signal();
   let lang = lang_signal();
   let res = use_server_future(use_reactive!(|arxiv_id| {
@@ -205,7 +430,7 @@ fn PaperDetailLoaded(arxiv_id: String) -> Element {
             schema: Some(paper_schema(&paper, lang)),
             bilingual: Some(lang == Language::En),
         }
-        PaperBody { paper, wanted: lang_code(lang).to_string() }
+        PaperBody { paper, wanted: lang_code(lang).to_string(), footer: footer.clone() }
     },
     Some(Err(_)) => {
       rsx! { widgets::LoadFailed { message: lang.pick("加载失败", "Failed to load").to_string() } }
@@ -255,8 +480,10 @@ fn paper_schema(paper: &PaperDetail, lang: Language) -> serde_json::Value {
 }
 
 #[component]
-fn PaperBody(paper: PaperDetail, wanted: String) -> Element {
+fn PaperBody(paper: PaperDetail, wanted: String, footer: Element) -> Element {
   let lang = use_language_signal()();
+  let mut bibtex_copied = use_signal(|| false);
+  let bibtex = format_bibtex(&paper);
   let d: &PaperDigest = &paper.digest;
   let id = &paper.arxiv_id;
   let version = paper.arxiv_version.map(|v| format!("v{v}")).unwrap_or_default();
@@ -284,13 +511,28 @@ fn PaperBody(paper: PaperDetail, wanted: String) -> Element {
       if !authors.is_empty() {
           p { class: "mt-2 text-sm text-slate-500 break-words", "{authors}" }
       }
-      p { class: "mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600 dark:text-slate-400",
+      div { class: "mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-600 dark:text-slate-400",
           span { "{paper.date}" }
           span { "▲ {paper.hf_upvotes}" }
           a { class: link, href: "https://arxiv.org/abs/{id}{version}", target: "_blank", rel: "noopener noreferrer", "arXiv {id}{version}" }
           a { class: link, href: "https://huggingface.co/papers/{id}", target: "_blank", rel: "noopener noreferrer", "Hugging Face" }
           if let Some(repo) = paper.github_repo.as_ref().filter(|r| r.starts_with("https://")) {
               a { class: link, href: "{repo}", target: "_blank", rel: "noopener noreferrer", {lang.pick("代码", "Code")} }
+          }
+          button {
+              r#type: "button",
+              class: "inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:border-slate-400 dark:hover:border-slate-500 cursor-pointer transition-colors",
+              onclick: move |_| {
+                  let text = bibtex.clone();
+                  spawn(async move {
+                      if widgets::browser::copy_text(&text).await {
+                          bibtex_copied.set(true);
+                          widgets::browser::sleep_ms(2000).await;
+                          bibtex_copied.set(false);
+                      }
+                  });
+              },
+              {if bibtex_copied() { lang.pick("已复制 BibTeX", "BibTeX copied") } else { lang.pick("复制 BibTeX", "Copy BibTeX") }}
           }
       }
       div { class: "mt-6 rounded-lg border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800/60 px-4 py-3 text-sm text-amber-900 dark:text-amber-200",
@@ -352,6 +594,33 @@ fn PaperBody(paper: PaperDetail, wanted: String) -> Element {
       DigestSection { title: lang.pick("思维导图", "Mind map").to_string(),
           div { class: "mm overflow-x-auto", {mind_node(&d.mindmap, 0, "")} }
       }
+      if !paper.related.is_empty() {
+          DigestSection { title: lang.pick("相关论文", "Related papers").to_string(),
+              div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
+                  for rel in paper.related.iter() {
+                      a {
+                          key: "{rel.arxiv_id}",
+                          href: "/papers/{rel.arxiv_id}",
+                          class: "group block rounded-xl border border-slate-200 dark:border-slate-800 p-4 hover:border-slate-400 dark:hover:border-slate-600 transition-colors",
+                          div { class: "flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 tabular-nums mb-1.5",
+                              span { "{rel.date}" }
+                              div { class: "flex items-center gap-2",
+                                  if rel.has_code {
+                                      span { class: "rounded-full bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/70 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300", "Code" }
+                                  }
+                                  span { "▲ {rel.hf_upvotes}" }
+                              }
+                          }
+                          h3 { class: "text-sm font-semibold text-slate-900 dark:text-slate-100 group-hover:underline line-clamp-2", "{rel.title}" }
+                          if !rel.tldr.is_empty() {
+                              p { class: "mt-1.5 text-xs text-slate-600 dark:text-slate-400 line-clamp-2", "{rel.tldr}" }
+                          }
+                      }
+                  }
+              }
+          }
+      }
+      div { class: "mt-12", {footer} }
   }
 }
 
@@ -408,6 +677,8 @@ mod tests {
       hf_upvotes: 0,
       tldr: String::new(),
       topics: Vec::new(),
+      has_code: false,
+      has_html: true,
     }
   }
 
@@ -420,5 +691,42 @@ mod tests {
     ]);
     let shape: Vec<(String, usize)> = groups.iter().map(|(d, v)| (d.clone(), v.len())).collect();
     assert_eq!(shape, vec![("2026-10-28".into(), 2), ("2026-10-27".into(), 1)]);
+  }
+
+  #[test]
+  fn formats_bibtex_with_sanitized_key_and_authors() {
+    let detail = PaperDetail {
+      arxiv_id: "2611.15789".into(),
+      title: "Fast {Attention} for Agents".into(),
+      title_zh: Some("智能体快速注意力".into()),
+      topics: vec!["agents".into()],
+      published: "2026-11-18".into(),
+      authors: vec!["Alice Smith".into(), "Bob Lee".into()],
+      date: "2026-11-19".into(),
+      hf_upvotes: 86,
+      github_repo: None,
+      has_html: true,
+      arxiv_version: Some(1),
+      lang: "zh".into(),
+      model: "deepseek-chat".into(),
+      digest: PaperDigest {
+        tldr: "t".into(),
+        problem: "p".into(),
+        method: "m".into(),
+        results: vec![],
+        limitations: vec![],
+        key_points: vec![],
+        mindmap: MindNode { label: "r".into(), children: vec![] },
+      },
+      unverified_numbers: vec![],
+      related: vec![],
+    };
+    let bib = format_bibtex(&detail);
+    assert!(bib.starts_with("@article{arxiv_2611_15789,"), "{bib}");
+    assert!(bib.contains("title={Fast \\{Attention\\} for Agents}"), "{bib}");
+    assert!(bib.contains("author={Alice Smith and Bob Lee}"), "{bib}");
+    assert!(bib.contains("year={2026}"), "{bib}");
+    assert!(bib.contains("eprint={2611.15789}"), "{bib}");
+    assert!(bib.contains("url={https://arxiv.org/abs/2611.15789}"), "{bib}");
   }
 }

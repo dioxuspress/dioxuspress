@@ -303,6 +303,46 @@ pub async fn classify_missing(
   Ok((ok, failed, usage))
 }
 
+/// 重跑 `status = 'failed'` 的论文（按 `hf_upvotes DESC` 优先补回高热度论文）。
+/// 单篇成功自动转回 `done` 并清空 `error`；失败则更新最新 `error`。
+pub async fn retry_failed(
+  db: &DatabaseConnection,
+  g: &Generator,
+  limit: usize,
+) -> Result<RunStats, String> {
+  let picked = paper::Entity::find()
+    .filter(paper::Column::Status.eq("failed"))
+    .order_by_desc(paper::Column::HfUpvotes)
+    .order_by_desc(paper::Column::FirstSeenOn)
+    .limit(limit as u64)
+    .all(db)
+    .await
+    .map_err(|e| format!("读取失败论文列表失败：{e}"))?;
+  let mut stats = RunStats { fetched: picked.len(), ..Default::default() };
+  for (i, p) in picked.into_iter().enumerate() {
+    if i > 0 {
+      tokio::time::sleep(ARXIV_INTERVAL).await;
+    }
+    let id = p.arxiv_id.clone();
+    let mut usage = LlmUsage::default();
+    let outcome = generate_one(db, g, p, &mut usage).await;
+    stats.input_tokens += usage.input_tokens;
+    stats.output_tokens += usage.output_tokens;
+    match outcome {
+      Ok(()) => {
+        stats.generated += 1;
+        tracing::info!(%id, input = usage.input_tokens, output = usage.output_tokens, "papers: retry succeeded");
+      }
+      Err(e) => {
+        stats.failed += 1;
+        tracing::warn!(%id, error = %e, "papers: retry still failed");
+        mark_failed(db, &id, &e).await?;
+      }
+    }
+  }
+  Ok(stats)
+}
+
 async fn mark_failed(db: &DatabaseConnection, arxiv_id: &str, error: &str) -> Result<(), String> {
   paper::ActiveModel {
     arxiv_id: Set(arxiv_id.to_string()),

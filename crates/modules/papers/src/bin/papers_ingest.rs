@@ -7,6 +7,8 @@
 //! papers-ingest --hf-dir saved/        # 从存下来的 <date>.json 导入（不带 --date 时导入目录里全部）
 //! papers-ingest --list-only            # 只入库列表，不调模型
 //! papers-ingest --classify             # 只给已生成、还没分类的论文补主题和中文标题
+//! papers-ingest --retry-failed         # 按 upvotes 倒序重跑 status=failed 的论文（默认上限 20）
+//! papers-ingest --retry-failed --limit 50
 //! ```
 //! 读 `DATABASE_URL`、`OPENAI_LLM_*`、`PAPERS_DAILY_LIMIT`（默认 20）；表由 app 启动时的迁移建好。
 
@@ -14,21 +16,33 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use chrono::NaiveDate;
-use module_papers::ingest::{classify_missing, run_day, Generator, HfSource};
+use module_papers::ingest::{classify_missing, retry_failed, run_day, Generator, HfSource};
 
+#[derive(Debug, PartialEq, Eq)]
 struct Args {
   dates: Vec<NaiveDate>,
   hf_dir: Option<PathBuf>,
   list_only: bool,
   classify: bool,
+  retry_failed: bool,
+  limit: Option<usize>,
 }
 
 fn parse_args() -> Result<Args, String> {
+  parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from<I>(iter: I) -> Result<Args, String>
+where
+  I: IntoIterator<Item = String>,
+{
   let mut dates = Vec::new();
   let mut hf_dir = None;
   let mut list_only = false;
   let mut classify = false;
-  let mut it = std::env::args().skip(1);
+  let mut retry_failed_flag = false;
+  let mut limit = None;
+  let mut it = iter.into_iter();
   while let Some(a) = it.next() {
     match a.as_str() {
       "--date" => {
@@ -39,19 +53,34 @@ fn parse_args() -> Result<Args, String> {
       "--hf-dir" => hf_dir = Some(PathBuf::from(it.next().ok_or("--hf-dir 缺少值")?)),
       "--list-only" => list_only = true,
       "--classify" => classify = true,
+      "--retry-failed" => retry_failed_flag = true,
+      "--limit" => {
+        let v = it.next().ok_or("--limit 缺少值")?;
+        let n: usize = v.parse().map_err(|_| format!("--limit 不是正整数：{v}"))?;
+        if n == 0 {
+          return Err("--limit 必须大于 0".into());
+        }
+        limit = Some(n);
+      }
       other => return Err(format!("未知参数：{other}")),
     }
   }
-  if dates.is_empty() {
+  if classify && (list_only || hf_dir.is_some() || retry_failed_flag) {
+    return Err("--classify 不能和 --list-only / --hf-dir / --retry-failed 一起用".into());
+  }
+  if retry_failed_flag && (list_only || hf_dir.is_some() || !dates.is_empty()) {
+    return Err("--retry-failed 不能和 --list-only / --hf-dir / --date 一起用".into());
+  }
+  if limit.is_some() && !retry_failed_flag {
+    return Err("--limit 目前仅用于 --retry-failed".into());
+  }
+  if !classify && !retry_failed_flag && dates.is_empty() {
     dates = match &hf_dir {
       Some(dir) => dates_in_dir(dir)?,
       None => vec![(chrono::Utc::now() - chrono::Duration::days(1)).date_naive()],
     };
   }
-  if classify && (list_only || hf_dir.is_some()) {
-    return Err("--classify 不能和 --list-only / --hf-dir 一起用".into());
-  }
-  Ok(Args { dates, hf_dir, list_only, classify })
+  Ok(Args { dates, hf_dir, list_only, classify, retry_failed: retry_failed_flag, limit })
 }
 
 /// 目录里 `<YYYY-MM-DD>.json` 的日期，升序。
@@ -145,6 +174,34 @@ async fn main() -> ExitCode {
       }
     };
   }
+  if args.retry_failed {
+    // 上面已保证 --retry-failed 时没有 --list-only，generator 一定在
+    let Some(g) = generator.as_ref() else {
+      unreachable!("--retry-failed excludes --list-only, so a generator was built")
+    };
+    let limit = args.limit.unwrap_or(g.daily_limit);
+    return match retry_failed(&db, g, limit).await {
+      Ok(s) => {
+        tracing::info!(
+          picked = s.fetched,
+          recovered = s.generated,
+          still_failed = s.failed,
+          input_tokens = s.input_tokens,
+          output_tokens = s.output_tokens,
+          "papers: retry-failed done"
+        );
+        if s.failed == 0 {
+          ExitCode::SUCCESS
+        } else {
+          ExitCode::FAILURE
+        }
+      }
+      Err(e) => {
+        tracing::error!(error = %e, "papers: retry-failed error");
+        ExitCode::FAILURE
+      }
+    };
+  }
   let source = match args.hf_dir {
     Some(dir) => HfSource::Dir(dir),
     None => HfSource::Api(http),
@@ -173,5 +230,35 @@ async fn main() -> ExitCode {
     ExitCode::SUCCESS
   } else {
     ExitCode::FAILURE
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn parse(args: &[&str]) -> Result<Args, String> {
+    parse_args_from(args.iter().map(|s| s.to_string()))
+  }
+
+  #[test]
+  fn parses_retry_failed_and_limit() {
+    let a = parse(&["--retry-failed"]).unwrap();
+    assert!(a.retry_failed);
+    assert_eq!(a.limit, None);
+    assert!(a.dates.is_empty());
+
+    let b = parse(&["--retry-failed", "--limit", "10"]).unwrap();
+    assert!(b.retry_failed);
+    assert_eq!(b.limit, Some(10));
+  }
+
+  #[test]
+  fn rejects_conflicting_retry_failed_flags() {
+    assert!(parse(&["--retry-failed", "--list-only"]).is_err());
+    assert!(parse(&["--retry-failed", "--classify"]).is_err());
+    assert!(parse(&["--retry-failed", "--date", "2026-11-20"]).is_err());
+    assert!(parse(&["--limit", "5"]).is_err());
+    assert!(parse(&["--retry-failed", "--limit", "0"]).is_err());
   }
 }
