@@ -1,6 +1,6 @@
 [package]
 name = "llm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "LLM 双模式（OpenAI + Anthropic 兼容）客户端，对外提供统一的 LlmClient trait"
 

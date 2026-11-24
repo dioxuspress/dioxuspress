@@ -1,6 +1,6 @@
 [package]
 name = "board"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "5 个内容板块（embedded / ai / web3 / wasm / cli）共用的数据扫描与页面"
 

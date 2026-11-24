@@ -15,7 +15,7 @@
 基于 [Dioxus 0.7](https://dioxuslabs.com) 的纯 Rust 全栈文档、内容与社区引擎：既能以**零数据库 `basic` 档位**充当 Docusaurus / VitePress 的高性能替代方案，也能按需开启登录、论坛、划线标注、付费课程与在线支付。
 
 - **官方网站与文档中心**：[`dioxuspress.dev`](https://dioxuspress.dev)（`active_layout = "docs"`，零数据库单容器运行）
-- **UI 组件库在线预览**：[`ui.dioxuspress.dev`](https://ui.dioxuspress.dev)（[`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) — 84 个 Dioxus 0.7 组件）
+- **UI 组件库在线预览**：[`ui.dioxuspress.dev`](https://ui.dioxuspress.dev)（[`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) — 100 个 Dioxus 0.7 组件）
 - **旗舰全栈社区实例**：[Rust in Everything (`rustineverything.app`)](https://rustineverything.app)（`active_layout = "classic"`，承载 38 卷 2,100+ 篇文档、实战课程与社区）
 
 开发者只需修改 [`assets/site.json`](assets/site.json) 中的 `site_name`、`active_layout`（`docs` / `classic` / `minimal`）、`theme` 与 `features` 等字段，即可快速定制并部署自己的文档站或全栈社区。
@@ -23,9 +23,9 @@
 ## 技术栈
 
 - **全栈 Rust**：Dioxus 0.7 fullstack（SSR + 水合）+ Axum，SeaORM + PostgreSQL（`basic` 档位免数据库）。
-- **UI 组件**：[`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 0.6（自研，shadcn/ui 的 Dioxus 实现，[预览站](https://ui.dioxuspress.dev)）。
+- **UI 组件**：[`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 0.6.8（自研，shadcn/ui 的 Dioxus 实现，[预览站](https://ui.dioxuspress.dev)）。
   全站界面基于它构建，shadcn token 是唯一的配色来源，石墨（zinc）中性色 + 青色主色。
-- **样式**：Tailwind CSS v4 + 深色模式；内置主题 ocean / sunset / catppuccin，访客可切换。
+- **样式**：Tailwind CSS v4 + 深色模式；内置 10 套 WCAG AA 双模主题，访客可切换。
 - **安全**：严格 CSP（无 `'unsafe-eval'`），用户内容经白名单清洗，删除类管理操作先确认。
 - **全站搜索**：Tantivy 嵌入式搜索引擎，支持中英文分词。
 

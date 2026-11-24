@@ -1,6 +1,6 @@
 [package]
 name = "module-wasm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "WASM 内容板块（wasm-bindgen / wasi / 组件模型）"
 

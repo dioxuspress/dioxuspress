@@ -159,7 +159,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -170,7 +170,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -181,7 +181,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "axum",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "app-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "board"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "dioxus",
@@ -1043,7 +1043,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2196,9 +2196,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-shadcn"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b419b910c9fc74584b9745ff2373a4665c83d425070d340155d849a63ed5049"
+checksum = "ce998b40af295fb71a8268a51f05c4568578c85b1afd3d82207c983ef2cfa360"
 dependencies = [
  "dioxus",
  "dioxus-shadcn-core",
@@ -2210,9 +2210,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-shadcn-core"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f7147845a38e1edecb5ebafdb8c6b4fec9dcdbdf0755baeada72d564aeafbf9"
+checksum = "cb9c94702185edcba9a699ee0f873a20184a16d3d681d243a9b6828d2120f765"
 dependencies = [
  "serde",
  "tracing",
@@ -2220,9 +2220,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-shadcn-primitives"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c358d71af71b0f56ef82b3140108e27abff3cfc92db376471e9f86146512de8"
+checksum = "88905a8c89f827f7bb66bc6fcad09ced3bab7a9f1379af770c27d9763b7ff9f4"
 dependencies = [
  "dioxus-shadcn-core",
 ]
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "dioxuspress-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pulldown-cmark",
  "serde",
@@ -2342,7 +2342,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2550,7 +2550,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4273,7 +4273,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "async-trait",
@@ -4537,7 +4537,7 @@ dependencies = [
 
 [[package]]
 name = "migration"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "sea-orm-migration",
@@ -4614,7 +4614,7 @@ dependencies = [
 
 [[package]]
 name = "module-admin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "chrono",
@@ -4632,7 +4632,7 @@ dependencies = [
 
 [[package]]
 name = "module-ai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "board",
@@ -4653,7 +4653,7 @@ dependencies = [
 
 [[package]]
 name = "module-blog"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "dioxus",
@@ -4665,7 +4665,7 @@ dependencies = [
 
 [[package]]
 name = "module-cases"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "dioxus",
@@ -4679,7 +4679,7 @@ dependencies = [
 
 [[package]]
 name = "module-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "board",
  "dioxus",
@@ -4687,7 +4687,7 @@ dependencies = [
 
 [[package]]
 name = "module-comments"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "chrono",
@@ -4702,7 +4702,7 @@ dependencies = [
 
 [[package]]
 name = "module-course"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "chrono",
@@ -4726,7 +4726,7 @@ dependencies = [
 
 [[package]]
 name = "module-docs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "chrono",
@@ -4743,7 +4743,7 @@ dependencies = [
 
 [[package]]
 name = "module-embedded"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "board",
  "dioxus",
@@ -4751,7 +4751,7 @@ dependencies = [
 
 [[package]]
 name = "module-forum"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "chrono",
@@ -4769,7 +4769,7 @@ dependencies = [
 
 [[package]]
 name = "module-moderation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "async-trait",
@@ -4789,7 +4789,7 @@ dependencies = [
 
 [[package]]
 name = "module-papers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "async-trait",
@@ -4812,7 +4812,7 @@ dependencies = [
 
 [[package]]
 name = "module-payment"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "app-core",
@@ -4833,7 +4833,7 @@ dependencies = [
 
 [[package]]
 name = "module-podcast"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "chrono",
@@ -4848,7 +4848,7 @@ dependencies = [
 
 [[package]]
 name = "module-search"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "dioxus",
@@ -4867,7 +4867,7 @@ dependencies = [
 
 [[package]]
 name = "module-uploads"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "app-core",
  "base64 0.22.1",
@@ -4882,7 +4882,7 @@ dependencies = [
 
 [[package]]
 name = "module-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "board",
  "dioxus",
@@ -4890,7 +4890,7 @@ dependencies = [
 
 [[package]]
 name = "module-web3"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "board",
  "dioxus",
@@ -5062,7 +5062,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6086,7 +6086,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6622,7 +6622,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6739,7 +6739,7 @@ dependencies = [
 
 [[package]]
 name = "sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -7349,7 +7349,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8021,7 +8021,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9022,7 +9022,7 @@ dependencies = [
 
 [[package]]
 name = "widgets"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dioxus",
@@ -9062,7 +9062,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

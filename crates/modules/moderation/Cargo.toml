@@ -1,6 +1,6 @@
 [package]
 name = "module-moderation"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "LLM 审核流水线：URL 黑名单 + 内置 LLM 审核 stage（经 crates/llm 调用）"
 

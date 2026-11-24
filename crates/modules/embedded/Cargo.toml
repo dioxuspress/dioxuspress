@@ -1,6 +1,6 @@
 [package]
 name = "module-embedded"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "嵌入式 Rust 内容板块（no_std / Embassy / RTIC / 平台）"
 
