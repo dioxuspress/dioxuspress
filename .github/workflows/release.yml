@@ -14,6 +14,12 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional release tag (e.g. v0.2.0) to attach to the merged multi-arch manifest"
+        required: false
+        default: ""
+        type: string
   pull_request:
     branches: [main]
     paths:
@@ -69,10 +75,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: img
+        name: Resolve lowercase GHCR image name
+        env:
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ matrix.image.name }}
+        run: |
+          owner_lc="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${owner_lc}/dioxuspress-${IMAGE}" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/dioxuspress-${{ matrix.image.name }}
+          images: ${{ steps.img.outputs.name }}
       - id: build
         uses: docker/build-push-action@v6
         with:
@@ -84,7 +98,7 @@ jobs:
           outputs: >-
             ${{
               github.event_name != 'pull_request'
-              && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', steps.meta.outputs.name)
+              && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', steps.img.outputs.name)
               || 'type=cacheonly'
             }}
           cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.arch.slug }}
@@ -124,18 +138,27 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: img
+        name: Resolve lowercase GHCR image name
+        env:
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ matrix.name }}
+        run: |
+          owner_lc="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${owner_lc}/dioxuspress-${IMAGE}" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/dioxuspress-${{ matrix.name }}
+          images: ${{ steps.img.outputs.name }}
           tags: |
             type=ref,event=tag
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
             type=sha,format=short
             type=raw,value=latest
       - name: Create and push multi-arch manifest list
         working-directory: /tmp/digests
         env:
-          IMAGE_NAME: ${{ steps.meta.outputs.name }}
+          IMAGE_NAME: ${{ steps.img.outputs.name }}
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           sources=()
