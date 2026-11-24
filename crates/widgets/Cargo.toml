@@ -1,6 +1,6 @@
 [package]
 name = "widgets"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 # widgets crate：MDX 渲染管道 + 嵌入组件注册表

@@ -1,6 +1,6 @@
 [package]
 name = "module-payment"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "支付网关抽象：PaymentProvider trait + 中立类型 + 统一 notify 流水线（可选 crate，feature 门控）"
 

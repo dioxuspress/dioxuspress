@@ -1,6 +1,6 @@
 [package]
 name = "module-papers"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "论文资讯：HF Daily Papers 选题，读 arXiv 全文生成带出处的多语言解读"
 

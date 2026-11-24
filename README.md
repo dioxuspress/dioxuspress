@@ -15,7 +15,7 @@
 An open-source, pure-Rust fullstack documentation, content publishing, and community engine built on [Dioxus 0.7](https://dioxuslabs.com). Run it as a **zero-database `basic` tier** single-container alternative to Docusaurus / VitePress, or opt into OAuth login, forums, paragraph annotations, paid courses, and online payments via Cargo features.
 
 - **Official Website & Docs**: [`dioxuspress.dev`](https://dioxuspress.dev) (`active_layout = "docs"`, running zero-database in a single container)
-- **UI Component Showcase**: [`ui.dioxuspress.dev`](https://ui.dioxuspress.dev) ([`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) — 84 Tailwind-styled Dioxus 0.7 components)
+- **UI Component Showcase**: [`ui.dioxuspress.dev`](https://ui.dioxuspress.dev) ([`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) — 100 Tailwind-styled Dioxus 0.7 components)
 - **Flagship Fullstack Portal**: [`rustineverything.app`](https://rustineverything.app) (`active_layout = "classic"`, serving 38 volumes / 2,100+ pages of docs, courses, and community)
 
 Customize [`assets/site.json`](assets/site.json) (`site_name`, `active_layout` — `docs` / `classic` / `minimal`, `theme`, `hero`, `features`, and `modules`) to launch your own documentation site or fullstack community in minutes.
@@ -23,8 +23,8 @@ Customize [`assets/site.json`](assets/site.json) (`site_name`, `active_layout` �
 ## Tech Stack
 
 - **Fullstack Rust**: Dioxus 0.7 fullstack (SSR + WebAssembly hydration) + Axum, SeaORM + PostgreSQL (optional in `basic` tier).
-- **UI Components**: [`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 0.6 (`shadcn/ui` implemented in pure Dioxus, [live showcase](https://ui.dioxuspress.dev)). Semantic design tokens serve as the single source of color across the entire site.
-- **Styling & Themes**: Tailwind CSS v4 + zero-flash dark mode; built-in visitor-switchable themes (`ocean`, `sunset`, `catppuccin`) and bilingual i18n (`zh` / `en`).
+- **UI Components**: [`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 0.6.8 (`shadcn/ui` implemented in pure Dioxus, [live showcase](https://ui.dioxuspress.dev)). Semantic design tokens serve as the single source of color across the entire site.
+- **Styling & Themes**: Tailwind CSS v4 + zero-flash dark mode; 10 built-in WCAG-AA dual-mode visitor-switchable themes and bilingual i18n (`zh` / `en`).
 - **Security Baseline**: Strict Content-Security-Policy (no `'unsafe-eval'`), allowlist sanitization for user-generated content, OAuth2 + PKCE, rate limiting, and explicit confirmation on destructive admin actions.
 - **Full-Text Search**: Embedded [Tantivy](https://github.com/quickwit-oss/tantivy) search engine with Chinese and English tokenization (`⌘K` instant search).
 
