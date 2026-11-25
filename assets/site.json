@@ -21,8 +21,8 @@
   "docs_edit_url_base": "https://github.com/dioxuspress/dioxuspress/edit/main/assets/docs",
   "announcement": {
     "id": "dp-v0-2-0",
-    "text": "🎉 DioxusPress v0.2.0 正式发布 —— 升级 dioxus-shadcn 0.6.8（100 组件）、零数据库文档模板、10 套双模主题与交互式 AI WASM 实验室",
-    "text_en": "🎉 DioxusPress v0.2.0 is out — upgraded to dioxus-shadcn 0.6.8 (100 components), zero-DB Docs template, 10 dual-mode themes & interactive AI WASM labs",
+    "text": "🎉 DioxusPress v0.2.0 正式发布 —— 升级 dioxus-shadcn 0.7.0（100 组件）、零数据库文档模板、10 套双模主题与交互式 AI WASM 实验室",
+    "text_en": "🎉 DioxusPress v0.2.0 is out — upgraded to dioxus-shadcn 0.7.0 (100 components), zero-DB Docs template, 10 dual-mode themes & interactive AI WASM labs",
     "href": "/docs/guide/quickstart"
   },
   "hero": {
@@ -77,8 +77,8 @@
       "icon": "palette",
       "title": "三套布局与零闪烁明暗主题",
       "title_en": "3 Layouts & Zero-Flash Themes",
-      "description": "内置 Docs（类 Docusaurus）、Classic（综合门户）与 Minimal 布局，基于 dioxus-shadcn 0.6.8 提供 10 套 WCAG AA 双模配色。",
-      "description_en": "Switch between Docs, Classic portal, and Minimal shells with 10 WCAG-AA dual-mode themes powered by dioxus-shadcn 0.6.8.",
+      "description": "内置 Docs（类 Docusaurus）、Classic（综合门户）与 Minimal 布局，基于 dioxus-shadcn 0.7.0 提供 10 套 WCAG AA 双模配色。",
+      "description_en": "Switch between Docs, Classic portal, and Minimal shells with 10 WCAG-AA dual-mode themes powered by dioxus-shadcn 0.7.0.",
       "href": "/docs/guide/layouts-and-themes"
     },
     {

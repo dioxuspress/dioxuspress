@@ -23,7 +23,7 @@ Customize [`assets/site.json`](assets/site.json) (`site_name`, `active_layout` â
 ## Tech Stack
 
 - **Fullstack Rust**: Dioxus 0.7 fullstack (SSR + WebAssembly hydration) + Axum, SeaORM + PostgreSQL (optional in `basic` tier).
-- **UI Components**: [`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 0.6.8 (`shadcn/ui` implemented in pure Dioxus, [live showcase](https://ui.dioxuspress.dev)). Semantic design tokens serve as the single source of color across the entire site.
+- **UI Components**: [`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 0.7.0 (`shadcn/ui` implemented in pure Dioxus, [live showcase](https://ui.dioxuspress.dev)). Semantic design tokens serve as the single source of color across the entire site.
 - **Styling & Themes**: Tailwind CSS v4 + zero-flash dark mode; 10 built-in WCAG-AA dual-mode visitor-switchable themes and bilingual i18n (`zh` / `en`).
 - **Security Baseline**: Strict Content-Security-Policy (no `'unsafe-eval'`), allowlist sanitization for user-generated content, OAuth2 + PKCE, rate limiting, and explicit confirmation on destructive admin actions.
 - **Full-Text Search**: Embedded [Tantivy](https://github.com/quickwit-oss/tantivy) search engine with Chinese and English tokenization (`âŒ˜K` instant search).

@@ -3,7 +3,7 @@
 > 在 rustineverything.app 迁移到 [`dioxus-shadcn`](https://github.com/dioxuspress/dioxus-ui) 的过程中（计划见 [`DIOXUS_UI_MIGRATION.md`](DIOXUS_UI_MIGRATION.md)），
 > 记录组件库本身的问题与改进点，之后整理成 dioxus-ui 的 issue / RFC。
 
-## 汇总（2026-11-24，本站已升级至 dioxus-shadcn 0.6.8）
+## 汇总（2026-11-25，本站已升级至 dioxus-shadcn 0.7.0）
 
 没有待上游处理的条目。
 
