@@ -7,6 +7,9 @@ commits follow [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## [Unreleased]
 
+### Changed
+- Upgraded `dioxus-shadcn` to **`0.7.0`** (orthogonal variants/sizes across 13 core, form, and indicator components, landmark `aria-label` forwarding, and updated Tailwind v4 class merge table).
+
 ## [0.2.0] - 2026-11-24
 
 Version **0.2.0** marks the first major public milestone for the `dioxuspress`

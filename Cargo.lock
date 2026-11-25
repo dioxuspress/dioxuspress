@@ -2196,9 +2196,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-shadcn"
-version = "0.6.8"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce998b40af295fb71a8268a51f05c4568578c85b1afd3d82207c983ef2cfa360"
+checksum = "39844864858cb555581a4038545a3128582570837ab64d7b201d5dd543cbee65"
 dependencies = [
  "dioxus",
  "dioxus-shadcn-core",
@@ -2210,9 +2210,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-shadcn-core"
-version = "0.6.8"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb9c94702185edcba9a699ee0f873a20184a16d3d681d243a9b6828d2120f765"
+checksum = "1fd2a6139977a18a3cc255e7834f014858f4d9c877f08e7ac8084d0ace6a40ca"
 dependencies = [
  "serde",
  "tracing",
@@ -2220,9 +2220,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-shadcn-primitives"
-version = "0.6.8"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88905a8c89f827f7bb66bc6fcad09ced3bab7a9f1379af770c27d9763b7ff9f4"
+checksum = "86a17d8db87a3c132e59af4986e6215e74bb946375ce6cc1b060f3a763441e62"
 dependencies = [
  "dioxus-shadcn-core",
 ]
