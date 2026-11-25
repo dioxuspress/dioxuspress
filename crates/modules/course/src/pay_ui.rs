@@ -10,9 +10,10 @@
 use dioxus::prelude::*;
 use dioxus::router::Link;
 use dioxus_shadcn::{
-  button_class, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Dialog, DialogClose,
-  DialogContent, DialogOverlay, DialogTitle, DialogTrigger, Spinner, SpinnerSize, Table, TableBody,
-  TableCell, TableHead, TableHeader, TableRow, ToggleGroup, ToggleGroupItem, UiDensity,
+  button_class, Badge, BadgeStyle, BadgeVariant, Button, ButtonSize, ButtonVariant, Dialog,
+  DialogClose, DialogContent, DialogOverlay, DialogTitle, DialogTrigger, Spinner, SpinnerSize,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow, ToggleGroup, ToggleGroupItem,
+  UiDensity,
 };
 
 use app_core::i18n::t;
@@ -376,7 +377,7 @@ pub fn MyOrdersPage() -> Element {
                                       span { class: "font-bold text-primary", "{t(lang, \"pay.pro\")}" }
                                       span { class: "ml-2 text-sm text-slate-500 dark:text-slate-400", "{t(lang, \"pay.pro_until\")} {date}" }
                                   }
-                                  Badge { variant: BadgeVariant::Success, "{t(lang, \"pay.pro_active\")}" }
+                                  Badge { variant: BadgeVariant::Success, style: BadgeStyle::Soft, "{t(lang, \"pay.pro_active\")}" }
                               }
                           }
                       } else {
@@ -398,9 +399,9 @@ pub fn MyOrdersPage() -> Element {
                       Link { to: "/course", class: "inline-block mt-4 text-sm font-medium text-primary hover:underline", "{t(lang, \"pay.orders.browse\")}" }
                   }
               } else {
-                  div { class: "overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800",
-                      Table {
-                          TableHeader { class: "bg-muted/50",
+                  div { class: "rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden",
+                      Table { striped: true, sticky_header: true,
+                          TableHeader { class: "bg-muted",
                               TableRow {
                                   TableHead { class: "h-10 px-4", "{t(lang, \"pay.orders.item\")}" }
                                   TableHead { class: "h-10 px-4", "{t(lang, \"pay.orders.amount\")}" }
@@ -432,7 +433,7 @@ pub fn MyOrdersPage() -> Element {
                                               TableCell { class: "px-4 py-2 font-medium", "{amount}" }
                                               TableCell { class: "px-4 py-2 text-slate-400", "{chan}" }
                                               TableCell { class: "px-4 py-2",
-                                                  Badge { variant: badge, "{t(lang, label)}" }
+                                                  Badge { variant: badge, style: BadgeStyle::Soft, "{t(lang, label)}" }
                                               }
                                               TableCell { class: "px-4 py-2 text-slate-400 text-xs", "{date}" }
                                           }

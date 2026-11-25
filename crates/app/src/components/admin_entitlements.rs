@@ -6,8 +6,8 @@
 
 use dioxus::prelude::*;
 use dioxus_shadcn::{
-  Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Input, Spinner, SpinnerSize, Table,
-  TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Badge, BadgeStyle, BadgeVariant, Button, ButtonSize, ButtonVariant, Input, Spinner, SpinnerSize,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
 
 use module_admin::admin::{is_current_user_admin, AdminShell, ForbiddenPanel};
@@ -103,9 +103,9 @@ pub fn AdminEntitlementsPage() -> Element {
           } else if rows.is_empty() {
               p { class: "text-center text-slate-400 py-10", "暂无任何权益记录。" }
           } else {
-              div { class: "overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800",
-                  Table {
-                      TableHeader { class: "bg-muted/50",
+              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden",
+                  Table { striped: true, sticky_header: true,
+                      TableHeader { class: "bg-muted",
                           TableRow {
                               TableHead { class: "h-10 px-4", "用户" }
                               TableHead { class: "h-10 px-4", "课程" }
@@ -190,9 +190,9 @@ fn OrdersSection() -> Element {
             } else if rows.is_empty() {
                 p { class: "text-center text-slate-400 py-6", "暂无订单。" }
             } else {
-                div { class: "overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800",
-                    Table {
-                        TableHeader { class: "bg-muted/50",
+                div { class: "rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden",
+                    Table { striped: true, sticky_header: true,
+                        TableHeader { class: "bg-muted",
                             TableRow {
                                 TableHead { class: "h-10 px-4", "订单号" }
                                 TableHead { class: "h-10 px-4", "用户" }
@@ -210,6 +210,13 @@ fn OrdersSection() -> Element {
                                     let amount = module_course::pricing::Price { amount: o.amount, currency: o.currency.clone() }.label();
                                     let chan = app_core::i18n::t(app_core::i18n::Language::Zh, module_course::pricing::channel_key(&o.provider));
                                     let paid = o.status == "paid";
+                                    let status_variant = match o.status.as_str() {
+                                        "paid" => BadgeVariant::Success,
+                                        "pending" => BadgeVariant::Warning,
+                                        "refunded" => BadgeVariant::Info,
+                                        "closed" => BadgeVariant::Secondary,
+                                        _ => BadgeVariant::Destructive,
+                                    };
                                     let kind = match o.product_kind {
                                         module_course::product::ProductKind::Course => "课程",
                                         module_course::product::ProductKind::Tip => "打赏",
@@ -224,7 +231,9 @@ fn OrdersSection() -> Element {
                                             }
                                             TableCell { class: "px-4 py-2 font-medium", "{amount}" }
                                             TableCell { class: "px-4 py-2 text-slate-400", "{chan}" }
-                                            TableCell { class: "px-4 py-2 text-xs", "{o.status}" }
+                                            TableCell { class: "px-4 py-2",
+                                                Badge { variant: status_variant, style: BadgeStyle::Soft, "{o.status}" }
+                                            }
                                             TableCell { class: "px-4 py-2 text-right",
                                                 if paid {
                                                     Button {
@@ -338,9 +347,9 @@ fn MembershipSection() -> Element {
           } else if rows.is_empty() {
               p { class: "text-center text-slate-400 py-6", "暂无会员记录。" }
           } else {
-              div { class: "overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800",
-                  Table {
-                      TableHeader { class: "bg-muted/50",
+              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden",
+                  Table { striped: true, sticky_header: true,
+                      TableHeader { class: "bg-muted",
                           TableRow {
                               TableHead { class: "h-10 px-4", "用户" }
                               TableHead { class: "h-10 px-4", "层级" }
@@ -361,9 +370,9 @@ fn MembershipSection() -> Element {
                                           TableCell { class: "px-4 py-2 text-slate-400 text-xs", "{date}" }
                                           TableCell { class: "px-4 py-2",
                                               if m.active {
-                                                  Badge { variant: BadgeVariant::Success, "有效" }
+                                                  Badge { variant: BadgeVariant::Success, style: BadgeStyle::Soft, "有效" }
                                               } else {
-                                                  Badge { variant: BadgeVariant::Secondary, "已过期" }
+                                                  Badge { variant: BadgeVariant::Secondary, style: BadgeStyle::Soft, "已过期" }
                                               }
                                           }
                                           TableCell { class: "px-4 py-2 text-right",

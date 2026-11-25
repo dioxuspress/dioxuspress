@@ -15,8 +15,8 @@ use dioxus::prelude::*;
 #[cfg(not(feature = "accounts"))]
 use dioxus_shadcn::ButtonVariant;
 use dioxus_shadcn::{
-  badge_class, button_class, card_class, BadgeVariant, Button, ButtonSize, Input, Spinner,
-  SpinnerSize, UiDensity,
+  badge_class, button_class, card_class, Badge, BadgeSize, BadgeStyle, BadgeVariant, Button,
+  ButtonSize, Input, Spinner, SpinnerSize, UiDensity,
 };
 #[cfg(feature = "accounts")]
 use dioxus_shadcn::{ButtonVariant, Textarea};
@@ -916,7 +916,11 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
           }
           div { class: "flex items-center gap-1.5",
             if show_origin && model.origin != RecordOrigin::Builtin {
-              span { class: "px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-mono font-semibold",
+              Badge {
+                variant: BadgeVariant::Warning,
+                style: BadgeStyle::Soft,
+                size: BadgeSize::Xs,
+                class: "font-mono",
                 if model.origin == RecordOrigin::Override { "DB·Override" } else { "DB" }
               }
             }
@@ -1134,7 +1138,11 @@ fn ModelDetailLoaded(slug: String) -> Element {
     rsx! {
       div { class: "rounded-xl border border-amber-200/80 dark:border-amber-900/60 bg-amber-50/60 dark:bg-amber-950/25 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs",
         div { class: "flex flex-wrap items-center gap-2",
-          span { class: "px-2 py-0.5 rounded bg-amber-500/20 text-amber-800 dark:text-amber-300 font-mono font-bold text-[11px]",
+          Badge {
+            variant: BadgeVariant::Warning,
+            style: BadgeStyle::Soft,
+            size: BadgeSize::Sm,
+            class: "font-mono",
             match meta.origin {
               RecordOrigin::Builtin => lang.pick("数据源：静态目录 models/", "Origin: Static FS"),
               RecordOrigin::Database => lang.pick("数据源：PostgreSQL 在线收录", "Origin: PostgreSQL"),

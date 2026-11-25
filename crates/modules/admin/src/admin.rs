@@ -12,10 +12,10 @@ use dioxus::prelude::*;
 use dioxus_shadcn::{
   button_class, use_density, AlertDialog, AlertDialogAction, AlertDialogActionVariant,
   AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
-  AlertDialogHeader, AlertDialogOverlay, AlertDialogTitle, AlertDialogTrigger, Badge, BadgeVariant,
-  Button, ButtonSize, ButtonVariant, Checkbox, DensityProvider, Input, NativeSelect,
+  AlertDialogHeader, AlertDialogOverlay, AlertDialogTitle, AlertDialogTrigger, Badge, BadgeStyle,
+  BadgeVariant, Button, ButtonSize, ButtonVariant, Checkbox, DensityProvider, Input, NativeSelect,
   NativeSelectOption, Spinner, SpinnerSize, Switch, Tabs, TabsContent, TabsList, TabsTrigger,
-  Textarea, UiDensity,
+  TabsVariant, Textarea, UiDensity,
 };
 
 // =============================================================
@@ -765,8 +765,11 @@ pub fn AdminModerationPage() -> Element {
               span { class: "text-sm text-slate-500", "共 {rows.len()} 条" }
           }
 
-          Tabs { value: filter(), on_value_change: move |v: String| filter.set(v),
-              TabsList { class: "mb-4",
+          Tabs {
+              variant: TabsVariant::Underline,
+              value: filter(),
+              on_value_change: move |v: String| filter.set(v),
+              TabsList { class: "mb-4 w-full",
                   TabsTrigger { value: "pending", "待复核" }
                   TabsTrigger { value: "approved", "已通过" }
                   TabsTrigger { value: "rejected", "已拒绝" }
@@ -924,17 +927,17 @@ fn ModerationQueueRowView(
                       "aria-label": "选择此条",
                   }
               }
-              Badge { variant: status_variant, "{status_label}" }
-              Badge { variant: BadgeVariant::Secondary, "{kind_label}" }
+              Badge { variant: status_variant, style: BadgeStyle::Soft, "{status_label}" }
+              Badge { variant: BadgeVariant::Secondary, style: BadgeStyle::Soft, "{kind_label}" }
               span { class: "text-slate-500 truncate max-w-xs", "{row.ref_path}" }
               span { class: "text-slate-400", "·" }
               span { class: "text-slate-500", "{author}" }
               // 作者历史违规：累计命中 > 1 时提示，已被拒绝（确认违规）单独红标
               if row.user_history_total > 1 {
-                  Badge { variant: BadgeVariant::Warning, "历史 {row.user_history_total} 次命中" }
+                  Badge { variant: BadgeVariant::Warning, style: BadgeStyle::Soft, "历史 {row.user_history_total} 次命中" }
               }
               if row.user_history_rejected > 0 {
-                  Badge { variant: BadgeVariant::Destructive, "{row.user_history_rejected} 次确认违规" }
+                  Badge { variant: BadgeVariant::Destructive, style: BadgeStyle::Soft, "{row.user_history_rejected} 次确认违规" }
               }
               span { class: "text-slate-400", "·" }
               span { class: "text-slate-500", "{row.created_at}" }
