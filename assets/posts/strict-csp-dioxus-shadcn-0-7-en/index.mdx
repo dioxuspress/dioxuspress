@@ -1,0 +1,54 @@
+---
+title: "Strict CSP Without unsafe-eval: Fullstack Dioxus 0.7 & dioxus-shadcn 0.7.0 in Production"
+authors: [yuxuetr]
+description: "Engineering lessons from upgrading DioxusPress to dioxus-shadcn 0.7.0 (100 components) while enforcing strict no-unsafe-eval CSP, zero-flash SSR themes, and allowlist UGC sanitization."
+date: "2026-11-25"
+tags: [Rust, Dioxus, Security, CSP, Tailwind, UI]
+---
+
+> 🌐 中文版本：[无 unsafe-eval 严格 CSP 实践：Dioxus 0.7 全栈与 dioxus-shadcn 0.7.0 工程复盘](/blog/strict-csp-dioxus-shadcn-0-7)
+
+Many interactive web frameworks quietly rely on `eval()` or `new Function()` for popovers, dynamic bindings, or client-side tooling — forcing teams to weaken their `Content-Security-Policy` with `'unsafe-eval'`. For community platforms that host user-generated content, keeping `'unsafe-eval'` disabled is a critical defense-in-depth boundary.
+
+In **DioxusPress v0.2**, we upgraded the entire UI layer to [`dioxus-shadcn 0.7.0`](https://ui.dioxuspress.dev) (100 pure-Rust Dioxus 0.7 components, accessible primitives, and 33 themes) while keeping our strict CSP intact across every route.
+
+## How `dioxus-shadcn 0.7.0` Stays 100% CSP-Clean
+
+In Dioxus 0.7 fullstack apps, the most common CSP pitfall is calling `document::eval(...)` with ad-hoc JavaScript snippets. Both `dioxus-shadcn` and DioxusPress enforce a clear rule:
+
+1. **Zero `document::eval` calls**: Focus traps, modal backdrops, `Escape` handling, clipboard copy, and scroll locks are built with typed `web-sys` bindings and declarative CSS data attributes — never runtime string evaluation.
+2. **Semantic Design Tokens on Tailwind CSS v4**: Every surface, border, and accent resolves through CSS custom properties (`--background`, `--foreground`, `--primary`, `--destructive`), powering 10 dual-mode themes without runtime CSS-in-JS.
+3. **Ergonomic 0.7.0 Component APIs**:
+   - `Button { loading: true }` sets `aria-busy`, disables double-clicks, and renders a built-in spinner;
+   - `Table { striped: true, sticky_header: true }` provides readable data tables with zero extra wrapper divs;
+   - `BadgeStyle::Soft` and `TabsVariant::Underline` replace verbose ad-hoc Tailwind utility strings.
+
+## Eliminating First-Paint Theme Flash with SSR
+
+If a WASM app fetches theme CSS only inside a client-side `use_effect`, users see a jarring flash of default colors before hydration completes. DioxusPress resolves this by preloading the active theme stylesheet via `use_server_future`:
+
+```rust
+#[component]
+fn ThemeStyle() -> Element {
+  let version = crate::components::theme_picker::use_theme_version();
+  let first =
+    use_server_future(|| async move { get_aggregated_theme_css().await.unwrap_or_default() })?;
+  // First paint uses SSR CSS immediately; client fetches only when a visitor switches themes
+  let css = switched().unwrap_or_else(|| first().unwrap_or_default());
+  rsx! {
+    style { id: "wasm-theme-style", dangerous_inner_html: "{css}" }
+  }
+}
+```
+
+Combined with a minimal synchronous dark-mode class script in `<head>`, visitors get the exact light/dark palette on the very first frame with zero layout shift.
+
+## Defense in Depth Beyond CSP
+
+Alongside strict CSP headers, DioxusPress ships a hardened baseline out of the box (see [Moderation & Admin](/docs/community/moderation-and-admin)):
+
+- Security headers (`X-Content-Type-Options: nosniff`, `Referrer-Policy`, `X-Frame-Options`) applied at the outermost Axum layer;
+- Allowlist HTML sanitization (`ammonia`) on all user-authored forum topics and comments;
+- Strict slug and canonical path validation (`is_safe_slug`, `safe_join_under`) plus per-IP rate limiting on write endpoints.
+
+Explore all 100 live components at [`ui.dioxuspress.dev`](https://ui.dioxuspress.dev), or check out the [Layouts & Themes Guide](/docs/guide/layouts-and-themes) to tailor your own site.

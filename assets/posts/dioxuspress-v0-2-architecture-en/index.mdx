@@ -1,0 +1,56 @@
+---
+title: "Inside DioxusPress v0.2: One Pure-Rust Codebase from Zero-DB Docs to Fullstack Community"
+authors: [yuxuetr]
+description: "An architectural deep dive into DioxusPress v0.2: four-tier Cargo feature compilation, Dioxus 0.7 SSR + WASM hydration, embedded Tantivy search, SIGHUP zero-downtime reload, and Pingora SNI gateway."
+date: "2026-11-24"
+tags: [Rust, DioxusPress, Dioxus, Architecture, Tantivy, Pingora]
+---
+
+> 🌐 中文版本：[DioxusPress v0.2 架构拆解：一套纯 Rust 代码兼顾零数据库文档站与全栈知识社区](/blog/dioxuspress-v0-2-architecture)
+
+Engineering teams building documentation sites and developer communities often hit an awkward architectural cliff: you start with a static site generator for docs and blog posts, and the moment you need OAuth sign-in, forums, paragraph annotations, or paid courses, you end up maintaining two separate applications, a Node build pipeline, an external search cluster, and duplicated styling systems.
+
+**DioxusPress v0.2** bridges that gap with a **single pure-Rust fullstack codebase** that scales smoothly from a zero-database single-container docs site to a full-featured community platform.
+
+## Four Capability Tiers via Compile-Time Cargo Features
+
+Instead of shipping runtime plugin overhead or dead database pools in static docs deployments, DioxusPress partitions features at compile time (see [Feature Tiers](/docs/guide/feature-tiers)):
+
+| Tier | Cargo Flags | Capabilities | Runtime Dependencies |
+| --- | --- | --- | --- |
+| **Basic** | `--no-default-features` | 3-level Docs, Blog, Showcase, Domain Hubs, Tantivy Search, 10 dual-mode themes | **Zero database** — single binary or container |
+| **Accounts** | `--no-default-features --features accounts` | + OAuth2 PKCE, Forum, Comments, Uploads, Admin & Moderation | PostgreSQL + `JWT_SECRET` |
+| **Course** | `--no-default-features --features course` | + Courses / Chapters / Lessons, Free previews, Pro membership, Inline Annotations | Same as Accounts |
+| **Full** | *(default)* | + Online checkout, webhook signature verification & scheduled reconciliation | Same + payment merchant keys |
+
+The `Route` enum in `crates/app/src/routes/mod.rs` remains identical across all four tiers — uncompiled route handlers expand to clean 404 views via `absent_pages!`, while `site.json::modules` governs navigation, `sitemap.xml`, and `/feed.xml`.
+
+## Decoupled Content Assets & Zero-Downtime `SIGHUP` Reload
+
+DioxusPress treats the filesystem (`assets/` or an external read-only `CONTENT_DIR` mount) as the single source of truth:
+
+- [`dioxuspress.dev`](https://dioxuspress.dev) runs the zero-database `basic` tier with `active_layout = "docs"`.
+- [`rustineverything.app`](https://rustineverything.app) mounts an independent private content repository (`/app/content:ro`) serving 38 documentation volumes (2,100+ pages), 11 courses, and 170+ blog posts.
+
+Publishing new articles or documentation never requires rebuilding Docker images or restarting the server:
+
+```bash
+git -C /data/content pull --ff-only
+docker kill --signal=HUP dioxuspress-app
+```
+
+On `SIGHUP` (or throttled `CONTENT_DIR` change detection), the server atomically invalidates `SiteConfig`, `ModuleEngine`, every `DirListingCache`, bumps the weak `ETag` epoch, and triggers an incremental Tantivy index sync in the background with zero dropped connections.
+
+## Verified Production Footprint
+
+All benchmarks are reproducible via `./scripts/bench_ssr.sh` (full methodology in [Benchmarks](/docs/operations/benchmarks)):
+
+- **Cold Start (`/healthz 200`)**: `547 ms` (`basic` tier)
+- **Full SSR First-Paint (`/` / `/docs/*`)**: `2.79 ms` / `4.04 ms` P50 (`1,832` / `1,236 QPS`)
+- **Conditional `ETag` (`304 Not Modified`)**: `0.096 ms` P50 (`13,636 QPS`), while authenticated routes strictly emit `Cache-Control: private, no-store`
+- **Embedded Tantivy Search (`POST /api/search/query`)**: `0.314 ms` P50 (`9,215 QPS`) with bilingual CJK + English tokenization
+- **Pingora Multi-Domain SNI Gateway**: TLS termination, 301 canonical redirects, and rate limiting in `6.4 MiB` live RSS
+
+## Try It Yourself
+
+Compare the four built-in starter presets (`docs`, `blog`, `community`, `portal`) in the [Templates Showcase](/templates), or follow the [5-Minute Quickstart](/docs/guide/quickstart) to launch your own site locally.
