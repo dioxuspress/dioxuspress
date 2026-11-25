@@ -139,6 +139,12 @@ pub async fn latest_blog_posts(n: usize) -> Result<Vec<BlogPostSummary>, ServerF
   Ok(cached_posts().iter().take(n.min(20)).cloned().collect())
 }
 
+/// 供组合根（如领域聚合 Hub）复用的已缓存博客列表，避免重复扫盘。
+#[cfg(feature = "server")]
+pub fn cached_blog_posts() -> std::sync::Arc<Vec<BlogPostSummary>> {
+  cached_posts()
+}
+
 #[cfg(feature = "server")]
 fn cached_posts() -> std::sync::Arc<Vec<BlogPostSummary>> {
   let posts_dir = app_core::utils::content_dir("posts");

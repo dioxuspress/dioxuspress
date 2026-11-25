@@ -106,6 +106,12 @@ board.featured = Featured crates
 board.empty = No articles yet.
 board.back_prefix = ← Back to
 board.not_found = Article not found
+board.hub.docs = Core Documentation
+board.hub.courses = Hands-on Courses
+board.hub.cases = Featured Cases
+board.hub.posts = Related Blog Posts
+board.hub.articles = Topic Guides
+board.hub.view_all = View all →
 
 # ── Embedded ──
 embedded.label = Embedded

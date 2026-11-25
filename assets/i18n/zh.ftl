@@ -106,6 +106,12 @@ board.featured = 精选 crate
 board.empty = 暂无文章。
 board.back_prefix = ← 返回
 board.not_found = 文章不存在
+board.hub.docs = 核心文档卷
+board.hub.courses = 实战课程
+board.hub.cases = 精选案例
+board.hub.posts = 相关博客
+board.hub.articles = 专题指南
+board.hub.view_all = 查看全部 →
 
 # ── 嵌入式 ──
 embedded.label = 嵌入式

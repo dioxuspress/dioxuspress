@@ -16,6 +16,23 @@ pub const BOARD: Board = Board {
     FeaturedCrate { name: "probe-rs", url: "https://probe.rs" },
     FeaturedCrate { name: "heapless", url: "https://github.com/rust-embedded/heapless" },
   ],
+  doc_slugs: &["embassy", "probe-rs", "copper-rs"],
+  match_tags: &[
+    "embedded",
+    "no_std",
+    "no-std",
+    "embassy",
+    "rtic",
+    "probe-rs",
+    "copper-rs",
+    "hal",
+    "defmt",
+    "mcu",
+    "stm32",
+    "esp32",
+    "rp2040",
+    "嵌入式",
+  ],
 };
 
 #[component]

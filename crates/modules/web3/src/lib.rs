@@ -16,6 +16,23 @@ pub const BOARD: Board = Board {
     FeaturedCrate { name: "polkadot-sdk", url: "https://github.com/paritytech/polkadot-sdk" },
     FeaturedCrate { name: "ink!", url: "https://use.ink" },
   ],
+  doc_slugs: &[],
+  match_tags: &[
+    "web3",
+    "solana",
+    "ethereum",
+    "evm",
+    "alloy",
+    "reth",
+    "foundry",
+    "revm",
+    "substrate",
+    "polkadot",
+    "anchor",
+    "blockchain",
+    "智能合约",
+    "区块链",
+  ],
 };
 
 #[component]
