@@ -16,6 +16,18 @@ pub const BOARD: Board = Board {
     FeaturedCrate { name: "crossterm", url: "https://github.com/crossterm-rs/crossterm" },
     FeaturedCrate { name: "assert_cmd", url: "https://github.com/assert-rs/assert_cmd" },
   ],
+  doc_slugs: &["typst", "tantivy", "pulldown-cmark", "serde", "tracing", "fastlogging"],
+  match_tags: &[
+    "cli",
+    "tui",
+    "clap",
+    "ratatui",
+    "ripgrep",
+    "starship",
+    "命令行",
+    "terminal",
+    "cargo",
+  ],
 };
 
 #[component]

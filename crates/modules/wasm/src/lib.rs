@@ -16,6 +16,18 @@ pub const BOARD: Board = Board {
     FeaturedCrate { name: "leptos", url: "https://leptos.dev" },
     FeaturedCrate { name: "trunk", url: "https://trunkrs.dev" },
   ],
+  doc_slugs: &["dioxus", "tauri", "typst"],
+  match_tags: &[
+    "wasm",
+    "webassembly",
+    "wasi",
+    "wasmtime",
+    "wasmer",
+    "wasm-bindgen",
+    "wit-bindgen",
+    "leptos",
+    "dioxus",
+  ],
 };
 
 #[component]

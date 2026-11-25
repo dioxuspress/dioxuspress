@@ -23,7 +23,7 @@ DioxusPress 提供三条清晰的上手路径：
 ### 1. 安装官方轻量 CLI（可选，编译仅需约 6 秒）
 
 ```bash
-cargo install --git https://github.com/dioxuspress/dioxuspress dioxuspress-cli
+cargo install dioxuspress-cli
 ```
 
 :::tip 纯 Docker 免安装运行

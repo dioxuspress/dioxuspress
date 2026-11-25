@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use pulldown_cmark::{Event, Options, Parser, Tag};
 
-const EMBEDDED_SITE_SCHEMA: &str = include_str!("../../../assets/schemas/site.schema.json");
+const EMBEDDED_SITE_SCHEMA: &str = include_str!("../site.schema.json");
 
 const BUILTIN_THEMES: &[&str] = &[
   "ocean",
@@ -1448,6 +1448,9 @@ mod tests {
   #[test]
   fn official_assets_pass_check_with_zero_errors() {
     let repo_assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    if !repo_assets.is_dir() {
+      return;
+    }
     let summary = check_site(&repo_assets).unwrap();
     assert!(
       summary.is_ok(),
@@ -1458,7 +1461,7 @@ mod tests {
 
   #[test]
   fn official_starter_templates_pass_check_with_zero_errors() {
-    let templates_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+    let templates_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
     for tpl in Template::ALL {
       let dir = templates_root.join(tpl.id());
       let summary = check_site(&dir).unwrap();

@@ -23,7 +23,7 @@ When your goal is writing Markdown documentation or technical blog posts, pair t
 ### 1. Install the Lightweight CLI (Optional — compiles in ~6 seconds)
 
 ```bash
-cargo install --git https://github.com/dioxuspress/dioxuspress dioxuspress-cli
+cargo install dioxuspress-cli
 ```
 
 :::tip Pure Docker Without Installing Rust

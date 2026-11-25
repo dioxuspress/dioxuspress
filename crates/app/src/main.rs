@@ -316,6 +316,11 @@ fn main() {
       .collect()
   });
 
+  // 3c) 领域聚合 Hub（/ai /embedded /wasm /cli /web3）：组合根注入文档卷 / 课程 / 案例 / 博客聚合器，
+  //     避免 board 反向依赖业务模块，并自动遵循 site.json 模块开关与 feature 档位。
+  #[cfg(feature = "server")]
+  board::server::register_hub_provider(build_board_hub);
+
   // Server: customize the Axum router to serve blog post static assets
   #[cfg(feature = "server")]
   dioxus::serve(|| async move {
@@ -780,9 +785,150 @@ fn App() -> Element {
   }
 }
 
+#[cfg(feature = "server")]
+fn find_board(board_id: &str) -> Option<board::Board> {
+  [
+    module_ai::BOARD,
+    module_embedded::BOARD,
+    module_wasm::BOARD,
+    module_cli::BOARD,
+    module_web3::BOARD,
+  ]
+  .into_iter()
+  .find(|b| b.id == board_id)
+}
+
+#[cfg(feature = "server")]
+fn format_stars(stars: i64) -> String {
+  if stars >= 1000 {
+    format!("★ {:.1}k", stars as f64 / 1000.0)
+  } else if stars > 0 {
+    format!("★ {stars}")
+  } else {
+    String::new()
+  }
+}
+
+#[cfg(feature = "server")]
+fn build_board_hub(board_id: &str, lang: app_core::i18n::Language) -> board::BoardHubResources {
+  const MAX_HUB_ITEMS: usize = 6;
+  let Some(b) = find_board(board_id) else {
+    return board::BoardHubResources::default();
+  };
+  let engine = app_core::engines::module::default_module_engine();
+  let mut resources = board::BoardHubResources::default();
+
+  // 1) 文档卷：按 Board::doc_slugs 声明优先级排序
+  if engine.is_enabled("docs") {
+    let mut matched_docs: Vec<(usize, board::BoardHubItem)> =
+      module_docs::server::cached_volumes_for_lang(lang)
+        .into_iter()
+        .filter_map(|vol| {
+          let rank = b.doc_slug_rank(&vol.node.slug)?;
+          let meta = if vol.pages > 0 {
+            format!("{} {}", vol.pages, lang.pick("页", "pages"))
+          } else {
+            String::new()
+          };
+          Some((
+            rank,
+            board::BoardHubItem {
+              title: vol.node.title,
+              description: vol.node.description,
+              href: format!("/docs/{}", vol.node.path),
+              meta,
+              tags: Vec::new(),
+            },
+          ))
+        })
+        .collect();
+    matched_docs.sort_by_key(|(rank, _)| *rank);
+    resources.docs = matched_docs.into_iter().take(MAX_HUB_ITEMS).map(|(_, item)| item).collect();
+  }
+
+  // 2) 实战课程（仅 course feature 开启时）
+  #[cfg(feature = "course")]
+  if engine.is_enabled("course") {
+    let mut courses =
+      module_course::server::scan_courses(&module_course::server::get_courses_root());
+    courses.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.slug.cmp(&b.slug)));
+    resources.courses = courses
+      .into_iter()
+      .filter(|c| b.matches_resource(&c.tags, None, &c.slug))
+      .take(MAX_HUB_ITEMS)
+      .map(|c| {
+        let lessons: usize = c.chapters.iter().map(|ch| ch.lessons.len()).sum();
+        let meta = if lessons > 0 {
+          format!("{lessons} {}", lang.pick("课节", "lessons"))
+        } else {
+          String::new()
+        };
+        board::BoardHubItem {
+          title: c.title,
+          description: c.description,
+          href: format!("/course/{}", c.slug),
+          meta,
+          tags: c.tags,
+        }
+      })
+      .collect();
+  }
+
+  // 3) 精选案例（按推荐与 Star 数排序）
+  if engine.is_enabled("cases") {
+    let mut cases = module_cases::server::scan_cases();
+    cases.sort_by(|a, b| {
+      b.favorite
+        .cmp(&a.favorite)
+        .then_with(|| b.stars.cmp(&a.stars))
+        .then_with(|| a.name.cmp(&b.name))
+    });
+    resources.cases = cases
+      .into_iter()
+      .filter(|c| b.matches_resource(&c.tags, Some(&c.category), &c.slug))
+      .take(MAX_HUB_ITEMS)
+      .map(|c| board::BoardHubItem {
+        title: c.name,
+        description: c.description,
+        href: format!("/case/{}", c.slug),
+        meta: format_stars(c.stars),
+        tags: c.tags,
+      })
+      .collect();
+  }
+
+  // 4) 相关博客（最新优先）
+  if engine.is_enabled("blog") {
+    let posts = module_blog::server::cached_blog_posts();
+    resources.posts = posts
+      .iter()
+      .filter(|p| b.matches_resource(&p.tags, None, &p.slug))
+      .take(MAX_HUB_ITEMS)
+      .map(|p| board::BoardHubItem {
+        title: p.title.clone(),
+        description: p.description.clone(),
+        href: format!("/blog/{}", p.slug),
+        meta: p.date.clone(),
+        tags: p.tags.clone(),
+      })
+      .collect();
+  }
+
+  resources
+}
+
 #[cfg(all(test, feature = "server"))]
 mod startup_tests {
-  use super::resolve_startup_base_url;
+  use super::{build_board_hub, find_board, resolve_startup_base_url};
+
+  #[test]
+  fn board_hub_resolves_known_boards_and_ignores_unknown() {
+    for id in ["ai", "embedded", "wasm", "cli", "web3"] {
+      assert!(find_board(id).is_some(), "missing board {id}");
+    }
+    assert!(find_board("nonexistent").is_none());
+    assert!(build_board_hub("nonexistent", app_core::i18n::Language::Zh).is_empty());
+  }
 
   #[test]
   fn explicit_base_url_is_preserved_and_trimmed() {

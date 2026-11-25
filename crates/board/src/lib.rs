@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 
 pub use ui::{BoardArticle, BoardIndex};
 
-/// 一个内容板块的结构性数据。文章来自 `assets/topics/{id}/<slug>/index.md(x)`。
+/// 一个内容板块的结构性数据。文章来自 `assets/topics/{id}/<slug>/index.md(x)`（并支持
+/// `CONTENT_DIR/topics/{id}/<slug>/index.md(x)` 优先覆盖）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Board {
   /// 模块 id，也是 `assets/topics/` 下的目录名与 i18n key 前缀。
@@ -24,6 +25,48 @@ pub struct Board {
   /// 子主题 slug；展示文案经 `{id}.sub.{slug}.label / .blurb` 查表。
   pub subtopics: &'static [&'static str],
   pub featured_crates: &'static [FeaturedCrate],
+  /// 归属本领域的顶级文档卷 slug（按优先级排序，用于领域 Hub 聚合）。
+  pub doc_slugs: &'static [&'static str],
+  /// 用于从全站课程 / 实战案例 / 博客中自动聚合本领域内容的匹配标签（全小写）。
+  pub match_tags: &'static [&'static str],
+}
+
+/// 领域 Hub 聚合单条资源卡片（文档卷 / 课程 / 案例 / 博客共用）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BoardHubItem {
+  pub title: String,
+  pub description: String,
+  pub href: String,
+  #[serde(default)]
+  pub meta: String,
+  #[serde(default)]
+  pub tags: Vec<String>,
+}
+
+/// 领域页跨模块聚合资源集合：由组合根（`app`）注入数据源，空分类前端自动隐藏。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BoardHubResources {
+  #[serde(default)]
+  pub docs: Vec<BoardHubItem>,
+  #[serde(default)]
+  pub courses: Vec<BoardHubItem>,
+  #[serde(default)]
+  pub cases: Vec<BoardHubItem>,
+  #[serde(default)]
+  pub posts: Vec<BoardHubItem>,
+}
+
+impl BoardHubResources {
+  pub fn is_empty(&self) -> bool {
+    self.docs.is_empty()
+      && self.courses.is_empty()
+      && self.cases.is_empty()
+      && self.posts.is_empty()
+  }
+
+  pub fn total_count(&self) -> usize {
+    self.docs.len() + self.courses.len() + self.cases.len() + self.posts.len()
+  }
 }
 
 /// 一个精选 crate。`name` 为品牌名（语言中性）；简介经
@@ -51,6 +94,38 @@ impl Board {
     self.subtopics.iter().copied().filter(|s| articles.iter().any(|a| a.subtopic == *s)).collect()
   }
 
+  /// 判断文档卷 slug 是否归属本领域，命中返回其在 `doc_slugs` 中的优先级索引。
+  pub fn doc_slug_rank(&self, slug: &str) -> Option<usize> {
+    let key = slug.trim().to_ascii_lowercase();
+    self.doc_slugs.iter().position(|s| *s == key)
+  }
+
+  /// 判断外部资源（课程 / 案例 / 博客）是否归属本领域。
+  /// 仅做精确标签 / 分类 / slug 命中（忽略大小写与空白），避免宽泛子串误匹配。
+  pub fn matches_resource(&self, tags: &[String], category: Option<&str>, slug: &str) -> bool {
+    let matches_token = |raw: &str| {
+      let lowered = raw.trim().to_ascii_lowercase();
+      if lowered.is_empty() {
+        return false;
+      }
+      if self.match_tags.iter().any(|t| *t == lowered) {
+        return true;
+      }
+      let norm = normalize_tag(&lowered);
+      !norm.is_empty() && self.match_tags.iter().any(|t| normalize_tag(t) == norm)
+    };
+
+    if let Some(cat) = category {
+      if matches_token(cat) {
+        return true;
+      }
+    }
+    if matches_token(slug) || self.doc_slug_rank(slug).is_some() {
+      return true;
+    }
+    tags.iter().any(|t| matches_token(t))
+  }
+
   /// 配置自检，返回所有问题（空 = 合法）。各板块 crate 的单测调用它。
   pub fn problems(&self) -> Vec<String> {
     let mut out = Vec::new();
@@ -75,6 +150,22 @@ impl Board {
     }
     if has_duplicates(self.featured_crates.iter().map(|c| normalize_tag(c.name))) {
       out.push("精选 crate 的 i18n key（normalize_tag(name)）重复".to_string());
+    }
+    for d in self.doc_slugs {
+      if !app_core::utils::is_safe_slug(d) {
+        out.push(format!("doc_slug `{d}` 不是合法 slug"));
+      }
+    }
+    if has_duplicates(self.doc_slugs.iter().map(|s| s.to_string())) {
+      out.push("doc_slugs 存在重复项".to_string());
+    }
+    for tag in self.match_tags {
+      if tag.trim().is_empty() || tag.trim().to_lowercase() != *tag {
+        out.push(format!("match_tag `{tag}` 须为非空小写去空白字符串"));
+      }
+    }
+    if has_duplicates(self.match_tags.iter().map(|s| s.to_string())) {
+      out.push("match_tags 存在重复项".to_string());
     }
     out
   }
@@ -129,6 +220,8 @@ mod tests {
       name: "candle",
       url: "https://github.com/huggingface/candle",
     }],
+    doc_slugs: &["candle", "burn"],
+    match_tags: &["ai", "llm", "深度学习"],
   };
 
   fn summary(date: &str, title: &str) -> ArticleSummary {
@@ -157,9 +250,22 @@ mod tests {
         FeaturedCrate { name: "Candle", url: "http://x" },
         FeaturedCrate { name: "candle!", url: "https://y" },
       ],
+      doc_slugs: &["bad/slug", "dup", "dup"],
+      match_tags: &["Upper", "x", "x"],
     };
     let p = bad.problems();
-    assert_eq!(p.len(), 6, "{p:?}");
+    assert_eq!(p.len(), 10, "{p:?}");
+  }
+
+  #[test]
+  fn matches_resource_checks_tags_category_and_doc_slugs() {
+    assert!(GOOD.matches_resource(&["LLM".into()], None, "other"));
+    assert!(GOOD.matches_resource(&["深度学习".into()], None, "other"));
+    assert!(GOOD.matches_resource(&[], Some("AI"), "other"));
+    assert!(GOOD.matches_resource(&[], None, "burn"));
+    assert!(!GOOD.matches_resource(&["solana".into()], Some("web3"), "reth"));
+    assert_eq!(GOOD.doc_slug_rank("burn"), Some(1));
+    assert_eq!(GOOD.doc_slug_rank("tokio"), None);
   }
 
   #[test]

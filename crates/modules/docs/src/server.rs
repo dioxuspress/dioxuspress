@@ -441,6 +441,12 @@ static TREE_CACHE_ZH: app_core::utils::DirListingCache<Vec<DocTreeNode>> =
 static TREE_CACHE_EN: app_core::utils::DirListingCache<Vec<DocTreeNode>> =
   app_core::utils::DirListingCache::new();
 
+/// 供组合根（如领域聚合 Hub）复用的已缓存文档卷列表，避免重复扫盘。
+#[cfg(feature = "server")]
+pub fn cached_volumes_for_lang(lang: app_core::i18n::Language) -> Vec<DocVolume> {
+  volume_cards(&cached_tree_for_lang(lang))
+}
+
 /// E5.3：清空文档中英双目录树缓存（供 `SIGHUP` 或内容热刷新调用）。
 #[cfg(feature = "server")]
 pub fn invalidate_doc_caches() {

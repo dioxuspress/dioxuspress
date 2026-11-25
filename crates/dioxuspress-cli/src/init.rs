@@ -18,82 +18,82 @@ pub struct EmbeddedFile {
 const DOCS_FILES: &[EmbeddedFile] = &[
   EmbeddedFile {
     rel_path: ".github/workflows/check.yml",
-    content: include_str!("../../../templates/docs/.github/workflows/check.yml"),
+    content: include_str!("../templates/docs/.github/workflows/check.yml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: ".gitignore",
-    content: include_str!("../../../templates/docs/.gitignore"),
+    content: include_str!("../templates/docs/.gitignore"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "README.md",
-    content: include_str!("../../../templates/docs/README.md"),
+    content: include_str!("../templates/docs/README.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docker-compose.yml",
-    content: include_str!("../../../templates/docs/docker-compose.yml"),
+    content: include_str!("../templates/docs/docker-compose.yml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "docs/api/cli-reference/index.md",
-    content: include_str!("../../../templates/docs/docs/api/cli-reference/index.md"),
+    content: include_str!("../templates/docs/docs/api/cli-reference/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/api/index.md",
-    content: include_str!("../../../templates/docs/docs/api/index.md"),
+    content: include_str!("../templates/docs/docs/api/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/guide/advanced/deployment/index.md",
-    content: include_str!("../../../templates/docs/docs/guide/advanced/deployment/index.md"),
+    content: include_str!("../templates/docs/docs/guide/advanced/deployment/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/guide/advanced/index.md",
-    content: include_str!("../../../templates/docs/docs/guide/advanced/index.md"),
+    content: include_str!("../templates/docs/docs/guide/advanced/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/guide/configuration/index.md",
-    content: include_str!("../../../templates/docs/docs/guide/configuration/index.md"),
+    content: include_str!("../templates/docs/docs/guide/configuration/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/guide/getting-started/index.md",
-    content: include_str!("../../../templates/docs/docs/guide/getting-started/index.md"),
+    content: include_str!("../templates/docs/docs/guide/getting-started/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/guide/index.md",
-    content: include_str!("../../../templates/docs/docs/guide/index.md"),
+    content: include_str!("../templates/docs/docs/guide/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/index.md",
-    content: include_str!("../../../templates/docs/docs/index.md"),
+    content: include_str!("../templates/docs/docs/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "images/.gitkeep",
-    content: include_str!("../../../templates/docs/images/.gitkeep"),
+    content: include_str!("../templates/docs/images/.gitkeep"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "posts/authors.yml",
-    content: include_str!("../../../templates/docs/posts/authors.yml"),
+    content: include_str!("../templates/docs/posts/authors.yml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "posts/v0-1-release/index.md",
-    content: include_str!("../../../templates/docs/posts/v0-1-release/index.md"),
+    content: include_str!("../templates/docs/posts/v0-1-release/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "site.json",
-    content: include_str!("../../../templates/docs/site.json"),
+    content: include_str!("../templates/docs/site.json"),
     replace_site_name: true,
   },
 ];
@@ -101,62 +101,62 @@ const DOCS_FILES: &[EmbeddedFile] = &[
 const BLOG_FILES: &[EmbeddedFile] = &[
   EmbeddedFile {
     rel_path: ".gitignore",
-    content: include_str!("../../../templates/blog/.gitignore"),
+    content: include_str!("../templates/blog/.gitignore"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "README.md",
-    content: include_str!("../../../templates/blog/README.md"),
+    content: include_str!("../templates/blog/README.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docker-compose.yml",
-    content: include_str!("../../../templates/blog/docker-compose.yml"),
+    content: include_str!("../templates/blog/docker-compose.yml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "docs/index.md",
-    content: include_str!("../../../templates/blog/docs/index.md"),
+    content: include_str!("../templates/blog/docs/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/notes/index.md",
-    content: include_str!("../../../templates/blog/docs/notes/index.md"),
+    content: include_str!("../templates/blog/docs/notes/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/notes/reading-list/index.md",
-    content: include_str!("../../../templates/blog/docs/notes/reading-list/index.md"),
+    content: include_str!("../templates/blog/docs/notes/reading-list/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "images/.gitkeep",
-    content: include_str!("../../../templates/blog/images/.gitkeep"),
+    content: include_str!("../templates/blog/images/.gitkeep"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "pages/about.md",
-    content: include_str!("../../../templates/blog/pages/about.md"),
+    content: include_str!("../templates/blog/pages/about.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "posts/authors.yml",
-    content: include_str!("../../../templates/blog/posts/authors.yml"),
+    content: include_str!("../templates/blog/posts/authors.yml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "posts/systems-notes-01-zero-copy/index.md",
-    content: include_str!("../../../templates/blog/posts/systems-notes-01-zero-copy/index.md"),
+    content: include_str!("../templates/blog/posts/systems-notes-01-zero-copy/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "posts/systems-notes-02-latency-math/index.md",
-    content: include_str!("../../../templates/blog/posts/systems-notes-02-latency-math/index.md"),
+    content: include_str!("../templates/blog/posts/systems-notes-02-latency-math/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "site.json",
-    content: include_str!("../../../templates/blog/site.json"),
+    content: include_str!("../templates/blog/site.json"),
     replace_site_name: true,
   },
 ];
@@ -164,62 +164,62 @@ const BLOG_FILES: &[EmbeddedFile] = &[
 const COMMUNITY_FILES: &[EmbeddedFile] = &[
   EmbeddedFile {
     rel_path: ".env.example",
-    content: include_str!("../../../templates/community/.env.example"),
+    content: include_str!("../templates/community/.env.example"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: ".gitignore",
-    content: include_str!("../../../templates/community/.gitignore"),
+    content: include_str!("../templates/community/.gitignore"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "README.md",
-    content: include_str!("../../../templates/community/README.md"),
+    content: include_str!("../templates/community/README.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docker-compose.yml",
-    content: include_str!("../../../templates/community/docker-compose.yml"),
+    content: include_str!("../templates/community/docker-compose.yml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "docs/handbook/index.md",
-    content: include_str!("../../../templates/community/docs/handbook/index.md"),
+    content: include_str!("../templates/community/docs/handbook/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/handbook/oauth-and-forum/index.md",
-    content: include_str!("../../../templates/community/docs/handbook/oauth-and-forum/index.md"),
+    content: include_str!("../templates/community/docs/handbook/oauth-and-forum/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/index.md",
-    content: include_str!("../../../templates/community/docs/index.md"),
+    content: include_str!("../templates/community/docs/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "images/.gitkeep",
-    content: include_str!("../../../templates/community/images/.gitkeep"),
+    content: include_str!("../templates/community/images/.gitkeep"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "pages/about.md",
-    content: include_str!("../../../templates/community/pages/about.md"),
+    content: include_str!("../templates/community/pages/about.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "posts/authors.yml",
-    content: include_str!("../../../templates/community/posts/authors.yml"),
+    content: include_str!("../templates/community/posts/authors.yml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "posts/welcome-to-community/index.md",
-    content: include_str!("../../../templates/community/posts/welcome-to-community/index.md"),
+    content: include_str!("../templates/community/posts/welcome-to-community/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "site.json",
-    content: include_str!("../../../templates/community/site.json"),
+    content: include_str!("../templates/community/site.json"),
     replace_site_name: true,
   },
 ];
@@ -227,103 +227,103 @@ const COMMUNITY_FILES: &[EmbeddedFile] = &[
 const PORTAL_FILES: &[EmbeddedFile] = &[
   EmbeddedFile {
     rel_path: ".env.example",
-    content: include_str!("../../../templates/portal/.env.example"),
+    content: include_str!("../templates/portal/.env.example"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: ".gitignore",
-    content: include_str!("../../../templates/portal/.gitignore"),
+    content: include_str!("../templates/portal/.gitignore"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "README.md",
-    content: include_str!("../../../templates/portal/README.md"),
+    content: include_str!("../templates/portal/README.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "cases/dioxuspress-starter/README.md",
-    content: include_str!("../../../templates/portal/cases/dioxuspress-starter/README.md"),
+    content: include_str!("../templates/portal/cases/dioxuspress-starter/README.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "cases/dioxuspress-starter/case.yaml",
-    content: include_str!("../../../templates/portal/cases/dioxuspress-starter/case.yaml"),
+    content: include_str!("../templates/portal/cases/dioxuspress-starter/case.yaml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "courses/fullstack-rust/01-foundations/01-ssr-hydration/index.md",
     content: include_str!(
-      "../../../templates/portal/courses/fullstack-rust/01-foundations/01-ssr-hydration/index.md"
+      "../templates/portal/courses/fullstack-rust/01-foundations/01-ssr-hydration/index.md"
     ),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "courses/fullstack-rust/01-foundations/02-production-ops/index.md",
     content: include_str!(
-      "../../../templates/portal/courses/fullstack-rust/01-foundations/02-production-ops/index.md"
+      "../templates/portal/courses/fullstack-rust/01-foundations/02-production-ops/index.md"
     ),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "courses/fullstack-rust/01-foundations/_chapter.yaml",
     content: include_str!(
-      "../../../templates/portal/courses/fullstack-rust/01-foundations/_chapter.yaml"
+      "../templates/portal/courses/fullstack-rust/01-foundations/_chapter.yaml"
     ),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "courses/fullstack-rust/course.yaml",
-    content: include_str!("../../../templates/portal/courses/fullstack-rust/course.yaml"),
+    content: include_str!("../templates/portal/courses/fullstack-rust/course.yaml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "docker-compose.yml",
-    content: include_str!("../../../templates/portal/docker-compose.yml"),
+    content: include_str!("../templates/portal/docker-compose.yml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "docs/architecture/content-pipeline/index.md",
-    content: include_str!("../../../templates/portal/docs/architecture/content-pipeline/index.md"),
+    content: include_str!("../templates/portal/docs/architecture/content-pipeline/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/architecture/index.md",
-    content: include_str!("../../../templates/portal/docs/architecture/index.md"),
+    content: include_str!("../templates/portal/docs/architecture/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "docs/index.md",
-    content: include_str!("../../../templates/portal/docs/index.md"),
+    content: include_str!("../templates/portal/docs/index.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "images/.gitkeep",
-    content: include_str!("../../../templates/portal/images/.gitkeep"),
+    content: include_str!("../templates/portal/images/.gitkeep"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "pages/about.md",
-    content: include_str!("../../../templates/portal/pages/about.md"),
+    content: include_str!("../templates/portal/pages/about.md"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "podcasts/ep01-architecture/episode.yaml",
-    content: include_str!("../../../templates/portal/podcasts/ep01-architecture/episode.yaml"),
+    content: include_str!("../templates/portal/podcasts/ep01-architecture/episode.yaml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "posts/authors.yml",
-    content: include_str!("../../../templates/portal/posts/authors.yml"),
+    content: include_str!("../templates/portal/posts/authors.yml"),
     replace_site_name: false,
   },
   EmbeddedFile {
     rel_path: "posts/launching-knowledge-portal/index.mdx",
-    content: include_str!("../../../templates/portal/posts/launching-knowledge-portal/index.mdx"),
+    content: include_str!("../templates/portal/posts/launching-knowledge-portal/index.mdx"),
     replace_site_name: true,
   },
   EmbeddedFile {
     rel_path: "site.json",
-    content: include_str!("../../../templates/portal/site.json"),
+    content: include_str!("../templates/portal/site.json"),
     replace_site_name: true,
   },
 ];
@@ -459,7 +459,7 @@ mod tests {
 
   #[test]
   fn embedded_file_list_matches_templates_directory_on_disk() {
-    let templates_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+    let templates_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
     for tpl in Template::ALL {
       let preset_dir = templates_root.join(tpl.id());
       assert!(preset_dir.is_dir(), "missing template directory: {}", preset_dir.display());

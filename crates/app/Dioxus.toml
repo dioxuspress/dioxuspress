@@ -3,7 +3,7 @@
 [web.app]
 
 # HTML title tag content
-title = "Rust in Everything"
+title = "DioxusPress"
 
 # include `assets` in web platform
 [web.resource]
