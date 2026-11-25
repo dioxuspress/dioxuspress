@@ -686,6 +686,20 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
             p { class: "mt-2.5 text-sm sm:text-base text-slate-600 dark:text-slate-400 leading-relaxed",
               "{desc}"
             }
+            div { class: "mt-4 flex flex-wrap items-center gap-2.5",
+              Link {
+                to: "/models/configs",
+                class: "inline-flex items-center gap-2 rounded-xl border border-indigo-200 dark:border-indigo-800/80 bg-white/90 dark:bg-slate-900/90 px-3.5 py-2 text-xs font-bold text-indigo-700 dark:text-indigo-300 hover:border-indigo-400 dark:hover:border-indigo-600 shadow-2xs transition-colors",
+                span { "📘" }
+                span {
+                  {lang.pick(
+                    "大模型配置文件全景解剖（config.json / safetensors / tokenizer / model_index）",
+                    "Model Config Files Guide (config.json / safetensors / tokenizer / model_index)",
+                  )}
+                }
+                span { class: "text-indigo-500", "→" }
+              }
+            }
           }
 
           // 实时拉取任意仓库快捷入口 + 管理员在线收录入口

@@ -7,7 +7,12 @@
 use std::collections::BTreeMap;
 
 use app_core::i18n::Language;
+use dioxus::prelude::*;
+use dioxus_shadcn::{
+  badge_class, card_class, BadgeVariant, Button, ButtonSize, ButtonVariant, Input,
+};
 use serde_json::Value;
+use widgets::PageMeta;
 
 use crate::arch::InspectorFocus;
 
@@ -2837,6 +2842,617 @@ fn format_json_value(val: &Value) -> String {
         "{}".to_string()
       } else {
         format!("{{{} entries}}", map.len())
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. `/models/configs` 全景配置文件解剖指南页 UI
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn current_lang() -> Language {
+  try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default()
+}
+
+/// `/models/configs` 独立全景指南页：拆解 HuggingFace / ModelScope 模型仓库中 8 类配置文件的协作关系与高频字段。
+#[component]
+pub fn ModelConfigsGuidePage() -> Element {
+  let lang = current_lang();
+  let title = lang
+    .pick(
+      "大模型配置文件全景解剖指南（config.json / safetensors / tokenizer / model_index）",
+      "LLM & Multimodal Model Config Files Guide (config.json / safetensors / tokenizer / model_index)",
+    )
+    .to_string();
+  let desc = lang
+    .pick(
+      "面向模型架构学习者与推理引擎开发者的实战手册：一图看懂 LLM、VLM、Diffusion、Embedding 与 LoRA 仓库里每个 JSON 文件的职责、80+ 高频字段对显存与张量形状的定量影响及常见工程踩坑。",
+      "A practical reference for learning LLM/VLM/Diffusion/Embedding/LoRA architectures from repository config files: 8 file blueprints, 80+ searchable fields with memory/shape formulas, and real engineering gotchas.",
+    )
+    .to_string();
+
+  let mut active_modality = use_signal(|| "llm".to_string());
+  let mut active_file_spec = use_signal(|| ConfigFileKind::ModelConfig);
+  let mut filter_file: Signal<Option<ConfigFileKind>> = use_signal(|| None);
+  let mut filter_group: Signal<Option<FieldGroup>> = use_signal(|| None);
+  let mut search_q = use_signal(String::new);
+
+  let cur_tree = REPO_MODALITY_BLUEPRINTS
+    .iter()
+    .find(|b| b.id == active_modality())
+    .or_else(|| REPO_MODALITY_BLUEPRINTS.first());
+  let cur_spec = CONFIG_FILE_SPECS
+    .iter()
+    .find(|s| s.kind == active_file_spec())
+    .or_else(|| CONFIG_FILE_SPECS.first());
+
+  let q_norm = search_q().trim().to_ascii_lowercase();
+  let sel_file = filter_file();
+  let sel_group = filter_group();
+
+  let filtered_docs: Vec<&'static ConfigFieldDoc> = CONFIG_FIELD_DOCS
+    .iter()
+    .filter(|d| sel_file.is_none_or(|f| d.file == f))
+    .filter(|d| sel_group.is_none_or(|g| d.group == g))
+    .filter(|d| {
+      if q_norm.is_empty() {
+        return true;
+      }
+      d.key.to_ascii_lowercase().contains(&q_norm)
+        || d.aliases.iter().any(|a| a.to_ascii_lowercase().contains(&q_norm))
+        || d.summary_zh.to_ascii_lowercase().contains(&q_norm)
+        || d.summary_en.to_ascii_lowercase().contains(&q_norm)
+        || d.file.short_name().to_ascii_lowercase().contains(&q_norm)
+        || d.formula_impact.is_some_and(|f| f.to_ascii_lowercase().contains(&q_norm))
+    })
+    .collect();
+
+  let has_active_filter = sel_file.is_some() || sel_group.is_some() || !q_norm.is_empty();
+
+  rsx! {
+    PageMeta {
+      title: title.clone(),
+      description: desc.clone(),
+      path: "/models/configs".to_string(),
+    }
+
+    section { class: "py-10 bg-white dark:bg-slate-950 min-h-screen",
+      div { class: "max-w-7xl mx-auto px-4 sm:px-6 space-y-10",
+        // 1. 顶部 Hero 区域
+        div { class: "rounded-3xl border border-slate-200 dark:border-slate-800 bg-linear-to-br from-slate-50 via-white to-indigo-50/70 dark:from-slate-900 dark:via-slate-950 dark:to-indigo-950/30 p-6 sm:p-8 shadow-xs",
+          div { class: "flex flex-wrap items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 mb-3",
+            Link { to: "/models", class: "hover:underline",
+              {lang.pick("← 返回主流大模型架构图鉴", "← Back to Model Atlas")}
+            }
+            span { class: "text-slate-300 dark:text-slate-700", "·" }
+            Link { to: "/ai/visualizer", class: "hover:underline text-slate-600 dark:text-slate-400",
+              {lang.pick("打开任意仓库实时解析器 →", "Open Live Repo Visualizer →")}
+            }
+          }
+
+          div { class: "flex flex-col lg:flex-row lg:items-end justify-between gap-6",
+            div { class: "max-w-3xl",
+              div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-2",
+                span { class: "px-2.5 py-0.5 rounded-full bg-indigo-600 text-white text-[10px]",
+                  "Config Anatomy"
+                }
+                span {
+                  {lang.pick(
+                    "读懂仓库里每一个 JSON · 与架构拓扑图双向联动",
+                    "Master Every Repo JSON · Linked to Live Architecture Graphs",
+                  )}
+                }
+              }
+              h1 { class: "text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white",
+                {lang.pick("大模型配置文件全景解剖指南", "Model Repository Config Files Guide")}
+              }
+              p { class: "mt-2.5 text-sm sm:text-base text-slate-600 dark:text-slate-400 leading-relaxed",
+                "{desc}"
+              }
+            }
+
+            div { class: "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-2.5 shrink-0",
+              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
+                div { class: "text-lg font-extrabold font-mono text-indigo-600 dark:text-indigo-400",
+                  "{CONFIG_FILE_SPECS.len()}"
+                }
+                div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+                  {lang.pick("类核心配置文件", "Core Config Files")}
+                }
+              }
+              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
+                div { class: "text-lg font-extrabold font-mono text-emerald-600 dark:text-emerald-400",
+                  "{CONFIG_FIELD_DOCS.len()}+"
+                }
+                div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+                  {lang.pick("高频字段双语词典", "Annotated Fields")}
+                }
+              }
+              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
+                div { class: "text-lg font-extrabold font-mono text-violet-600 dark:text-violet-400",
+                  "{REPO_MODALITY_BLUEPRINTS.len()}"
+                }
+                div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+                  {lang.pick("模态仓库文件树", "Modality Repo Trees")}
+                }
+              }
+              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
+                div { class: "text-lg font-extrabold font-mono text-amber-600 dark:text-amber-400",
+                  "{CONFIG_GOTCHAS.len()}"
+                }
+                div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+                  {lang.pick("工程高频踩坑", "Production Gotchas")}
+                }
+              }
+            }
+          }
+        }
+
+        // 2. 按模态切换仓库文件树全景图
+        div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
+          div { class: "flex flex-col md:flex-row md:items-center justify-between gap-3",
+            div {
+              h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+                {lang.pick("1. 模型仓库文件树与加载协作关系", "1. Repository File Tree by Modality")}
+              }
+              p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+                {lang.pick(
+                  "切换不同模态，快速看清打开一个 HuggingFace / ModelScope 仓库时，各个文件各自管什么、按什么顺序被推理引擎消费。",
+                  "Switch modalities to see what each JSON/weight file controls and how inference engines load them together.",
+                )}
+              }
+            }
+
+            div { class: "flex flex-wrap gap-1.5",
+              for bp in REPO_MODALITY_BLUEPRINTS {
+                {
+                  let bid = bp.id;
+                  let active = active_modality() == bid;
+                  let cls = if active {
+                    "px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 text-white shadow-xs cursor-pointer transition-all"
+                  } else {
+                    "px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer transition-all"
+                  };
+                  rsx! {
+                    button {
+                      key: "tree-{bid}",
+                      r#type: "button",
+                      class: cls,
+                      onclick: move |_| active_modality.set(bid.to_string()),
+                      "{bp.label(lang)}"
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if let Some(tree) = cur_tree {
+            div { class: "rounded-2xl border border-indigo-200/80 dark:border-indigo-900/60 bg-indigo-50/50 dark:bg-indigo-950/25 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs",
+              div { class: "space-y-1",
+                div { class: "font-bold text-indigo-700 dark:text-indigo-300",
+                  {lang.pick("推理加载数据流：", "Loader Pipeline Flow: ")}
+                  span { class: "font-normal text-slate-700 dark:text-slate-300", "{tree.flow(lang)}" }
+                }
+                div { class: "font-mono text-[11px] text-slate-500 dark:text-slate-400",
+                  {lang.pick("典型仓库参考：", "Reference Repos: ")}
+                  "{tree.example_repo}"
+                }
+              }
+              if let Some(slug) = tree.example_slug {
+                Link {
+                  to: format!("/models/{slug}"),
+                  class: "shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition-colors",
+                  {lang.pick("查看真实代表模型 →", "Inspect Example Model →")}
+                }
+              }
+            }
+
+            div { class: "grid grid-cols-1 md:grid-cols-2 gap-3",
+              for item in tree.items {
+                {
+                  let fk = item.file_kind;
+                  rsx! {
+                    div {
+                      key: "{tree.id}-{item.path}",
+                      class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-3.5 flex flex-col justify-between gap-2",
+                      div { class: "flex items-start justify-between gap-2",
+                        code { class: "text-xs sm:text-sm font-mono font-bold text-slate-900 dark:text-white break-all",
+                          "{item.path}"
+                        }
+                        if item.required {
+                          span { class: badge_class(BadgeVariant::Default, "text-[10px] shrink-0"),
+                            {lang.pick("必需", "Required")}
+                          }
+                        } else {
+                          span { class: badge_class(BadgeVariant::Secondary, "text-[10px] shrink-0"),
+                            {lang.pick("可选", "Optional")}
+                          }
+                        }
+                      }
+                      p { class: "text-xs text-slate-600 dark:text-slate-400 leading-relaxed",
+                        "{item.note(lang)}"
+                      }
+                      div { class: "flex items-center justify-between pt-1",
+                        span { class: "text-[11px] font-mono text-slate-400", "{fk.short_name()}" }
+                        button {
+                          r#type: "button",
+                          class: "text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer",
+                          onclick: move |_| {
+                            active_file_spec.set(fk);
+                            filter_file.set(Some(fk));
+                          },
+                          {lang.pick("聚焦此文件蓝图与字段 ↓", "Inspect File & Fields ↓")}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // 3. 8 类主流配置文件深度蓝图
+        div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
+          div {
+            h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+              {lang.pick("2. 八大主流配置文件深度拆解", "2. Deep Dive: The 8 Standard Config Files")}
+            }
+            p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+              {lang.pick(
+                "点击任意配置文件类型，查看它的核心职责、推理框架消费机制、典型避坑点与真实精简 JSON 示例。",
+                "Select any config file type to view its responsibilities, engine loading mechanics, pitfalls, and real JSON anatomy.",
+              )}
+            }
+          }
+
+          div { class: "flex flex-wrap gap-1.5",
+            for spec in CONFIG_FILE_SPECS {
+              {
+                let kind = spec.kind;
+                let active = active_file_spec() == kind;
+                let cls = if active {
+                  "px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer transition-all"
+                } else {
+                  "px-3 py-1.5 rounded-xl text-xs font-mono font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer transition-all"
+                };
+                rsx! {
+                  button {
+                    key: "spec-{kind.id()}",
+                    r#type: "button",
+                    class: cls,
+                    onclick: move |_| active_file_spec.set(kind),
+                    "{kind.short_name()}"
+                  }
+                }
+              }
+            }
+          }
+
+          if let Some(spec) = cur_spec {
+            div { class: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start",
+              div { class: "lg:col-span-7 space-y-3.5",
+                div { class: "flex flex-wrap items-center gap-2",
+                  h3 { class: "text-base sm:text-lg font-extrabold font-mono text-slate-900 dark:text-white",
+                    "{spec.filenames}"
+                  }
+                  span { class: badge_class(BadgeVariant::Secondary, "text-[11px]"),
+                    "{spec.modalities(lang)}"
+                  }
+                }
+                div { class: "text-sm font-bold text-indigo-600 dark:text-indigo-400",
+                  "{spec.role(lang)}"
+                }
+                p { class: "text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
+                  "{spec.summary(lang)}"
+                }
+                div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3.5 text-xs space-y-1.5",
+                  div { class: "font-bold text-slate-800 dark:text-slate-200",
+                    {lang.pick("⚙ 框架与推理引擎加载方式", "⚙ How Frameworks Consume It")}
+                  }
+                  p { class: "text-slate-600 dark:text-slate-400 leading-relaxed",
+                    "{spec.loader(lang)}"
+                  }
+                }
+                div { class: "rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 p-3.5 text-xs space-y-1.5",
+                  div { class: "font-bold text-amber-800 dark:text-amber-300",
+                    {lang.pick("⚠ 实战最容易踩的坑", "⚠ Common Pitfall")}
+                  }
+                  p { class: "text-amber-900/90 dark:text-amber-200/90 leading-relaxed",
+                    "{spec.pitfall(lang)}"
+                  }
+                }
+                div { class: "pt-1",
+                  Button {
+                    variant: ButtonVariant::Outline,
+                    size: ButtonSize::Sm,
+                    onclick: move |_| {
+                      filter_file.set(Some(spec.kind));
+                      filter_group.set(None);
+                    },
+                    {lang.pick("在下方词典中只看该文件的字段 ↓", "Filter Dictionary to This File ↓")}
+                  }
+                }
+              }
+
+              div { class: "lg:col-span-5",
+                div { class: "rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden",
+                  div { class: "px-3.5 py-2 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-slate-400",
+                    span { "{spec.kind.short_name()}" }
+                    span { "Annotated Example" }
+                  }
+                  pre { class: "p-3.5 text-xs font-mono text-slate-100 overflow-x-auto leading-relaxed",
+                    "{spec.snippet}"
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // 4. 交互式高频配置字段速查词典
+        div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
+          div { class: "flex flex-col md:flex-row md:items-end justify-between gap-3",
+            div {
+              h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+                {lang.pick("3. 交互式配置字段速查词典", "3. Interactive Config Field Dictionary")}
+              }
+              p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+                {lang.pick(
+                  "按文件、语义分组或关键词（如 kv / rope / fp8 / eos / patch / lora）即时检索，附显存与维度影响公式、代表真实模型及实验室直达。",
+                  "Filter by file, semantic group, or keyword (e.g. kv, rope, fp8, eos, patch, lora) with memory/shape formulas and live model links.",
+                )}
+              }
+            }
+            div { class: "text-xs font-mono text-slate-500 dark:text-slate-400 shrink-0",
+              {lang.pick("当前命中 ", "Showing ")}
+              span { class: "font-bold text-indigo-600 dark:text-indigo-400", "{filtered_docs.len()}" }
+              " / {CONFIG_FIELD_DOCS.len()}"
+            }
+          }
+
+          // 搜索与筛选控件
+          div { class: "space-y-3",
+            div { class: "flex flex-col sm:flex-row items-stretch sm:items-center gap-2",
+              div { class: "flex-1",
+                Input {
+                  class: "font-mono text-xs sm:text-sm bg-slate-50 dark:bg-slate-950",
+                  placeholder: lang.pick(
+                    "搜索字段名、别名或含义（例如 kv_lora_rank、rope、fp8、eos、lora_alpha、patch_size）...",
+                    "Search field key, alias, or meaning (e.g. kv_lora_rank, rope, fp8, eos, lora_alpha)...",
+                  ),
+                  "aria-label": "Search model config fields",
+                  value: search_q(),
+                  on_value_change: move |v: String| search_q.set(v),
+                }
+              }
+              if has_active_filter {
+                Button {
+                  variant: ButtonVariant::Outline,
+                  size: ButtonSize::Sm,
+                  onclick: move |_| {
+                    filter_file.set(None);
+                    filter_group.set(None);
+                    search_q.set(String::new());
+                  },
+                  {lang.pick("重置筛选", "Reset Filters")}
+                }
+              }
+            }
+
+            // 文件筛选行
+            div { class: "flex flex-wrap items-center gap-1.5",
+              span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
+                {lang.pick("按文件：", "File:")}
+              }
+              button {
+                r#type: "button",
+                class: if sel_file.is_none() {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
+                } else {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                },
+                onclick: move |_| filter_file.set(None),
+                {lang.pick("全部文件", "All Files")}
+              }
+              for kind in ConfigFileKind::ALL {
+                {
+                  let active = sel_file == Some(kind);
+                  let cls = if active {
+                    "px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-indigo-600 text-white cursor-pointer"
+                  } else {
+                    "px-2.5 py-1 rounded-lg text-[11px] font-mono bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                  };
+                  rsx! {
+                    button {
+                      key: "ff-{kind.id()}",
+                      r#type: "button",
+                      class: cls,
+                      onclick: move |_| filter_file.set(Some(kind)),
+                      "{kind.short_name()}"
+                    }
+                  }
+                }
+              }
+            }
+
+            // 语义分组筛选行
+            div { class: "flex flex-wrap items-center gap-1.5",
+              span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
+                {lang.pick("按维度：", "Group:")}
+              }
+              button {
+                r#type: "button",
+                class: if sel_group.is_none() {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
+                } else {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                },
+                onclick: move |_| filter_group.set(None),
+                {lang.pick("全部语义分组", "All Groups")}
+              }
+              for grp in FieldGroup::ALL {
+                {
+                  let active = sel_group == Some(grp);
+                  let cls = if active {
+                    "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
+                  } else {
+                    "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                  };
+                  rsx! {
+                    button {
+                      key: "fg-{grp.id()}",
+                      r#type: "button",
+                      class: cls,
+                      onclick: move |_| filter_group.set(Some(grp)),
+                      "{grp.label(lang)}"
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // 字段结果列表
+          if filtered_docs.is_empty() {
+            div { class: "py-10 text-center text-sm text-slate-500 dark:text-slate-400",
+              {lang.pick(
+                "未找到匹配的配置字段，请尝试更简短的关键词或点击「重置筛选」。",
+                "No matching config fields found. Try a shorter keyword or reset filters.",
+              )}
+            }
+          } else {
+            div { class: "grid grid-cols-1 md:grid-cols-2 gap-3.5",
+              for doc in filtered_docs {
+                div {
+                  key: "doc-{doc.key}",
+                  class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 flex flex-col justify-between gap-2.5 hover:border-indigo-300 dark:hover:border-indigo-800 transition-colors",
+                  div { class: "space-y-2",
+                    div { class: "flex flex-wrap items-center justify-between gap-2",
+                      code { class: "text-xs sm:text-sm font-mono font-bold text-indigo-700 dark:text-indigo-300 break-all",
+                        "{doc.key}"
+                      }
+                      div { class: "flex flex-wrap items-center gap-1.5",
+                        span { class: "px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[10px] font-mono text-slate-700 dark:text-slate-300",
+                          "{doc.value_type}"
+                        }
+                        span { class: badge_class(BadgeVariant::Secondary, "text-[10px] font-mono"),
+                          "{doc.file.short_name()}"
+                        }
+                      }
+                    }
+
+                    if !doc.aliases.is_empty() {
+                      div { class: "text-[11px] font-mono text-slate-400",
+                        {lang.pick("别名：", "Aliases: ")}
+                        "{doc.aliases.join(\", \")}"
+                      }
+                    }
+
+                    p { class: "text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
+                      "{doc.summary(lang)}"
+                    }
+
+                    if let Some(formula) = doc.formula_impact {
+                      div { class: "rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/70 dark:border-indigo-900/60 px-2.5 py-1.5 text-[11px] font-mono text-indigo-800 dark:text-indigo-300",
+                        "ƒ {formula}"
+                      }
+                    }
+                  }
+
+                  div { class: "flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]",
+                    span { class: "text-slate-500 dark:text-slate-400", "{doc.group.label(lang)}" }
+                    div { class: "flex flex-wrap items-center gap-2",
+                      if let Some(slug) = doc.example_model_slug {
+                        Link {
+                          to: format!("/models/{slug}"),
+                          class: "font-mono font-semibold text-indigo-600 dark:text-indigo-400 hover:underline",
+                          "Model: {slug} →"
+                        }
+                      }
+                      if let Some((href, label)) = doc.lab_link {
+                        Link {
+                          to: href,
+                          class: "font-semibold text-emerald-600 dark:text-emerald-400 hover:underline",
+                          "{label} ↗"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // 5. 常见工程踩坑速查（Gotchas）
+        div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
+          div {
+            h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+              {lang.pick("4. 真实工程高频踩坑速查（Gotchas）", "4. Production Engineering Gotchas")}
+            }
+            p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+              {lang.pick(
+                "写推理引擎、算显存预算或对齐微调权重时最容易因为误读配置文件而翻车的 6 类经典陷阱。",
+                "Six classic failure modes when implementing inference engines, sizing VRAM, or merging fine-tuned checkpoints.",
+              )}
+            }
+          }
+
+          div { class: "grid grid-cols-1 lg:grid-cols-2 gap-4",
+            for g in CONFIG_GOTCHAS {
+              div {
+                key: "gotcha-{g.id}",
+                class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 space-y-2.5",
+                div { class: "flex items-center gap-2",
+                  span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-bold shrink-0",
+                    "{g.badge}"
+                  }
+                  h3 { class: "text-sm font-extrabold text-slate-900 dark:text-white",
+                    "{g.title(lang)}"
+                  }
+                }
+                div { class: "text-xs space-y-1.5 leading-relaxed",
+                  p { class: "text-slate-600 dark:text-slate-400",
+                    span { class: "font-bold text-rose-600 dark:text-rose-400 mr-1",
+                      {lang.pick("现象：", "Symptom: ")}
+                    }
+                    "{g.symptom(lang)}"
+                  }
+                  p { class: "text-slate-600 dark:text-slate-400",
+                    span { class: "font-bold text-slate-800 dark:text-slate-200 mr-1",
+                      {lang.pick("根因：", "Cause: ")}
+                    }
+                    "{g.root_cause(lang)}"
+                  }
+                  p { class: "text-slate-700 dark:text-slate-300",
+                    span { class: "font-bold text-emerald-600 dark:text-emerald-400 mr-1",
+                      {lang.pick("解法：", "Fix: ")}
+                    }
+                    "{g.fix(lang)}"
+                  }
+                }
+                div { class: "flex flex-wrap items-center gap-1.5 pt-1",
+                  for rk in g.related_keys {
+                    button {
+                      key: "{g.id}-{rk}",
+                      r#type: "button",
+                      class: "px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[11px] font-mono text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/60 cursor-pointer",
+                      onclick: move |_| {
+                        filter_file.set(None);
+                        filter_group.set(None);
+                        search_q.set((*rk).to_string());
+                      },
+                      "{rk}"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

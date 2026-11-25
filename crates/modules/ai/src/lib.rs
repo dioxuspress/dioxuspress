@@ -27,6 +27,7 @@ use dioxus::prelude::*;
 
 pub use atlas::{ModelDetailPage, ModelsAtlasPage};
 pub use components_atlas::{AiComponentDetailPage, AiComponentsAtlasPage};
+pub use config_guide::ModelConfigsGuidePage;
 pub use math_atlas::{AiMathAtlasPage, AiMathDetailPage};
 pub use visualizer::AiVisualizerPage;
 

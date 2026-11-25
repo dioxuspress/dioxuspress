@@ -20,7 +20,7 @@ use crate::i18n::{t, use_i18n, Language};
 use crate::server::get_about_page;
 use module_ai::{
   AiArticlePage, AiComponentDetailPage, AiComponentsAtlasPage, AiIndexPage, AiMathAtlasPage,
-  AiMathDetailPage, AiVisualizerPage, ModelDetailPage, ModelsAtlasPage,
+  AiMathDetailPage, AiVisualizerPage, ModelConfigsGuidePage, ModelDetailPage, ModelsAtlasPage,
 };
 use module_blog::server::{get_blog_content, list_blog_page};
 use module_cases::cases::{CaseDetailPage, CasesIndexPage};
@@ -252,9 +252,12 @@ mod route_def {
         #[route("/ai/:slug")]
         AiArticle { slug: String },
 
-        // 指定旗舰模型架构图鉴（含多尺度收起/展开拓扑图）
+        // 指定旗舰模型架构图鉴（含多尺度收起/展开拓扑图与配置文件全景指南）
+        // 注意路由顺序：静态路径 /models/configs 必须置于动态参数 /models/:slug 之前
         #[route("/models")]
         Models {},
+        #[route("/models/configs")]
+        ModelConfigsGuide {},
         #[route("/models/:slug")]
         ModelDetail { slug: String },
 
@@ -776,6 +779,11 @@ pub fn AiArticle(slug: String) -> Element {
 #[component]
 pub fn Models() -> Element {
   rsx! { ModuleGate { id: "ai".to_string(), ModelsAtlasPage {} } }
+}
+
+#[component]
+pub fn ModelConfigsGuide() -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), ModelConfigsGuidePage {} } }
 }
 
 #[component]
