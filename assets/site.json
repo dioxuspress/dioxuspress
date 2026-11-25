@@ -32,7 +32,7 @@
     "title_en": "Build Blazing-Fast Docs & Knowledge Communities in Pure Rust",
     "subtitle": "SSR 首屏直出 + WASM 无刷新水合 + Tantivy 毫秒级全文检索。既能零数据库替代 Docusaurus，也能一键开启登录、论坛、划线标注与付费课程。",
     "subtitle_en": "SSR first-paint + WASM hydration + embedded Tantivy search. Run as a zero-database Docusaurus alternative or scale to auth, forum, annotations, and courses.",
-    "install_command": "git clone https://github.com/dioxuspress/dioxuspress.git && cd dioxuspress",
+    "install_command": "cargo install dioxuspress-cli && dioxuspress init my-docs",
     "primary_cta_text": "5 分钟快速开始",
     "primary_cta_text_en": "Quickstart Guide",
     "primary_cta_href": "/docs/guide/quickstart",

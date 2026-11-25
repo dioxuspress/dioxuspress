@@ -58,6 +58,24 @@
 
 ## 快速开始
 
+### 方式一：官方 CLI + 零编译预构建镜像（50 秒上手，推荐）
+
+```bash
+# 1. 从 crates.io 安装官方轻量 CLI
+cargo install dioxuspress-cli
+
+# 2. 一键初始化内容目录（支持 docs / blog / community / portal 四套预设）并离线校验
+dioxuspress init my-docs --template docs
+cd my-docs
+dioxuspress check
+
+# 3. 启动预构建多架构容器（docs / blog 预设零数据库即开即用）
+docker compose up -d
+# 浏览器打开 http://localhost:8080
+```
+
+### 方式二：克隆源码本地全栈开发
+
 ```bash
 # 0. 克隆仓库
 git clone https://github.com/dioxuspress/dioxuspress.git

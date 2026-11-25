@@ -67,7 +67,23 @@ cd crates/app && dx serve --web --no-default-features --features accounts
 
 ## Quick Start
 
-### Option A: Zero-Database Docs & Blog (`basic` tier)
+### Option A: Zero-Compile CLI & Prebuilt Docker Image (50 Seconds, Recommended)
+
+```bash
+# 1. Install the lightweight official CLI from crates.io
+cargo install dioxuspress-cli
+
+# 2. Scaffold a site (presets: docs | blog | community | portal) & validate offline
+dioxuspress init my-docs --template docs
+cd my-docs
+dioxuspress check
+
+# 3. Start the prebuilt multi-arch container (no PostgreSQL needed for docs/blog)
+docker compose up -d
+# Open http://localhost:8080
+```
+
+### Option B: Clone Source for Local Engine Development (`basic` tier)
 
 ```bash
 # 1. Clone the repository & install Dioxus CLI
@@ -82,7 +98,7 @@ cd crates/app && npm install && npm run build
 BASE_URL=http://127.0.0.1:8080 dx serve --web --no-default-features
 ```
 
-### Option B: Fullstack Community & Courses (with PostgreSQL)
+### Option C: Fullstack Community & Courses (with PostgreSQL)
 
 ```bash
 # 1. Configure site metadata (assets/site.json) and environment variables

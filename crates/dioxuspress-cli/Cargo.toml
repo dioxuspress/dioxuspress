@@ -2,7 +2,21 @@
 name = "dioxuspress-cli"
 version = "0.2.0"
 edition = "2021"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/dioxuspress/dioxuspress"
+homepage = "https://dioxuspress.dev"
+documentation = "https://dioxuspress.dev/docs/guide/quickstart"
 description = "Lightweight official CLI for DioxusPress: scaffold sites (`init`) and statically verify content & site.json (`check`)."
+keywords = ["dioxus", "docs", "markdown", "cli", "cms"]
+categories = ["command-line-utilities", "development-tools", "web-programming"]
+include = [
+  "src/**",
+  "templates/**",
+  "site.schema.json",
+  "README.md",
+  "Cargo.toml",
+]
 
 [[bin]]
 name = "dioxuspress"
