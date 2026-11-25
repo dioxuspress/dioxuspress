@@ -574,6 +574,13 @@ impl InspectorFocus {
   }
 }
 
+/// 附属配置文件裁剪快照（如 `generation_config.json`、`tokenizer_config.json`、`preprocessor_config.json`、`1_Pooling/config.json`）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuxConfigSnapshot {
+  pub filename: String,
+  pub raw_json_pretty: String,
+}
+
 /// 完整的模型架构可视化数据包（SSR / Server Function / 客户端自定义解析共用）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelBlueprint {
@@ -619,6 +626,9 @@ pub struct ModelBlueprint {
   pub safetensors: Option<SafetensorsSummary>,
   /// 格式化后的原始 `config.json` 片段（供「原始配置」标签页对照审阅）
   pub raw_config_pretty: String,
+  /// 附属配置文件裁剪快照（`generation_config.json` / `tokenizer_config.json` / `preprocessor_config.json` / `1_Pooling/config.json`）
+  #[serde(default)]
+  pub aux_configs: Vec<AuxConfigSnapshot>,
 }
 
 impl ModelBlueprint {
@@ -1042,6 +1052,7 @@ pub fn build_model_blueprint_with_aux(
 
   let (tokenizer_class, tok_vocab) = parse_tokenizer_meta(aux.tokenizer_json);
   let (default_temperature, default_top_p) = parse_generation_meta(aux.generation_json);
+  let aux_configs = collect_aux_config_snapshots(aux);
 
   let hidden_opt =
     u64_any(cfg_obj, &["hidden_size", "n_embd", "d_model", "dim", "hidden_channels"]);
@@ -1591,7 +1602,25 @@ pub fn build_model_blueprint_with_aux(
     params,
     safetensors,
     raw_config_pretty,
+    aux_configs,
   })
+}
+
+fn collect_aux_config_snapshots(aux: AuxConfigFiles<'_>) -> Vec<AuxConfigSnapshot> {
+  let mut out = Vec::new();
+  for (filename, raw_opt) in [
+    ("generation_config.json", aux.generation_json),
+    ("tokenizer_config.json", aux.tokenizer_json),
+    ("preprocessor_config.json", aux.preprocessor_json),
+    ("1_Pooling/config.json", aux.pooling_json),
+  ] {
+    if let Some(raw) = raw_opt {
+      if let Some(compacted) = crate::config_guide::compact_aux_json_for_snapshot(raw) {
+        out.push(AuxConfigSnapshot { filename: filename.to_string(), raw_json_pretty: compacted });
+      }
+    }
+  }
+  out
 }
 
 #[derive(Default)]
@@ -2205,6 +2234,7 @@ fn build_safetensors_fallback_blueprint(
     },
     safetensors: Some(st),
     raw_config_pretty,
+    aux_configs: Vec::new(),
   }
 }
 
@@ -4017,6 +4047,7 @@ pub fn build_diffusion_pipeline_blueprint(
     params,
     safetensors,
     raw_config_pretty,
+    aux_configs: Vec::new(),
   })
 }
 

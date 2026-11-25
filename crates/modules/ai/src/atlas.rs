@@ -374,6 +374,8 @@ pub fn load_curated_models_full() -> Arc<Vec<CuratedModelDetail>> {
           | "config.json"
           | "model_index.json"
           | "scheduler_config.json"
+          | "generation_config.json"
+          | "tokenizer_config.json"
           | "preprocessor_config.json"
           | "pooling_config.json"
           | "README.md"
