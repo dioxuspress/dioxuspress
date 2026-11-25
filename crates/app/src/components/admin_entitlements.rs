@@ -30,13 +30,18 @@ pub fn AdminEntitlementsPage() -> Element {
 
   let mut user_id = use_signal(String::new);
   let mut course_slug = use_signal(String::new);
+  let mut granting = use_signal(|| false);
   let mut msg = use_signal(String::new);
 
   let do_grant = move |_| {
+    if granting() {
+      return;
+    }
     let parsed = user_id().trim().parse::<i32>();
     let slug = course_slug().trim().to_string();
     match parsed {
       Ok(id) if !slug.is_empty() => {
+        granting.set(true);
         spawn(async move {
           match grant_entitlement(id, slug).await {
             Ok(_) => {
@@ -47,6 +52,7 @@ pub fn AdminEntitlementsPage() -> Element {
             }
             Err(e) => msg.set(format!("失败：{e}")),
           }
+          granting.set(false);
         });
       }
       _ => msg.set("请输入有效的用户 ID 与课程 slug".to_string()),
@@ -79,6 +85,7 @@ pub fn AdminEntitlementsPage() -> Element {
                   }
                   Button {
                       class: "whitespace-nowrap",
+                      loading: granting(),
                       onclick: do_grant,
                       "授予"
                   }
@@ -262,13 +269,18 @@ fn MembershipSection() -> Element {
 
   let mut user_id = use_signal(String::new);
   let mut days = use_signal(|| "30".to_string());
+  let mut granting = use_signal(|| false);
   let mut msg = use_signal(String::new);
 
   let do_grant = move |_| {
+    if granting() {
+      return;
+    }
     let uid = user_id().trim().parse::<i32>();
     let d = days().trim().parse::<i64>();
     match (uid, d) {
       (Ok(id), Ok(n)) if n > 0 => {
+        granting.set(true);
         spawn(async move {
           match grant_membership(id, n).await {
             Ok(_) => {
@@ -278,6 +290,7 @@ fn MembershipSection() -> Element {
             }
             Err(e) => msg.set(format!("失败：{e}")),
           }
+          granting.set(false);
         });
       }
       _ => msg.set("请输入有效的用户 ID 与天数".to_string()),
@@ -308,6 +321,7 @@ fn MembershipSection() -> Element {
                   }
                   Button {
                       class: "whitespace-nowrap",
+                      loading: granting(),
                       onclick: do_grant,
                       "开通 / 续期"
                   }

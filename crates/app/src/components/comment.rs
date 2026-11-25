@@ -138,9 +138,9 @@ pub fn CommentBox(props: CommentBoxProps) -> Element {
                       }
                       Button {
                           class: "px-5 font-semibold",
-                          disabled: is_submitting(),
+                          loading: is_submitting(),
                           onclick: handle_submit,
-                          if is_submitting() { "{t(lang(), \"comment.submitting\")}" } else { "{t(lang(), \"comment.submit\")}" }
+                          "{t(lang(), \"comment.submit\")}"
                       }
                   }
               }

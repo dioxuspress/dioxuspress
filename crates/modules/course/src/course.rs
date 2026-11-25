@@ -796,7 +796,7 @@ fn CompleteLessonButton(course_slug: String, chapter_slug: String, lesson_slug: 
       div { class: "mt-12 pt-8 border-t border-slate-200 dark:border-slate-800 flex items-center gap-4",
           Button {
               variant: if completed() { ButtonVariant::Secondary } else { ButtonVariant::Primary },
-              disabled: pending(),
+              loading: pending(),
               class: if completed() { "px-5 cursor-default bg-success/15 text-success hover:bg-success/15" } else { "px-5" },
               onclick: move |_| {
                   if completed() || pending() { return; }
@@ -813,8 +813,6 @@ fn CompleteLessonButton(course_slug: String, chapter_slug: String, lesson_slug: 
               },
               if completed() {
                   "✅ 已完成本节"
-              } else if pending() {
-                  "提交中…"
               } else {
                   "标记完成本节"
               }

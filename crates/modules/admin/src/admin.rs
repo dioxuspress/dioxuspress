@@ -806,7 +806,8 @@ pub fn AdminModerationPage() -> Element {
                           Button {
                               size: ButtonSize::Sm,
                               class: "bg-success text-success-foreground hover:bg-success/90",
-                              disabled: selected_count == 0 || bulk_busy(),
+                              disabled: selected_count == 0,
+                              loading: bulk_busy(),
                               onclick: move |_| {
                                   let ids: Vec<i64> = selected().iter().copied().collect();
                                   spawn(async move {
@@ -983,7 +984,7 @@ fn ModerationQueueRowView(
                       Button {
                           size: ButtonSize::Sm,
                           class: "bg-success text-success-foreground hover:bg-success/90",
-                          disabled: submitting(),
+                          loading: submitting(),
                           onclick: move |_| {
                               let on_done = on_done;
                               spawn(async move {
@@ -1264,8 +1265,8 @@ pub fn AdminModerationSettingsPage() -> Element {
                   div { class: "flex items-center gap-3",
                       Button {
                           r#type: "submit",
-                          disabled: saving(),
-                          if saving() { "保存中…" } else { "保存并热重载" }
+                          loading: saving(),
+                          "保存并热重载"
                       }
                       if saved_ok() {
                           span { class: "text-sm text-green-600 dark:text-green-400 font-medium",

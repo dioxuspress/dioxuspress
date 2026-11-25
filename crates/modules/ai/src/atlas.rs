@@ -1158,7 +1158,7 @@ fn ModelDetailLoaded(slug: String) -> Element {
           Button {
             variant: ButtonVariant::Outline,
             size: ButtonSize::Sm,
-            disabled: refreshing_upstream(),
+            loading: refreshing_upstream(),
             onclick: move |_| {
               let r = repo_for_refresh.clone();
               refreshing_upstream.set(true);
@@ -1171,18 +1171,14 @@ fn ModelDetailLoaded(slug: String) -> Element {
                 refreshing_upstream.set(false);
               });
             },
-            if refreshing_upstream() {
-              {lang.pick("正在拉取上游配置...", "Refreshing...")}
-            } else {
-              {lang.pick("从上游刷新蓝图", "Refresh Blueprint")}
-            }
+            {lang.pick("从上游刷新蓝图", "Refresh Blueprint")}
           }
           if meta.origin != RecordOrigin::Builtin {
             if confirm_delete() {
               Button {
                 variant: ButtonVariant::Destructive,
                 size: ButtonSize::Sm,
-                disabled: deleting(),
+                loading: deleting(),
                 onclick: move |_| {
                   let s = slug_for_delete.clone();
                   deleting.set(true);
@@ -1705,14 +1701,9 @@ pub fn SaveToAtlasModal(
             }
             Button {
               size: ButtonSize::Sm,
-              disabled: fetching(),
+              loading: fetching(),
               onclick: move |_| do_fetch_draft(),
-              if fetching() {
-                Spinner { size: SpinnerSize::Sm, class: "mr-1 border-t-current" }
-                {lang.pick("解析中...", "Fetching...")}
-              } else {
-                {lang.pick("拉取并生成草稿", "Fetch Draft")}
-              }
+              {lang.pick("拉取并生成草稿", "Fetch Draft")}
             }
           }
 
@@ -1724,14 +1715,9 @@ pub fn SaveToAtlasModal(
               Button {
                 variant: ButtonVariant::Outline,
                 size: ButtonSize::Sm,
-                disabled: polishing(),
+                loading: polishing(),
                 onclick: do_ai_polish,
-                if polishing() {
-                  Spinner { size: SpinnerSize::Sm, class: "mr-1 border-t-current" }
-                  {lang.pick("AI 润色中...", "Polishing...")}
-                } else {
-                  {lang.pick("✨ AI 润色双语亮点", "✨ AI Polish")}
-                }
+                {lang.pick("✨ AI 润色双语亮点", "✨ AI Polish")}
               }
             }
           }
@@ -1986,14 +1972,10 @@ pub fn SaveToAtlasModal(
           }
           Button {
             size: ButtonSize::Sm,
-            disabled: saving() || draft_bp().is_none(),
+            disabled: draft_bp().is_none(),
+            loading: saving(),
             onclick: do_save,
-            if saving() {
-              Spinner { size: SpinnerSize::Sm, class: "mr-1.5 border-t-current" }
-              {lang.pick("正在写入数据库...", "Saving...")}
-            } else {
-              {lang.pick("保存并发布到图鉴", "Save & Publish")}
-            }
+            {lang.pick("保存并发布到图鉴", "Save & Publish")}
           }
         }
       }

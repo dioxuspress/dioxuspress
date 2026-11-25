@@ -105,6 +105,7 @@ fn PurchaseForm(item: Item, pricing: Pricing) -> Element {
     .unwrap_or_else(|| pricing.list_price(region))
     .label();
   let mut status = use_signal(|| "idle".to_string()); // idle | loading | qr | paid | error
+  let mut checking = use_signal(|| false);
   let mut message = use_signal(String::new);
   let mut qr = use_signal(String::new);
   let mut out_trade_no = use_signal(String::new);
@@ -152,9 +153,10 @@ fn PurchaseForm(item: Item, pricing: Pricing) -> Element {
 
   let check_status = move |_| {
     let otn = out_trade_no();
-    if otn.is_empty() {
+    if otn.is_empty() || checking() {
       return;
     }
+    checking.set(true);
     spawn(async move {
       match query_order(otn).await {
         Ok(s) if s.paid => {
@@ -167,6 +169,7 @@ fn PurchaseForm(item: Item, pricing: Pricing) -> Element {
         Ok(_) => message.set(t(lang, "pay.not_yet")),
         Err(e) => message.set(t(lang, &clean_err(&e))),
       }
+      checking.set(false);
     });
   };
 
@@ -194,6 +197,7 @@ fn PurchaseForm(item: Item, pricing: Pricing) -> Element {
               }
               Button {
                   class: "mt-4 w-full font-semibold",
+                  loading: checking(),
                   onclick: check_status,
                   "{t(lang, \"pay.i_paid\")}"
               }
@@ -228,9 +232,9 @@ fn PurchaseForm(item: Item, pricing: Pricing) -> Element {
                   }
                   Button {
                       class: "w-full font-semibold",
-                      disabled: status() == "loading",
+                      loading: status() == "loading",
                       onclick: start_pay,
-                      if status() == "loading" { "{t(lang, \"pay.processing\")}" } else { "{t(lang, \"pay.pay_now\")} {price}" }
+                      "{t(lang, \"pay.pay_now\")} {price}"
                   }
               }
               if status() == "error" && !message().is_empty() {

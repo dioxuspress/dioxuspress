@@ -349,14 +349,9 @@ pub fn AiVisualizerPage() -> Element {
             }
 
             Button {
-              disabled: loading(),
+              loading: loading(),
               onclick: move |_| trigger_live_fetch(),
-              if loading() {
-                Spinner { size: SpinnerSize::Sm, class: "mr-1.5 border-t-current" }
-                {lang.pick("拉取解析中...", "Fetching...")}
-              } else {
-                {lang.pick("实时拉取架构", "Inspect Live")}
-              }
+              {lang.pick("实时拉取架构", "Inspect Live")}
             }
           }
 
@@ -388,6 +383,7 @@ pub fn AiVisualizerPage() -> Element {
               div { class: "lg:col-span-2 flex justify-end gap-2",
                 Button {
                   size: ButtonSize::Sm,
+                  loading: loading(),
                   onclick: move |_| parse_custom_json(),
                   {lang.pick("解析粘贴的 JSON", "Render Pasted JSON")}
                 }
