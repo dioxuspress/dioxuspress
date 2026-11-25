@@ -11,18 +11,22 @@ use dioxus_shadcn::{
 use widgets::PageMeta;
 
 use crate::arch::{
-  build_model_blueprint, format_bytes_iec, format_count, load_builtin_preset, recommend_gpu_tier,
-  InspectorFocus, ModelBlueprint, OutputHeadSpec, PrecisionPreset, BUILTIN_PRESETS,
+  format_bytes_iec, format_count, load_builtin_preset, recommend_gpu_tier, InspectorFocus,
+  ModelBlueprint, OutputHeadSpec, PrecisionPreset, BUILTIN_PRESETS,
 };
 #[cfg(feature = "accounts")]
 use crate::atlas::{current_user_is_admin, SaveToAtlasModal};
 #[cfg(feature = "accounts")]
 use crate::atlas_store::{draft_from_blueprint, CuratedModelUpsertInput};
-use crate::diagram::{MacroArchitectureFlow, MicroSubgraphDiagram};
-use crate::safetensors_meta::{
-  parse_safetensors_index_json, summarize_index_and_headers, TensorPatternEntry,
+use crate::config_guide::{
+  extract_annotated_fields_with_docs, get_config_guide_json_cached, get_or_parse_config_guide,
+  group_annotated_fields, AnnotatedConfigField, ConfigFieldDocDto, ConfigFileKind, FieldGroup,
 };
-use crate::server::{fetch_model_blueprint, normalize_repo_request, ModelHubSource};
+use crate::diagram::{MacroArchitectureFlow, MicroSubgraphDiagram};
+use crate::safetensors_meta::TensorPatternEntry;
+use crate::server::{
+  fetch_model_blueprint, normalize_repo_request, parse_custom_model_config, ModelHubSource,
+};
 
 fn current_lang() -> Language {
   try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default()
@@ -185,32 +189,19 @@ pub fn AiVisualizerPage() -> Element {
       return;
     }
     let idx_str = raw_idx_input();
-    let st_opt = if idx_str.trim().is_empty() {
-      None
-    } else {
-      match parse_safetensors_index_json(&idx_str) {
-        Ok((tot, wm)) => Some(summarize_index_and_headers(tot, &wm, &[])),
-        Err(e) => {
-          error_msg.set(Some(e));
-          return;
+    loading.set(true);
+    error_msg.set(None);
+    spawn(async move {
+      match parse_custom_model_config(cfg_str, idx_str).await {
+        Ok(bp) => {
+          error_msg.set(None);
+          blueprint.set(Some(bp));
+          show_json_drawer.set(false);
         }
+        Err(e) => error_msg.set(Some(clean_server_err(&e.to_string()))),
       }
-    };
-    match build_model_blueprint(
-      "custom/pasted-config",
-      "Custom Local JSON",
-      &cfg_str,
-      None,
-      None,
-      st_opt,
-    ) {
-      Ok(bp) => {
-        error_msg.set(None);
-        blueprint.set(Some(bp));
-        show_json_drawer.set(false);
-      }
-      Err(e) => error_msg.set(Some(e)),
-    }
+      loading.set(false);
+    });
   };
 
   rsx! {
@@ -1166,37 +1157,393 @@ pub fn ModelVisualizerWorkbench(
               }
 
               DetailTab::HyperparamsAndJson => {
+                let lang_here = current_lang();
                 rsx! {
-                  div { class: "space-y-3",
-                    div { class: "grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs font-mono",
-                      HyperKv { k: "model_type", v: blueprint.model_type.clone() }
-                      HyperKv { k: "hidden_act", v: blueprint.hidden_act.clone() }
-                      HyperKv { k: "tie_word_embeddings", v: blueprint.tie_word_embeddings.to_string() }
-                      HyperKv {
-                        k: "rms_norm_eps",
-                        v: blueprint.rms_norm_eps.map(|e| format!("{e:.0e}")).unwrap_or_else(|| "-".to_string()),
-                      }
-                      HyperKv {
-                        k: "tokenizer_class",
-                        v: blueprint.tokenizer_class.clone().unwrap_or_else(|| "-".to_string()),
-                      }
-                      HyperKv {
-                        k: "sampling (T / top_p)",
-                        v: match (blueprint.default_temperature, blueprint.default_top_p) {
-                          (Some(t), Some(p)) => format!("T={t}, p={p}"),
-                          _ => "-".to_string(),
-                        },
+                  ConfigAnatomyPanel {
+                    blueprint: blueprint.clone(),
+                    focus,
+                    lang: lang_here,
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigViewMode {
+  Annotated,
+  RawJson,
+}
+
+fn focus_short_label(f: InspectorFocus) -> &'static str {
+  match f {
+    InspectorFocus::Vision => "Vision",
+    InspectorFocus::Audio => "Audio",
+    InspectorFocus::Embedding => "Embed",
+    InspectorFocus::Attention => "Attention",
+    InspectorFocus::FfnOrMoe => "FFN / MoE",
+    InspectorFocus::NormAndResidual => "Norm",
+    InspectorFocus::LmHead => "Output Head",
+    InspectorFocus::MtpHead => "MTP",
+  }
+}
+
+/// 「完整超参 & config.json」逐字段交互解剖与拓扑图联动面板（按需加载服务端词典，避免客户端 WASM 膨胀）。
+#[component]
+fn ConfigAnatomyPanel(
+  blueprint: ModelBlueprint,
+  focus: Signal<InspectorFocus>,
+  lang: Language,
+) -> Element {
+  rsx! {
+    SuspenseBoundary {
+      fallback: |_| rsx! {
+        div { class: "flex items-center justify-center py-8",
+          Spinner { size: SpinnerSize::Md, class: "border-t-primary" }
+        }
+      },
+      ConfigAnatomyLoaded { blueprint, focus, lang }
+    }
+  }
+}
+
+#[component]
+fn ConfigAnatomyLoaded(
+  blueprint: ModelBlueprint,
+  focus: Signal<InspectorFocus>,
+  lang: Language,
+) -> Element {
+  let docs_res = use_server_future(get_config_guide_json_cached)?;
+  let view_mode = use_signal(|| ConfigViewMode::Annotated);
+  let group_filter: Signal<Option<FieldGroup>> = use_signal(|| None);
+  let copied_json = use_signal(|| false);
+  let docs: &[ConfigFieldDocDto] = match docs_res() {
+    Some(Ok(raw)) => &get_or_parse_config_guide(&raw).field_docs,
+    _ => &[],
+  };
+
+  render_config_anatomy_body(&blueprint, focus, lang, docs, view_mode, group_filter, copied_json)
+}
+
+fn render_config_anatomy_body(
+  blueprint: &ModelBlueprint,
+  focus: Signal<InspectorFocus>,
+  lang: Language,
+  docs: &[ConfigFieldDocDto],
+  mut view_mode: Signal<ConfigViewMode>,
+  mut group_filter: Signal<Option<FieldGroup>>,
+  mut copied_json: Signal<bool>,
+) -> Element {
+  let annotated_fields = extract_annotated_fields_with_docs(
+    &blueprint.raw_config_pretty,
+    ConfigFileKind::ModelConfig,
+    docs,
+  );
+  let grouped_fields = group_annotated_fields(&annotated_fields);
+  let known_count = annotated_fields.iter().filter(|f| f.doc.is_some()).count();
+  let total_count = annotated_fields.len();
+
+  let aux_annotated: Vec<(String, Vec<AnnotatedConfigField>)> = blueprint
+    .aux_configs
+    .iter()
+    .map(|snap| {
+      let fk = ConfigFileKind::from_filename(&snap.filename);
+      (snap.filename.clone(), extract_annotated_fields_with_docs(&snap.raw_json_pretty, fk, docs))
+    })
+    .filter(|(_, items)| !items.is_empty())
+    .collect();
+
+  let raw_for_copy = blueprint.raw_config_pretty.clone();
+  let sel_group = group_filter();
+
+  rsx! {
+    div { class: "space-y-4",
+      // 顶部子视图切换 + 一键复制 JSON + 全景指南入口
+      div { class: "flex flex-wrap items-center justify-between gap-2",
+        div { class: "inline-flex rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-0.5",
+          button {
+            r#type: "button",
+            class: if view_mode() == ConfigViewMode::Annotated {
+              "px-2.5 py-1 rounded-md text-xs font-semibold bg-indigo-600 text-white cursor-pointer"
+            } else {
+              "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+            },
+            onclick: move |_| view_mode.set(ConfigViewMode::Annotated),
+            {lang.pick("逐字段架构解剖", "Annotated Fields")}
+            span { class: "ml-1 opacity-80 font-mono text-[10px]", "({known_count}/{total_count})" }
+          }
+          button {
+            r#type: "button",
+            class: if view_mode() == ConfigViewMode::RawJson {
+              "px-2.5 py-1 rounded-md text-xs font-semibold bg-indigo-600 text-white cursor-pointer"
+            } else {
+              "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+            },
+            onclick: move |_| view_mode.set(ConfigViewMode::RawJson),
+            {lang.pick("原始 JSON 原文", "Raw JSON")}
+          }
+        }
+
+        div { class: "flex flex-wrap items-center gap-2 text-xs",
+          button {
+            r#type: "button",
+            class: "px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:border-indigo-400 font-medium cursor-pointer transition-colors",
+            onclick: move |_| {
+              let text = raw_for_copy.clone();
+              spawn(async move {
+                if widgets::browser::copy_text(&text).await {
+                  copied_json.set(true);
+                }
+              });
+            },
+            if copied_json() {
+              {lang.pick("✓ 已复制 JSON", "✓ Copied JSON")}
+            } else {
+              {lang.pick("复制原始 JSON", "Copy Raw JSON")}
+            }
+          }
+          Link {
+            to: "/models/configs",
+            class: "inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-indigo-200 dark:border-indigo-900/70 bg-indigo-50/70 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300 font-semibold hover:border-indigo-400 transition-colors",
+            {lang.pick("📘 配置文件全景指南 ↗", "📘 Full Config Guide ↗")}
+          }
+        }
+      }
+
+      // 6 格核心速览条
+      div { class: "grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs font-mono",
+        HyperKv { k: "model_type", v: blueprint.model_type.clone() }
+        HyperKv { k: "hidden_act", v: blueprint.hidden_act.clone() }
+        HyperKv { k: "tie_word_embeddings", v: blueprint.tie_word_embeddings.to_string() }
+        HyperKv {
+          k: "rms_norm_eps",
+          v: blueprint.rms_norm_eps.map(|e| format!("{e:.0e}")).unwrap_or_else(|| "-".to_string()),
+        }
+        HyperKv {
+          k: "tokenizer_class",
+          v: blueprint.tokenizer_class.clone().unwrap_or_else(|| "-".to_string()),
+        }
+        HyperKv {
+          k: "sampling (T / top_p)",
+          v: match (blueprint.default_temperature, blueprint.default_top_p) {
+            (Some(t), Some(p)) => format!("T={t}, p={p}"),
+            _ => "-".to_string(),
+          },
+        }
+      }
+
+      match view_mode() {
+        ConfigViewMode::Annotated => rsx! {
+          div { class: "space-y-4",
+            // 语义分组筛选条
+            if grouped_fields.len() > 1 {
+              div { class: "flex flex-wrap items-center gap-1.5",
+                button {
+                  r#type: "button",
+                  class: if sel_group.is_none() {
+                    "px-2 py-1 rounded-md text-[11px] font-semibold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
+                  } else {
+                    "px-2 py-1 rounded-md text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                  },
+                  onclick: move |_| group_filter.set(None),
+                  {lang.pick("全部分组", "All Groups")}
+                  span { class: "ml-1 opacity-75 font-mono", "({total_count})" }
+                }
+                for (grp, items) in grouped_fields.iter() {
+                  {
+                    let g = *grp;
+                    let cnt = items.len();
+                    let active = sel_group == Some(g);
+                    let cls = if active {
+                      "px-2 py-1 rounded-md text-[11px] font-semibold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
+                    } else {
+                      "px-2 py-1 rounded-md text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                    };
+                    rsx! {
+                      button {
+                        key: "cfg-grp-{g.id()}",
+                        r#type: "button",
+                        class: cls,
+                        onclick: move |_| group_filter.set(Some(g)),
+                        "{g.label(lang)}"
+                        span { class: "ml-1 opacity-75 font-mono", "({cnt})" }
                       }
                     }
+                  }
+                }
+              }
+            }
 
-                    pre { class: "max-h-72 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-3.5 text-xs font-mono leading-relaxed border border-slate-800",
-                      "{blueprint.raw_config_pretty}"
+            // 按语义分组渲染主配置字段
+            div { class: "space-y-3 max-h-[34rem] overflow-auto pr-1",
+              for (grp, items) in grouped_fields.iter() {
+                if sel_group.is_none_or(|g| g == *grp) {
+                  div {
+                    key: "section-{grp.id()}",
+                    class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40 overflow-hidden",
+                    div { class: "px-3 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-900/70 flex items-center justify-between text-xs",
+                      span { class: "font-bold text-slate-800 dark:text-slate-200",
+                        "{grp.label(lang)}"
+                      }
+                      span { class: "font-mono text-[11px] text-slate-500 dark:text-slate-400",
+                        "{items.len()} fields"
+                      }
+                    }
+                    div { class: "divide-y divide-slate-200/70 dark:divide-slate-800/70",
+                      for field in items.iter() {
+                        {render_annotated_field_row(
+                          format!(
+                            "{}-{}",
+                            field.source_slot.as_deref().unwrap_or(""),
+                            field.path
+                          ),
+                          field,
+                          focus,
+                          lang,
+                        )}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            // 附属配置文件摘要解剖（generation_config.json / tokenizer_config.json / preprocessor_config.json / 1_Pooling/config.json）
+            if !aux_annotated.is_empty() {
+              div { class: "pt-3 border-t border-slate-200 dark:border-slate-800 space-y-3",
+                div { class: "text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-between",
+                  span {
+                    {lang.pick(
+                      "附属配置文件解析（generation / tokenizer / preprocessor / pooling）",
+                      "Auxiliary Config Files (generation / tokenizer / preprocessor / pooling)",
+                    )}
+                  }
+                  span { class: "font-mono text-[11px] text-slate-400", "{aux_annotated.len()} files" }
+                }
+                for (fname, items) in aux_annotated.iter() {
+                  div {
+                    key: "aux-{fname}",
+                    class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-950/40 overflow-hidden",
+                    div { class: "px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-900/70 flex items-center justify-between text-xs font-mono",
+                      span { class: "font-bold text-indigo-700 dark:text-indigo-300", "{fname}" }
+                      span { class: "text-[11px] text-slate-500 dark:text-slate-400", "{items.len()} fields" }
+                    }
+                    div { class: "divide-y divide-slate-200/70 dark:divide-slate-800/70 max-h-56 overflow-auto",
+                      for field in items.iter() {
+                        {render_annotated_field_row(
+                          format!("aux-{fname}-{}", field.path),
+                          field,
+                          focus,
+                          lang,
+                        )}
+                      }
                     }
                   }
                 }
               }
             }
           }
+        },
+        ConfigViewMode::RawJson => rsx! {
+          div { class: "space-y-3",
+            pre { class: "max-h-96 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-3.5 text-xs font-mono leading-relaxed border border-slate-800",
+              "{blueprint.raw_config_pretty}"
+            }
+            for snap in blueprint.aux_configs.iter() {
+              div {
+                key: "raw-aux-{snap.filename}",
+                class: "rounded-xl border border-slate-800 bg-slate-950 overflow-hidden",
+                div { class: "px-3 py-1.5 border-b border-slate-800 text-[11px] font-mono text-indigo-300",
+                  "{snap.filename}"
+                }
+                pre { class: "max-h-52 overflow-auto p-3 text-xs font-mono text-slate-200 leading-relaxed",
+                  "{snap.raw_json_pretty}"
+                }
+              }
+            }
+          }
+        },
+      }
+    }
+  }
+}
+
+fn render_annotated_field_row(
+  row_key: String,
+  field: &AnnotatedConfigField,
+  mut focus: Signal<InspectorFocus>,
+  lang: Language,
+) -> Element {
+  let active_focus = field.focus.is_some_and(|target| focus() == target);
+
+  rsx! {
+    div {
+      key: "{row_key}",
+      class: "px-3 py-2.5 text-xs space-y-1.5 hover:bg-white/70 dark:hover:bg-slate-900/50 transition-colors",
+      div { class: "flex flex-wrap items-center justify-between gap-2",
+        div { class: "flex flex-wrap items-center gap-1.5 min-w-0",
+          if let Some(ref slot) = field.source_slot {
+            span { class: "px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[10px] font-mono text-slate-600 dark:text-slate-300 shrink-0",
+              "{slot}"
+            }
+          }
+          code { class: "font-mono font-bold text-indigo-700 dark:text-indigo-300 break-all",
+            "{field.path}"
+          }
+          span { class: "text-slate-400", "=" }
+          code { class: "px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-slate-800 font-mono font-semibold text-slate-900 dark:text-slate-100 break-all",
+            "{field.display_value}"
+          }
+        }
+
+        if let Some(target_focus) = field.focus {
+          button {
+            r#type: "button",
+            class: if active_focus {
+              "shrink-0 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-indigo-600 text-white cursor-pointer"
+            } else {
+              "shrink-0 px-2 py-0.5 rounded-md text-[11px] font-semibold border border-indigo-200 dark:border-indigo-900/70 bg-indigo-50/70 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300 hover:border-indigo-400 cursor-pointer transition-colors"
+            },
+            onclick: move |_| focus.set(target_focus),
+            if active_focus {
+              {lang.pick("已聚焦 · ", "Focused · ")}
+              "{focus_short_label(target_focus)}"
+            } else {
+              {lang.pick("定位到架构图 ↗ ", "Locate in Graph ↗ ")}
+              "{focus_short_label(target_focus)}"
+            }
+          }
+        }
+      }
+
+      if let Some(ref doc) = field.doc {
+        p { class: "text-slate-600 dark:text-slate-400 leading-relaxed",
+          "{doc.summary(lang)}"
+        }
+        if doc.formula_impact.is_some() || doc.lab_link.is_some() {
+          div { class: "flex flex-wrap items-center justify-between gap-2 pt-0.5",
+            if let Some(ref formula) = doc.formula_impact {
+              span { class: "font-mono text-[11px] text-indigo-700 dark:text-indigo-300",
+                "ƒ {formula}"
+              }
+            }
+            if let Some((ref href, ref label)) = doc.lab_link {
+              Link {
+                to: href.clone(),
+                class: "text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline",
+                "{label} ↗"
+              }
+            }
+          }
+        }
+      } else {
+        div { class: "text-[11px] text-slate-400",
+          {lang.pick("模型扩展字段（原文保留，未在通用词典中固定建模）", "Model-specific extension field (preserved verbatim)")}
         }
       }
     }
@@ -1488,5 +1835,91 @@ mod tests {
     assert!(html.contains("Latent Unpatchify"));
     assert!(html.contains("AutoencoderKLWan"));
     assert!(html.contains("VAE Decoder"));
+  }
+
+  #[cfg(feature = "server")]
+  #[test]
+  fn ssr_renders_annotated_config_anatomy_and_aux_files() {
+    use crate::arch::{build_model_blueprint_with_aux, AuxConfigFiles};
+    use crate::config_guide::{
+      build_config_field_docs, build_config_guide_payload, render_config_guide_content,
+    };
+
+    #[derive(Routable, Clone, PartialEq)]
+    enum TestRoute {
+      #[route("/")]
+      Home {},
+    }
+
+    #[component]
+    fn Home() -> Element {
+      let bp = build_model_blueprint_with_aux(
+        "deepseek-ai/DeepSeek-V3",
+        "Test",
+        &load_builtin_preset("deepseek-v3").expect("deepseek-v3").raw_config_pretty,
+        AuxConfigFiles {
+          generation_json: Some(
+            r#"{"do_sample":true,"temperature":0.6,"top_p":0.95,"eos_token_id":[1,2]}"#,
+          ),
+          tokenizer_json: Some(r#"{"tokenizer_class":"LlamaTokenizerFast","add_bos_token":true}"#),
+          preprocessor_json: None,
+          pooling_json: None,
+        },
+        None,
+      )
+      .expect("blueprint with aux");
+      let focus = use_signal(|| InspectorFocus::Attention);
+      let view_mode = use_signal(|| ConfigViewMode::Annotated);
+      let group_filter: Signal<Option<FieldGroup>> = use_signal(|| None);
+      let copied_json = use_signal(|| false);
+      let active_modality = use_signal(|| "llm".to_string());
+      let active_file_spec = use_signal(|| ConfigFileKind::ModelConfig);
+      let filter_file: Signal<Option<ConfigFileKind>> = use_signal(|| None);
+      let filter_group: Signal<Option<FieldGroup>> = use_signal(|| None);
+      let search_q = use_signal(String::new);
+      let docs = build_config_field_docs();
+      let payload = build_config_guide_payload();
+
+      rsx! {
+        div {
+          {render_config_anatomy_body(
+            &bp,
+            focus,
+            Language::Zh,
+            &docs,
+            view_mode,
+            group_filter,
+            copied_json,
+          )}
+          {render_config_guide_content(
+            &payload,
+            "test desc",
+            active_modality,
+            active_file_spec,
+            filter_file,
+            filter_group,
+            search_q,
+          )}
+        }
+      }
+    }
+
+    #[component]
+    fn RouterHost() -> Element {
+      rsx! { Router::<TestRoute> {} }
+    }
+
+    let mut vdom = VirtualDom::new(RouterHost);
+    vdom.rebuild_in_place();
+    let html = dioxus_ssr::render(&vdom);
+    assert!(html.contains("逐字段架构解剖"));
+    assert!(html.contains("/models/configs"));
+    assert!(html.contains("kv_lora_rank"));
+    assert!(html.contains("n_routed_experts"));
+    assert!(html.contains("定位到架构图"));
+    assert!(html.contains("generation_config.json"));
+    assert!(html.contains("tokenizer_config.json"));
+    assert!(html.contains("大模型配置文件全景解剖指南"));
+    assert!(html.contains("adapter_config.json"));
   }
 }

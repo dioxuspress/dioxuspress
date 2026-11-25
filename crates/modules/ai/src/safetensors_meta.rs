@@ -7,9 +7,11 @@
 //!   解析器在统计完精确总数后，会将同构重复的 `layers.<L>` 与 `experts.<E>` 折叠为带 `repeat_count`
 //!   的模式条目，使跨端传输体积保持在数 KB，同时完整保留真实 Shape、Dtype 与分片定位。
 
+#[cfg(feature = "server")]
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "server")]
 use serde_json::Value;
 
 /// 单分片 Safetensors JSON Header 允许的最大字节数（8 MiB，防止畸形文件触发大内存分配）。
@@ -78,557 +80,576 @@ pub struct SafetensorsSummary {
   pub patterns: Vec<TensorPatternEntry>,
 }
 
-/// 原始单个张量的头信息（内部解析态）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawTensorMeta {
-  pub name: String,
-  pub shape: Option<Vec<u64>>,
-  pub dtype: Option<String>,
-  pub byte_len: Option<u64>,
-  pub shard: Option<String>,
-}
+#[cfg(feature = "server")]
+mod parser {
+  use super::*;
 
-#[derive(Debug, Deserialize)]
-struct RawSafetensorsIndex {
-  #[serde(default)]
-  metadata: HashMap<String, Value>,
-  weight_map: HashMap<String, String>,
-}
-
-/// 解析 `.safetensors` 文件前 8 个字节（小端 `u64`）得到 JSON Header 字节长度。
-pub fn parse_safetensors_header_len(first_8_bytes: &[u8]) -> Result<usize, String> {
-  if first_8_bytes.len() < 8 {
-    return Err(format!("Safetensors 文件头不足 8 字节（实际 {} 字节）", first_8_bytes.len()));
+  /// 原始单个张量的头信息（内部解析态）。
+  #[derive(Debug, Clone, PartialEq, Eq)]
+  pub struct RawTensorMeta {
+    pub name: String,
+    pub shape: Option<Vec<u64>>,
+    pub dtype: Option<String>,
+    pub byte_len: Option<u64>,
+    pub shard: Option<String>,
   }
-  let mut buf = [0u8; 8];
-  buf.copy_from_slice(&first_8_bytes[..8]);
-  let raw_len = u64::from_le_bytes(buf);
-  if raw_len == 0 {
-    return Err("Safetensors JSON Header 长度为 0".to_string());
-  }
-  let len = usize::try_from(raw_len).map_err(|_| "Safetensors Header 长度溢出".to_string())?;
-  if len > MAX_SAFETENSORS_HEADER_BYTES {
-    return Err(format!(
-      "Safetensors Header 长度 ({len} B) 超过安全上限 ({MAX_SAFETENSORS_HEADER_BYTES} B)"
-    ));
-  }
-  Ok(len)
-}
 
-/// 解析完整的（或包含前 8 字节 + JSON Header 的）Safetensors 头部切片。
-pub fn parse_safetensors_header_bytes(
-  bytes: &[u8],
-  shard_name: Option<&str>,
-) -> Result<Vec<RawTensorMeta>, String> {
-  let header_len = parse_safetensors_header_len(bytes)?;
-  let end = 8usize.saturating_add(header_len);
-  if bytes.len() < end {
-    return Err(format!(
-      "Safetensors Header 数据不完整：需要 {end} 字节，实际 {} 字节",
-      bytes.len()
-    ));
+  #[derive(Debug, Deserialize)]
+  struct RawSafetensorsIndex {
+    #[serde(default)]
+    metadata: HashMap<String, Value>,
+    weight_map: HashMap<String, String>,
   }
-  parse_safetensors_header_json(&bytes[8..end], shard_name)
-}
 
-/// 解析 Safetensors 的 JSON Header 主体（不含前 8 字节长度前缀）。
-pub fn parse_safetensors_header_json(
-  json_bytes: &[u8],
-  shard_name: Option<&str>,
-) -> Result<Vec<RawTensorMeta>, String> {
-  let obj: BTreeMap<String, Value> = serde_json::from_slice(json_bytes)
-    .map_err(|e| format!("解析 Safetensors Header JSON 失败: {e}"))?;
-
-  let mut out = Vec::with_capacity(obj.len());
-  for (name, val) in obj {
-    if name == "__metadata__" {
-      continue;
+  /// 解析 `.safetensors` 文件前 8 个字节（小端 `u64`）得到 JSON Header 字节长度。
+  pub fn parse_safetensors_header_len(first_8_bytes: &[u8]) -> Result<usize, String> {
+    if first_8_bytes.len() < 8 {
+      return Err(format!("Safetensors 文件头不足 8 字节（实际 {} 字节）", first_8_bytes.len()));
     }
-    let Some(map) = val.as_object() else {
-      continue;
-    };
-    let dtype = map.get("dtype").and_then(Value::as_str).map(str::to_string);
-    let shape = map
-      .get("shape")
-      .and_then(Value::as_array)
-      .map(|arr| arr.iter().filter_map(Value::as_u64).collect::<Vec<u64>>());
-    let byte_len = map.get("data_offsets").and_then(Value::as_array).and_then(|offs| {
-      if offs.len() == 2 {
-        let start = offs[0].as_u64()?;
-        let finish = offs[1].as_u64()?;
-        finish.checked_sub(start)
-      } else {
-        None
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&first_8_bytes[..8]);
+    let raw_len = u64::from_le_bytes(buf);
+    if raw_len == 0 {
+      return Err("Safetensors JSON Header 长度为 0".to_string());
+    }
+    let len = usize::try_from(raw_len).map_err(|_| "Safetensors Header 长度溢出".to_string())?;
+    if len > MAX_SAFETENSORS_HEADER_BYTES {
+      return Err(format!(
+        "Safetensors Header 长度 ({len} B) 超过安全上限 ({MAX_SAFETENSORS_HEADER_BYTES} B)"
+      ));
+    }
+    Ok(len)
+  }
+
+  /// 解析完整的（或包含前 8 字节 + JSON Header 的）Safetensors 头部切片。
+  pub fn parse_safetensors_header_bytes(
+    bytes: &[u8],
+    shard_name: Option<&str>,
+  ) -> Result<Vec<RawTensorMeta>, String> {
+    let header_len = parse_safetensors_header_len(bytes)?;
+    let end = 8usize.saturating_add(header_len);
+    if bytes.len() < end {
+      return Err(format!(
+        "Safetensors Header 数据不完整：需要 {end} 字节，实际 {} 字节",
+        bytes.len()
+      ));
+    }
+    parse_safetensors_header_json(&bytes[8..end], shard_name)
+  }
+
+  /// 解析 Safetensors 的 JSON Header 主体（不含前 8 字节长度前缀）。
+  pub fn parse_safetensors_header_json(
+    json_bytes: &[u8],
+    shard_name: Option<&str>,
+  ) -> Result<Vec<RawTensorMeta>, String> {
+    let obj: BTreeMap<String, Value> = serde_json::from_slice(json_bytes)
+      .map_err(|e| format!("解析 Safetensors Header JSON 失败: {e}"))?;
+
+    let mut out = Vec::with_capacity(obj.len());
+    for (name, val) in obj {
+      if name == "__metadata__" {
+        continue;
       }
-    });
-    out.push(RawTensorMeta { name, shape, dtype, byte_len, shard: shard_name.map(str::to_string) });
-  }
-  Ok(out)
-}
-
-/// 解析 `model.safetensors.index.json`，返回 `(total_size, weight_map)`。
-pub fn parse_safetensors_index_json(
-  raw_json: &str,
-) -> Result<(Option<u64>, HashMap<String, String>), String> {
-  let parsed: RawSafetensorsIndex = serde_json::from_str(raw_json)
-    .map_err(|e| format!("解析 model.safetensors.index.json 失败: {e}"))?;
-  let total_size = parsed
-    .metadata
-    .get("total_size")
-    .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
-  Ok((total_size, parsed.weight_map))
-}
-
-/// 从 `weight_map` 中挑选最多 3 个最具代表性的分片文件名用于 HTTP Range 采样：
-/// 1. 含 `embed_tokens` 或 `layers.0.` 的首分片（覆盖词表嵌入、第 0 层 Attention 与 Dense FFN）；
-/// 2. 含首个 MoE 专家（`.experts.0.` 或 `.experts.`）的分片（覆盖路由专家真实精度与维度）；
-/// 3. 含 `lm_head` 或末尾 `norm` / MTP 层的尾分片。
-pub fn select_representative_shards(weight_map: &HashMap<String, String>) -> Vec<String> {
-  fn push_unique(picked: &mut Vec<String>, shard: &str) {
-    if is_safe_shard_filename(shard) && !picked.iter().any(|s| s == shard) {
-      picked.push(shard.to_string());
+      let Some(map) = val.as_object() else {
+        continue;
+      };
+      let dtype = map.get("dtype").and_then(Value::as_str).map(str::to_string);
+      let shape = map
+        .get("shape")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(Value::as_u64).collect::<Vec<u64>>());
+      let byte_len = map.get("data_offsets").and_then(Value::as_array).and_then(|offs| {
+        if offs.len() == 2 {
+          let start = offs[0].as_u64()?;
+          let finish = offs[1].as_u64()?;
+          finish.checked_sub(start)
+        } else {
+          None
+        }
+      });
+      out.push(RawTensorMeta {
+        name,
+        shape,
+        dtype,
+        byte_len,
+        shard: shard_name.map(str::to_string),
+      });
     }
+    Ok(out)
   }
 
-  let mut picked: Vec<String> = Vec::new();
+  /// 解析 `model.safetensors.index.json`，返回 `(total_size, weight_map)`。
+  pub fn parse_safetensors_index_json(
+    raw_json: &str,
+  ) -> Result<(Option<u64>, HashMap<String, String>), String> {
+    let parsed: RawSafetensorsIndex = serde_json::from_str(raw_json)
+      .map_err(|e| format!("解析 model.safetensors.index.json 失败: {e}"))?;
+    let total_size = parsed
+      .metadata
+      .get("total_size")
+      .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
+    Ok((total_size, parsed.weight_map))
+  }
 
-  // 稳定排序键，确保测试与线上挑选结果确定。
-  let mut entries: Vec<(&str, &str)> =
-    weight_map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-  entries.sort_by_key(|(k, _)| *k);
+  /// 从 `weight_map` 中挑选最多 3 个最具代表性的分片文件名用于 HTTP Range 采样：
+  /// 1. 含 `embed_tokens` 或 `layers.0.` 的首分片（覆盖词表嵌入、第 0 层 Attention 与 Dense FFN）；
+  /// 2. 含首个 MoE 专家（`.experts.0.` 或 `.experts.`）的分片（覆盖路由专家真实精度与维度）；
+  /// 3. 含 `lm_head` 或末尾 `norm` / MTP 层的尾分片。
+  pub fn select_representative_shards(weight_map: &HashMap<String, String>) -> Vec<String> {
+    fn push_unique(picked: &mut Vec<String>, shard: &str) {
+      if is_safe_shard_filename(shard) && !picked.iter().any(|s| s == shard) {
+        picked.push(shard.to_string());
+      }
+    }
 
-  if let Some((_, s)) = entries.iter().find(|(k, _)| {
-    k.contains("embed_tokens")
-      || k.contains("layers.0.self_attn")
-      || k.contains("transformer_blocks.0.")
-      || k.contains("blocks.0.")
-      || k.contains("down_blocks.0.")
-  }) {
-    push_unique(&mut picked, s);
-  }
-  if let Some((_, s)) = entries.iter().find(|(k, _)| {
-    k.contains(".experts.0.")
-      || k.contains(".experts.")
-      || k.contains("single_transformer_blocks.0.")
-      || k.contains("mid_block.")
-  }) {
-    push_unique(&mut picked, s);
-  }
-  if let Some((_, s)) = entries
-    .iter()
-    .rfind(|(k, _)| k.contains("lm_head") || k.contains("proj_out") || k.contains("norm"))
-  {
-    push_unique(&mut picked, s);
-  }
-  if picked.is_empty() {
-    if let Some((_, s)) = entries.first() {
+    let mut picked: Vec<String> = Vec::new();
+
+    // 稳定排序键，确保测试与线上挑选结果确定。
+    let mut entries: Vec<(&str, &str)> =
+      weight_map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    entries.sort_by_key(|(k, _)| *k);
+
+    if let Some((_, s)) = entries.iter().find(|(k, _)| {
+      k.contains("embed_tokens")
+        || k.contains("layers.0.self_attn")
+        || k.contains("transformer_blocks.0.")
+        || k.contains("blocks.0.")
+        || k.contains("down_blocks.0.")
+    }) {
       push_unique(&mut picked, s);
     }
-  }
-  picked.truncate(3);
-  picked
-}
-
-/// 校验分片文件名仅由安全字符组成（禁止路径穿越 `..` 或 `/`）。
-pub fn is_safe_shard_filename(name: &str) -> bool {
-  !name.is_empty()
-    && name.len() <= 160
-    && !name.contains("..")
-    && !name.contains('/')
-    && !name.contains('\\')
-    && name.ends_with(".safetensors")
-    && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-}
-
-/// 由单文件 Safetensors Header 列表直接构建 [`SafetensorsSummary`]。
-pub fn summarize_single_header(tensors: Vec<RawTensorMeta>) -> SafetensorsSummary {
-  let total_bytes: Option<u64> =
-    tensors.iter().try_fold(0u64, |acc, t| t.byte_len.and_then(|b| acc.checked_add(b)));
-  build_summary("model.safetensors header".to_string(), total_bytes, 1, tensors)
-}
-
-/// 合并 `model.safetensors.index.json` 的全量 `weight_map` 与若干采样分片 Header，构建 [`SafetensorsSummary`]。
-pub fn summarize_index_and_headers(
-  total_bytes_from_index: Option<u64>,
-  weight_map: &HashMap<String, String>,
-  sampled_headers: &[RawTensorMeta],
-) -> SafetensorsSummary {
-  let shards: BTreeSet<&str> = weight_map.values().map(String::as_str).collect();
-  let shard_count = shards.len().max(1);
-
-  let mut by_name: HashMap<&str, &RawTensorMeta> = HashMap::with_capacity(sampled_headers.len());
-  for item in sampled_headers {
-    by_name.insert(item.name.as_str(), item);
-  }
-
-  // 同时按「去掉具体层号与专家号后的骨架键」建立后备表：
-  // 即使我们只采样了第 3 层的 MoE 分片，第 4..60 层的同构权重也能继承完全一致的 Shape 与 Dtype！
-  let mut by_skeleton: HashMap<String, &RawTensorMeta> = HashMap::new();
-  for item in sampled_headers {
-    let skel = canonical_skeleton(&item.name).skeleton;
-    by_skeleton.entry(skel).or_insert(item);
-  }
-
-  let mut merged: Vec<RawTensorMeta> = Vec::with_capacity(weight_map.len());
-  let mut keys: Vec<(&String, &String)> = weight_map.iter().collect();
-  keys.sort_by_key(|(k, _)| k.as_str());
-
-  for (name, shard) in keys {
-    if let Some(exact) = by_name.get(name.as_str()) {
-      merged.push(RawTensorMeta {
-        name: name.clone(),
-        shape: exact.shape.clone(),
-        dtype: exact.dtype.clone(),
-        byte_len: exact.byte_len,
-        shard: Some(shard.clone()),
-      });
-    } else {
-      let skel = canonical_skeleton(name).skeleton;
-      let inferred = by_skeleton.get(&skel).copied();
-      merged.push(RawTensorMeta {
-        name: name.clone(),
-        shape: inferred.and_then(|m| m.shape.clone()),
-        dtype: inferred.and_then(|m| m.dtype.clone()),
-        byte_len: inferred.and_then(|m| m.byte_len),
-        shard: Some(shard.clone()),
-      });
+    if let Some((_, s)) = entries.iter().find(|(k, _)| {
+      k.contains(".experts.0.")
+        || k.contains(".experts.")
+        || k.contains("single_transformer_blocks.0.")
+        || k.contains("mid_block.")
+    }) {
+      push_unique(&mut picked, s);
     }
-  }
-
-  let source_kind = if sampled_headers.is_empty() {
-    format!("model.safetensors.index.json ({shard_count} shards)")
-  } else {
-    format!("model.safetensors.index.json + sampled headers ({shard_count} shards)")
-  };
-
-  build_summary(source_kind, total_bytes_from_index, shard_count, merged)
-}
-
-struct SkeletonParts {
-  skeleton: String,
-  layer_idx: Option<u64>,
-  expert_idx: Option<u64>,
-}
-
-/// 提取张量名中的 `layers.<L>` 与 `experts.<E>` 索引并生成骨架键。
-fn canonical_skeleton(name: &str) -> SkeletonParts {
-  let parts: Vec<&str> = name.split('.').collect();
-  let mut out: Vec<&str> = Vec::with_capacity(parts.len());
-  let mut layer_idx = None;
-  let mut expert_idx = None;
-
-  let mut i = 0;
-  while i < parts.len() {
-    let seg = parts[i];
-    out.push(seg);
-    if (matches!(seg, "layers" | "layer" | "h" | "block" | "blocks") || seg.ends_with("_blocks"))
-      && i + 1 < parts.len()
+    if let Some((_, s)) = entries
+      .iter()
+      .rfind(|(k, _)| k.contains("lm_head") || k.contains("proj_out") || k.contains("norm"))
     {
-      if let Ok(idx) = parts[i + 1].parse::<u64>() {
-        layer_idx = Some(idx);
-        out.push("<L>");
-        i += 2;
-        continue;
+      push_unique(&mut picked, s);
+    }
+    if picked.is_empty() {
+      if let Some((_, s)) = entries.first() {
+        push_unique(&mut picked, s);
       }
     }
-    if seg == "experts" && i + 1 < parts.len() {
-      if let Ok(idx) = parts[i + 1].parse::<u64>() {
-        expert_idx = Some(idx);
-        out.push("<E>");
-        i += 2;
-        continue;
-      }
-    }
-    i += 1;
+    picked.truncate(3);
+    picked
   }
 
-  SkeletonParts { skeleton: out.join("."), layer_idx, expert_idx }
-}
+  /// 校验分片文件名仅由安全字符组成（禁止路径穿越 `..` 或 `/`）。
+  pub fn is_safe_shard_filename(name: &str) -> bool {
+    !name.is_empty()
+      && name.len() <= 160
+      && !name.contains("..")
+      && !name.contains('/')
+      && !name.contains('\\')
+      && name.ends_with(".safetensors")
+      && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+  }
 
-/// 根据张量路径判断其所属模块阶段，供架构图点击联动过滤使用。
-pub fn classify_tensor_stage(
-  name: &str,
-  max_main_layer: Option<u64>,
-  layer_idx: Option<u64>,
-) -> &'static str {
-  if let (Some(max_l), Some(l)) = (max_main_layer, layer_idx) {
-    if l >= max_l
-      && (name.contains("eh_proj")
-        || name.contains("enorm")
-        || name.contains("hnorm")
-        || name.contains("shared_head"))
+  /// 由单文件 Safetensors Header 列表直接构建 [`SafetensorsSummary`]。
+  pub fn summarize_single_header(tensors: Vec<RawTensorMeta>) -> SafetensorsSummary {
+    let total_bytes: Option<u64> =
+      tensors.iter().try_fold(0u64, |acc, t| t.byte_len.and_then(|b| acc.checked_add(b)));
+    build_summary("model.safetensors header".to_string(), total_bytes, 1, tensors)
+  }
+
+  /// 合并 `model.safetensors.index.json` 的全量 `weight_map` 与若干采样分片 Header，构建 [`SafetensorsSummary`]。
+  pub fn summarize_index_and_headers(
+    total_bytes_from_index: Option<u64>,
+    weight_map: &HashMap<String, String>,
+    sampled_headers: &[RawTensorMeta],
+  ) -> SafetensorsSummary {
+    let shards: BTreeSet<&str> = weight_map.values().map(String::as_str).collect();
+    let shard_count = shards.len().max(1);
+
+    let mut by_name: HashMap<&str, &RawTensorMeta> = HashMap::with_capacity(sampled_headers.len());
+    for item in sampled_headers {
+      by_name.insert(item.name.as_str(), item);
+    }
+
+    // 同时按「去掉具体层号与专家号后的骨架键」建立后备表：
+    // 即使我们只采样了第 3 层的 MoE 分片，第 4..60 层的同构权重也能继承完全一致的 Shape 与 Dtype！
+    let mut by_skeleton: HashMap<String, &RawTensorMeta> = HashMap::new();
+    for item in sampled_headers {
+      let skel = canonical_skeleton(&item.name).skeleton;
+      by_skeleton.entry(skel).or_insert(item);
+    }
+
+    let mut merged: Vec<RawTensorMeta> = Vec::with_capacity(weight_map.len());
+    let mut keys: Vec<(&String, &String)> = weight_map.iter().collect();
+    keys.sort_by_key(|(k, _)| k.as_str());
+
+    for (name, shard) in keys {
+      if let Some(exact) = by_name.get(name.as_str()) {
+        merged.push(RawTensorMeta {
+          name: name.clone(),
+          shape: exact.shape.clone(),
+          dtype: exact.dtype.clone(),
+          byte_len: exact.byte_len,
+          shard: Some(shard.clone()),
+        });
+      } else {
+        let skel = canonical_skeleton(name).skeleton;
+        let inferred = by_skeleton.get(&skel).copied();
+        merged.push(RawTensorMeta {
+          name: name.clone(),
+          shape: inferred.and_then(|m| m.shape.clone()),
+          dtype: inferred.and_then(|m| m.dtype.clone()),
+          byte_len: inferred.and_then(|m| m.byte_len),
+          shard: Some(shard.clone()),
+        });
+      }
+    }
+
+    let source_kind = if sampled_headers.is_empty() {
+      format!("model.safetensors.index.json ({shard_count} shards)")
+    } else {
+      format!("model.safetensors.index.json + sampled headers ({shard_count} shards)")
+    };
+
+    build_summary(source_kind, total_bytes_from_index, shard_count, merged)
+  }
+
+  struct SkeletonParts {
+    skeleton: String,
+    layer_idx: Option<u64>,
+    expert_idx: Option<u64>,
+  }
+
+  /// 提取张量名中的 `layers.<L>` 与 `experts.<E>` 索引并生成骨架键。
+  fn canonical_skeleton(name: &str) -> SkeletonParts {
+    let parts: Vec<&str> = name.split('.').collect();
+    let mut out: Vec<&str> = Vec::with_capacity(parts.len());
+    let mut layer_idx = None;
+    let mut expert_idx = None;
+
+    let mut i = 0;
+    while i < parts.len() {
+      let seg = parts[i];
+      out.push(seg);
+      if (matches!(seg, "layers" | "layer" | "h" | "block" | "blocks") || seg.ends_with("_blocks"))
+        && i + 1 < parts.len()
+      {
+        if let Ok(idx) = parts[i + 1].parse::<u64>() {
+          layer_idx = Some(idx);
+          out.push("<L>");
+          i += 2;
+          continue;
+        }
+      }
+      if seg == "experts" && i + 1 < parts.len() {
+        if let Ok(idx) = parts[i + 1].parse::<u64>() {
+          expert_idx = Some(idx);
+          out.push("<E>");
+          i += 2;
+          continue;
+        }
+      }
+      i += 1;
+    }
+
+    SkeletonParts { skeleton: out.join("."), layer_idx, expert_idx }
+  }
+
+  /// 根据张量路径判断其所属模块阶段，供架构图点击联动过滤使用。
+  pub fn classify_tensor_stage(
+    name: &str,
+    max_main_layer: Option<u64>,
+    layer_idx: Option<u64>,
+  ) -> &'static str {
+    if let (Some(max_l), Some(l)) = (max_main_layer, layer_idx) {
+      if l >= max_l
+        && (name.contains("eh_proj")
+          || name.contains("enorm")
+          || name.contains("hnorm")
+          || name.contains("shared_head"))
+      {
+        return "mtp";
+      }
+    }
+    if name.contains("eh_proj")
+      || name.contains("enorm")
+      || name.contains("hnorm")
+      || name.contains("shared_head")
     {
       return "mtp";
     }
-  }
-  if name.contains("eh_proj")
-    || name.contains("enorm")
-    || name.contains("hnorm")
-    || name.contains("shared_head")
-  {
-    return "mtp";
-  }
-  if name.starts_with("visual.")
-    || name.contains("vision_tower")
-    || name.contains("vision_model")
-    || name.contains("multi_modal_projector")
-  {
-    return "vision";
-  }
-  if name.starts_with("audio_tower")
-    || name.contains("audio_encoder")
-    || name.starts_with("talker.")
-    || name.starts_with("token2wav")
-  {
-    return "audio";
-  }
-  if name.contains("embed_tokens")
-    || name.contains("wte")
-    || name.contains("word_embeddings")
-    || name.contains("embed_positions")
-    || name.starts_with("time_text_embed.")
-    || name.starts_with("condition_embedder.")
-    || name.starts_with("context_embedder.")
-    || name.starts_with("x_embedder.")
-    || name.starts_with("patch_embedding.")
-    || name.starts_with("pos_embed.")
-  {
-    "embedding"
-  } else if name.contains("lm_head")
-    || name.contains("output.weight")
-    || name.contains("proj_out")
-    || name.contains("conv_out.")
-    || name.contains("pooler.")
-    || name.contains("classifier.")
-    || name.ends_with("score.weight")
-  {
-    "lm_head"
-  } else if name.contains("self_attn")
-    || name.contains("encoder_attn")
-    || name.contains(".attn.")
-    || name.contains(".attn1.")
-    || name.contains(".attn2.")
-    || name.contains("attention")
-    || name.contains("linear_attn")
-    || name.contains(".mamba.")
-    || name.contains("mixer.")
-    || name.contains("time_mix")
-  {
-    "attention"
-  } else if name.contains("experts")
-    || name.contains("shared_expert")
-    || name.contains("shared_experts")
-    || name.contains("mlp.gate.weight")
-    || name.contains("e_score_correction_bias")
-  {
-    "moe"
-  } else if name.contains(".mlp.")
-    || name.contains("proj_mlp")
-    || name.contains(".ff.")
-    || name.contains(".ff_context.")
-    || name.contains("resnets.")
-    || name.contains("feed_forward")
-    || name.contains("ffn")
-    || name.contains("fc1.")
-    || name.contains("fc2.")
-    || name.contains("intermediate.dense")
-    || name.contains("channel_mix")
-  {
-    "ffn"
-  } else if name.contains("layernorm")
-    || name.contains("layer_norm")
-    || name.contains("LayerNorm")
-    || name.contains(".norm.")
-    || name.contains(".norm1.")
-    || name.contains(".norm2.")
-    || name.contains("norm_q.")
-    || name.contains("norm_k.")
-    || name.contains("norm_out.")
-    || name.ends_with("norm.weight")
-  {
-    "norm"
-  } else {
-    "other"
-  }
-}
-
-fn format_index_set(indices: &BTreeSet<u64>) -> String {
-  let Some(&first) = indices.first() else {
-    return "*".to_string();
-  };
-  let Some(&last) = indices.last() else {
-    return first.to_string();
-  };
-  if indices.len() == 1 {
-    first.to_string()
-  } else if (last - first + 1) as usize == indices.len() {
-    format!("[{first}..{last}]")
-  } else {
-    format!("[{first}..{last} ({}x)]", indices.len())
-  }
-}
-
-fn build_summary(
-  source_kind: String,
-  total_bytes: Option<u64>,
-  shard_count: usize,
-  tensors: Vec<RawTensorMeta>,
-) -> SafetensorsSummary {
-  let total_tensor_count = tensors.len();
-  let mut header_inspected_count = 0usize;
-  let mut max_layer: Option<u64> = None;
-  let mut max_expert: Option<u64> = None;
-  let mut first_moe_layer: Option<u64> = None;
-  let mut has_attn_bias = false;
-  let mut has_qk_norm = false;
-  let mut dtype_map: HashMap<String, usize> = HashMap::new();
-
-  struct GroupAcc {
-    skeleton: String,
-    example_name: String,
-    stage: &'static str,
-    count: usize,
-    layers: BTreeSet<u64>,
-    experts: BTreeSet<u64>,
-    shape: Option<Vec<u64>>,
-    dtype: Option<String>,
-    byte_len: Option<u64>,
-    shard: Option<String>,
+    if name.starts_with("visual.")
+      || name.contains("vision_tower")
+      || name.contains("vision_model")
+      || name.contains("multi_modal_projector")
+    {
+      return "vision";
+    }
+    if name.starts_with("audio_tower")
+      || name.contains("audio_encoder")
+      || name.starts_with("talker.")
+      || name.starts_with("token2wav")
+    {
+      return "audio";
+    }
+    if name.contains("embed_tokens")
+      || name.contains("wte")
+      || name.contains("word_embeddings")
+      || name.contains("embed_positions")
+      || name.starts_with("time_text_embed.")
+      || name.starts_with("condition_embedder.")
+      || name.starts_with("context_embedder.")
+      || name.starts_with("x_embedder.")
+      || name.starts_with("patch_embedding.")
+      || name.starts_with("pos_embed.")
+    {
+      "embedding"
+    } else if name.contains("lm_head")
+      || name.contains("output.weight")
+      || name.contains("proj_out")
+      || name.contains("conv_out.")
+      || name.contains("pooler.")
+      || name.contains("classifier.")
+      || name.ends_with("score.weight")
+    {
+      "lm_head"
+    } else if name.contains("self_attn")
+      || name.contains("encoder_attn")
+      || name.contains(".attn.")
+      || name.contains(".attn1.")
+      || name.contains(".attn2.")
+      || name.contains("attention")
+      || name.contains("linear_attn")
+      || name.contains(".mamba.")
+      || name.contains("mixer.")
+      || name.contains("time_mix")
+    {
+      "attention"
+    } else if name.contains("experts")
+      || name.contains("shared_expert")
+      || name.contains("shared_experts")
+      || name.contains("mlp.gate.weight")
+      || name.contains("e_score_correction_bias")
+    {
+      "moe"
+    } else if name.contains(".mlp.")
+      || name.contains("proj_mlp")
+      || name.contains(".ff.")
+      || name.contains(".ff_context.")
+      || name.contains("resnets.")
+      || name.contains("feed_forward")
+      || name.contains("ffn")
+      || name.contains("fc1.")
+      || name.contains("fc2.")
+      || name.contains("intermediate.dense")
+      || name.contains("channel_mix")
+    {
+      "ffn"
+    } else if name.contains("layernorm")
+      || name.contains("layer_norm")
+      || name.contains("LayerNorm")
+      || name.contains(".norm.")
+      || name.contains(".norm1.")
+      || name.contains(".norm2.")
+      || name.contains("norm_q.")
+      || name.contains("norm_k.")
+      || name.contains("norm_out.")
+      || name.ends_with("norm.weight")
+    {
+      "norm"
+    } else {
+      "other"
+    }
   }
 
-  // 先过一遍识别 MTP 层（含 `eh_proj` / `shared_head` 的层不计入常规主干层上限）。
-  let mut mtp_layers: BTreeSet<u64> = BTreeSet::new();
-  for t in &tensors {
-    let sp = canonical_skeleton(&t.name);
-    if let Some(l) = sp.layer_idx {
-      if t.name.contains("eh_proj") || t.name.contains("enorm") || t.name.contains("shared_head") {
-        mtp_layers.insert(l);
+  fn format_index_set(indices: &BTreeSet<u64>) -> String {
+    let Some(&first) = indices.first() else {
+      return "*".to_string();
+    };
+    let Some(&last) = indices.last() else {
+      return first.to_string();
+    };
+    if indices.len() == 1 {
+      first.to_string()
+    } else if (last - first + 1) as usize == indices.len() {
+      format!("[{first}..{last}]")
+    } else {
+      format!("[{first}..{last} ({}x)]", indices.len())
+    }
+  }
+
+  fn build_summary(
+    source_kind: String,
+    total_bytes: Option<u64>,
+    shard_count: usize,
+    tensors: Vec<RawTensorMeta>,
+  ) -> SafetensorsSummary {
+    let total_tensor_count = tensors.len();
+    let mut header_inspected_count = 0usize;
+    let mut max_layer: Option<u64> = None;
+    let mut max_expert: Option<u64> = None;
+    let mut first_moe_layer: Option<u64> = None;
+    let mut has_attn_bias = false;
+    let mut has_qk_norm = false;
+    let mut dtype_map: HashMap<String, usize> = HashMap::new();
+
+    struct GroupAcc {
+      skeleton: String,
+      example_name: String,
+      stage: &'static str,
+      count: usize,
+      layers: BTreeSet<u64>,
+      experts: BTreeSet<u64>,
+      shape: Option<Vec<u64>>,
+      dtype: Option<String>,
+      byte_len: Option<u64>,
+      shard: Option<String>,
+    }
+
+    // 先过一遍识别 MTP 层（含 `eh_proj` / `shared_head` 的层不计入常规主干层上限）。
+    let mut mtp_layers: BTreeSet<u64> = BTreeSet::new();
+    for t in &tensors {
+      let sp = canonical_skeleton(&t.name);
+      if let Some(l) = sp.layer_idx {
+        if t.name.contains("eh_proj") || t.name.contains("enorm") || t.name.contains("shared_head")
+        {
+          mtp_layers.insert(l);
+        }
       }
     }
-  }
 
-  // 为了区分 Dense 层与 MoE 层的同构骨架，把“是否属于 MTP 层”编码进分组键。
-  let mut groups: BTreeMap<(bool, String), GroupAcc> = BTreeMap::new();
+    // 为了区分 Dense 层与 MoE 层的同构骨架，把“是否属于 MTP 层”编码进分组键。
+    let mut groups: BTreeMap<(bool, String), GroupAcc> = BTreeMap::new();
 
-  for t in tensors {
-    if t.shape.is_some() || t.dtype.is_some() {
-      header_inspected_count += 1;
-    }
-    if let Some(ref dt) = t.dtype {
-      *dtype_map.entry(dt.clone()).or_insert(0) += 1;
-    }
-    if (t.name.contains("self_attn") || t.name.contains(".attn.")) && t.name.ends_with(".bias") {
-      has_attn_bias = true;
-    }
-    if t.name.contains("q_norm.") || t.name.contains("k_norm.") {
-      has_qk_norm = true;
-    }
-
-    let sp = canonical_skeleton(&t.name);
-    let is_mtp_layer = sp.layer_idx.is_some_and(|l| mtp_layers.contains(&l));
-    if let Some(l) = sp.layer_idx {
-      if !is_mtp_layer {
-        max_layer = Some(max_layer.map_or(l, |cur| cur.max(l)));
+    for t in tensors {
+      if t.shape.is_some() || t.dtype.is_some() {
+        header_inspected_count += 1;
       }
-      if (t.name.contains(".experts.") || t.name.contains("mlp.gate.weight")) && !is_mtp_layer {
-        first_moe_layer = Some(first_moe_layer.map_or(l, |cur| cur.min(l)));
+      if let Some(ref dt) = t.dtype {
+        *dtype_map.entry(dt.clone()).or_insert(0) += 1;
+      }
+      if (t.name.contains("self_attn") || t.name.contains(".attn.")) && t.name.ends_with(".bias") {
+        has_attn_bias = true;
+      }
+      if t.name.contains("q_norm.") || t.name.contains("k_norm.") {
+        has_qk_norm = true;
+      }
+
+      let sp = canonical_skeleton(&t.name);
+      let is_mtp_layer = sp.layer_idx.is_some_and(|l| mtp_layers.contains(&l));
+      if let Some(l) = sp.layer_idx {
+        if !is_mtp_layer {
+          max_layer = Some(max_layer.map_or(l, |cur| cur.max(l)));
+        }
+        if (t.name.contains(".experts.") || t.name.contains("mlp.gate.weight")) && !is_mtp_layer {
+          first_moe_layer = Some(first_moe_layer.map_or(l, |cur| cur.min(l)));
+        }
+      }
+      if let Some(e) = sp.expert_idx {
+        max_expert = Some(max_expert.map_or(e, |cur| cur.max(e)));
+      }
+
+      let stage =
+        if is_mtp_layer { "mtp" } else { classify_tensor_stage(&t.name, None, sp.layer_idx) };
+
+      let entry = groups.entry((is_mtp_layer, sp.skeleton.clone())).or_insert_with(|| GroupAcc {
+        skeleton: sp.skeleton,
+        example_name: t.name.clone(),
+        stage,
+        count: 0,
+        layers: BTreeSet::new(),
+        experts: BTreeSet::new(),
+        shape: t.shape.clone(),
+        dtype: t.dtype.clone(),
+        byte_len: t.byte_len,
+        shard: t.shard.clone(),
+      });
+      entry.count += 1;
+      if let Some(l) = sp.layer_idx {
+        entry.layers.insert(l);
+      }
+      if let Some(e) = sp.expert_idx {
+        entry.experts.insert(e);
+      }
+      if entry.shape.is_none() && t.shape.is_some() {
+        entry.shape = t.shape;
+      }
+      if entry.dtype.is_none() && t.dtype.is_some() {
+        entry.dtype = t.dtype;
+      }
+      if entry.byte_len.is_none() && t.byte_len.is_some() {
+        entry.byte_len = t.byte_len;
       }
     }
-    if let Some(e) = sp.expert_idx {
-      max_expert = Some(max_expert.map_or(e, |cur| cur.max(e)));
-    }
 
-    let stage =
-      if is_mtp_layer { "mtp" } else { classify_tensor_stage(&t.name, None, sp.layer_idx) };
+    let mut dtype_histogram: Vec<(String, usize)> = dtype_map.into_iter().collect();
+    dtype_histogram.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    let entry = groups.entry((is_mtp_layer, sp.skeleton.clone())).or_insert_with(|| GroupAcc {
-      skeleton: sp.skeleton,
-      example_name: t.name.clone(),
-      stage,
-      count: 0,
-      layers: BTreeSet::new(),
-      experts: BTreeSet::new(),
-      shape: t.shape.clone(),
-      dtype: t.dtype.clone(),
-      byte_len: t.byte_len,
-      shard: t.shard.clone(),
+    let stage_rank = |s: &str| match s {
+      "embedding" => 0,
+      "attention" => 1,
+      "norm" => 2,
+      "ffn" => 3,
+      "moe" => 4,
+      "mtp" => 5,
+      "lm_head" => 6,
+      _ => 7,
+    };
+
+    let mut patterns: Vec<TensorPatternEntry> = groups
+      .into_values()
+      .map(|g| {
+        let mut pat = g.skeleton;
+        if !g.layers.is_empty() {
+          pat = pat.replace("<L>", &format_index_set(&g.layers));
+        }
+        if !g.experts.is_empty() {
+          pat = pat.replace("<E>", &format_index_set(&g.experts));
+        }
+        TensorPatternEntry {
+          pattern: pat,
+          example_name: g.example_name,
+          stage: g.stage.to_string(),
+          repeat_count: g.count,
+          shape: g.shape,
+          dtype: g.dtype,
+          single_byte_len: g.byte_len,
+          example_shard: g.shard,
+        }
+      })
+      .collect();
+
+    patterns.sort_by(|a, b| {
+      stage_rank(&a.stage).cmp(&stage_rank(&b.stage)).then_with(|| a.pattern.cmp(&b.pattern))
     });
-    entry.count += 1;
-    if let Some(l) = sp.layer_idx {
-      entry.layers.insert(l);
-    }
-    if let Some(e) = sp.expert_idx {
-      entry.experts.insert(e);
-    }
-    if entry.shape.is_none() && t.shape.is_some() {
-      entry.shape = t.shape;
-    }
-    if entry.dtype.is_none() && t.dtype.is_some() {
-      entry.dtype = t.dtype;
-    }
-    if entry.byte_len.is_none() && t.byte_len.is_some() {
-      entry.byte_len = t.byte_len;
-    }
-  }
 
-  let mut dtype_histogram: Vec<(String, usize)> = dtype_map.into_iter().collect();
-  dtype_histogram.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-
-  let stage_rank = |s: &str| match s {
-    "embedding" => 0,
-    "attention" => 1,
-    "norm" => 2,
-    "ffn" => 3,
-    "moe" => 4,
-    "mtp" => 5,
-    "lm_head" => 6,
-    _ => 7,
-  };
-
-  let mut patterns: Vec<TensorPatternEntry> = groups
-    .into_values()
-    .map(|g| {
-      let mut pat = g.skeleton;
-      if !g.layers.is_empty() {
-        pat = pat.replace("<L>", &format_index_set(&g.layers));
-      }
-      if !g.experts.is_empty() {
-        pat = pat.replace("<E>", &format_index_set(&g.experts));
-      }
-      TensorPatternEntry {
-        pattern: pat,
-        example_name: g.example_name,
-        stage: g.stage.to_string(),
-        repeat_count: g.count,
-        shape: g.shape,
-        dtype: g.dtype,
-        single_byte_len: g.byte_len,
-        example_shard: g.shard,
-      }
-    })
-    .collect();
-
-  patterns.sort_by(|a, b| {
-    stage_rank(&a.stage).cmp(&stage_rank(&b.stage)).then_with(|| a.pattern.cmp(&b.pattern))
-  });
-
-  SafetensorsSummary {
-    source_kind,
-    total_bytes,
-    shard_count,
-    total_tensor_count,
-    header_inspected_count,
-    detected_num_layers: max_layer.map(|l| l + 1),
-    detected_num_experts: max_expert.map(|e| e + 1),
-    detected_first_moe_layer: first_moe_layer,
-    has_attn_bias,
-    has_qk_norm,
-    dtype_histogram,
-    patterns,
+    SafetensorsSummary {
+      source_kind,
+      total_bytes,
+      shard_count,
+      total_tensor_count,
+      header_inspected_count,
+      detected_num_layers: max_layer.map(|l| l + 1),
+      detected_num_experts: max_expert.map(|e| e + 1),
+      detected_first_moe_layer: first_moe_layer,
+      has_attn_bias,
+      has_qk_norm,
+      dtype_histogram,
+      patterns,
+    }
   }
 }
 
-#[cfg(test)]
+#[cfg(feature = "server")]
+pub use parser::{
+  parse_safetensors_header_bytes, parse_safetensors_header_json, parse_safetensors_header_len,
+  parse_safetensors_index_json, select_representative_shards, summarize_index_and_headers,
+  summarize_single_header, RawTensorMeta,
+};
+
+#[cfg(all(test, feature = "server"))]
 mod tests {
   use super::*;
 

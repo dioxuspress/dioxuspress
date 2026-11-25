@@ -159,6 +159,7 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
     static_paths.push("/ai/components".to_string());
     static_paths.push("/ai/math".to_string());
     static_paths.push("/models".to_string());
+    static_paths.push("/models/configs".to_string());
   }
   // G6：生态落地页不是模块，不在 ModuleSpec 里；仅在该生态下至少有一个领域板块启用时收录。
   static_paths.extend(

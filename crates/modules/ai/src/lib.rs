@@ -12,6 +12,7 @@ pub mod atlas_store;
 pub mod component_labs;
 pub mod component_labs_m2;
 pub mod components_atlas;
+pub mod config_guide;
 pub mod diagram;
 pub mod math_atlas;
 pub mod math_labs;
@@ -26,6 +27,7 @@ use dioxus::prelude::*;
 
 pub use atlas::{ModelDetailPage, ModelsAtlasPage};
 pub use components_atlas::{AiComponentDetailPage, AiComponentsAtlasPage};
+pub use config_guide::ModelConfigsGuidePage;
 pub use math_atlas::{AiMathAtlasPage, AiMathDetailPage};
 pub use visualizer::AiVisualizerPage;
 
