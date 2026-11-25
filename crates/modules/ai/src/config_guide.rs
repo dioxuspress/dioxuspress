@@ -636,14 +636,54 @@ pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
     pitfall_zh: "多模态模型常把语言主干嵌套在 `text_config` 或 `thinker_config` 下；且 `vocab_size` 可能大于实际词表条数（为 Tensor Core 128 对齐填充）。",
     pitfall_en: "VLMs often nest language params under `text_config` or `thinker_config`; `vocab_size` is frequently padded to multiples of 64/128 beyond tokenizer size.",
     snippet: r#"{
+  // 1. 身份与架构分发（推理引擎首选路由依据）
   "architectures": ["DeepseekV3ForCausalLM"],
   "model_type": "deepseek_v3",
+
+  // 2. 主干维度与归一化
   "hidden_size": 7168,
   "num_hidden_layers": 61,
+  "vocab_size": 129280,
+  "rms_norm_eps": 1e-6,
+  "tie_word_embeddings": false,
+
+  // 3. 注意力与 MLA 低秩 KV 压缩
+  "num_attention_heads": 128,
+  "num_key_value_heads": 128,
+  "q_lora_rank": 1536,
   "kv_lora_rank": 512,
+  "qk_nope_head_dim": 128,
+  "qk_rope_head_dim": 64,
+  "v_head_dim": 128,
+
+  // 4. FFN 与稀疏 MoE 路由
+  "hidden_act": "silu",
+  "intermediate_size": 18432,
+  "moe_intermediate_size": 2048,
+  "first_k_dense_replace": 3,
   "n_routed_experts": 256,
+  "n_shared_experts": 1,
   "num_experts_per_tok": 8,
-  "torch_dtype": "bfloat16"
+
+  // 5. 位置编码与长上下文外推 (YaRN)
+  "max_position_embeddings": 163840,
+  "rope_theta": 10000,
+  "rope_scaling": {
+    "type": "yarn",
+    "factor": 40,
+    "original_max_position_embeddings": 4096
+  },
+
+  // 6. 量化精度、MTP 预测头与基础特殊 Token
+  "torch_dtype": "bfloat16",
+  "num_nextn_predict_layers": 1,
+  "quantization_config": {
+    "quant_method": "fp8",
+    "fmt": "e4m3",
+    "weight_block_size": [128, 128]
+  },
+  "bos_token_id": 0,
+  "eos_token_id": 1
 }"#,
   },
   ConfigFileSpec {
@@ -660,13 +700,27 @@ pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
     pitfall_zh: "单文件小模型可能没有 `index.json`，只有单个 `model.safetensors`；FP8 模型会伴生 `*_scale_inv` 缩放张量，计算磁盘体积时需注意区分真实 dtype。",
     pitfall_en: "Small single-shard repos omit `index.json` and ship only `model.safetensors`. FP8 checkpoints include extra `*_scale_inv` tensors alongside quantized weights.",
     snippet: r#"{
-  "metadata": { "total_size": 688953540608 },
+  // 1. 权重磁盘总字节数（FP8 权重 + BF16 嵌入/归一化 + scale_inv）
+  "metadata": {
+    "total_size": 688953540608
+  },
+
+  // 2. 张量名 -> 所属分片文件映射（完整文件通常包含数千至数万条）
   "weight_map": {
     "model.embed_tokens.weight": "model-00001-of-000163.safetensors",
+    "model.layers.0.input_layernorm.weight": "model-00001-of-000163.safetensors",
     "model.layers.0.self_attn.kv_a_proj_with_mqa.weight": "model-00001-of-000163.safetensors",
-    "model.layers.0.self_attn.kv_a_proj_with_mqa.weight_scale_inv": "model-00001-of-000163.safetensors"
+    "model.layers.0.self_attn.kv_a_proj_with_mqa.weight_scale_inv": "model-00001-of-000163.safetensors",
+    "model.layers.3.mlp.gate.weight": "model-00008-of-000163.safetensors",
+    "model.layers.3.mlp.experts.0.gate_proj.weight": "model-00008-of-000163.safetensors",
+    // ... 其余 1,000+ 个层与专家张量映射已省略 ...
+    "model.norm.weight": "model-000163-of-000163.safetensors",
+    "lm_head.weight": "model-000163-of-000163.safetensors"
   }
-}"#,
+}
+
+// 每个 .safetensors 分片前 8 字节 (u64 LE) 后紧跟的 JSON Header 示例：
+// { "lm_head.weight": { "dtype": "BF16", "shape": [129280, 7168], "data_offsets": [0, 1852751872] } }"#,
   },
   ConfigFileSpec {
     kind: ConfigFileKind::TokenizerConfig,
@@ -682,12 +736,29 @@ pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
     pitfall_zh: "`tokenizer_config.json` 里的 `model_max_length` 经常被写成 `1e30` 或保留历史默认值，不可当作架构上下文上限；真实上限应以 `config.json` 的 `max_position_embeddings` 为准。",
     pitfall_en: "`model_max_length` in `tokenizer_config.json` is often a sentinel (`1e30`) or stale value; always trust `config.json`'s `max_position_embeddings` for model limits.",
     snippet: r#"{
+  // 1. 分词器类与起止/填充特殊符号
   "tokenizer_class": "Qwen2Tokenizer",
   "bos_token": null,
   "eos_token": "<|im_end|>",
   "pad_token": "<|endoftext|>",
   "add_bos_token": false,
-  "clean_up_tokenization_spaces": false
+  "add_prefix_space": false,
+  "clean_up_tokenization_spaces": false,
+
+  // 注意：model_max_length 可能是哨兵值，真实窗口看 config.json
+  "model_max_length": 131072,
+
+  // 2. 新增特殊控制 Token 表（完整文件可能含数十至上百项）
+  "added_tokens_decoder": {
+    "151643": { "content": "<|endoftext|>", "special": true },
+    "151644": { "content": "<|im_start|>", "special": true },
+    "151645": { "content": "<|im_end|>", "special": true },
+    "151667": { "content": "<think>", "special": true }
+    // ... 其余特殊控制符已省略 ...
+  },
+
+  // 3. 多轮对话 / 工具调用 Jinja 模板（部分仓库单独存于 chat_template.jinja）
+  "chat_template": "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
 }"#,
   },
   ConfigFileSpec {
@@ -704,12 +775,22 @@ pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
     pitfall_zh: "Llama-3 与 Qwen-Chat 的 `eos_token_id` 往往是数组（如 `[151645, 151643]` 分别对应 `<|im_end|>` 与 `<|endoftext|>`），只检查 `config.json` 里单个标量 `eos_token_id` 会导致生成停不下来。",
     pitfall_en: "Chat models frequently declare an array `eos_token_id` (e.g. `[151645, 151643]`); checking only the single scalar in `config.json` causes runaway generation.",
     snippet: r#"{
+  // 1. 起始、填充与多停止符 ID（关键：支持数组）
   "bos_token_id": 151643,
+  "pad_token_id": 151643,
   "eos_token_id": [151645, 151643],
+
+  // 2. 采样策略与随机性控制
   "do_sample": true,
   "temperature": 0.6,
   "top_p": 0.95,
-  "top_k": 20
+  "top_k": 20,
+  "min_p": 0.0,
+  "repetition_penalty": 1.05,
+
+  // 3. 输出长度与缓存默认开关
+  "max_new_tokens": 32768,
+  "use_cache": true
 }"#,
   },
   ConfigFileSpec {
@@ -726,13 +807,25 @@ pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
     pitfall_zh: "`max_pixels` 调得过大时，单张高分辨率图会被切成数千个视觉 Token，直接撑爆 Prefill 显存；音频若未重采样至 `sampling_rate`（如 16000Hz）会导致识别乱码。",
     pitfall_en: "Setting `max_pixels` too high explodes visual token count during prefill; feeding audio at 44.1kHz into a 16kHz model silently degrades transcription.",
     snippet: r#"{
+  // 1. 视觉切块与动态分辨率（VLM，如 Qwen2.5-VL）
   "image_processor_type": "Qwen2VLImageProcessor",
   "patch_size": 14,
   "merge_size": 2,
+  "temporal_patch_size": 2,
   "min_pixels": 3136,
   "max_pixels": 12845056,
-  "image_mean": [0.48145466, 0.4578275, 0.40821073]
-}"#,
+
+  // 2. 像素缩放与 RGB 通道标准化
+  "do_resize": true,
+  "do_rescale": true,
+  "rescale_factor": 0.00392156862745098,
+  "do_normalize": true,
+  "image_mean": [0.48145466, 0.4578275, 0.40821073],
+  "image_std": [0.26862954, 0.26130258, 0.27577711]
+}
+
+// 语音模型 (Whisper) 同名文件则为 STFT / Log-Mel 声学参数：
+// { "sampling_rate": 16000, "feature_size": 128, "n_fft": 400, "hop_length": 160, "chunk_length": 30 }"#,
   },
   ConfigFileSpec {
     kind: ConfigFileKind::DiffusionPipeline,
@@ -748,13 +841,25 @@ pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
     pitfall_zh: "高分辨率图像/视频生成（FLUX / SD3.5 / Wan2.1）强依赖 `scheduler_config.json` 中的 `shift` / `use_dynamic_shifting`（Time-Shift），以及 `vae/config.json` 的 `scaling_factor` 与 `shift_factor`，漏乘会导致画面灰暗或色偏。",
     pitfall_en: "Flow-matching models (FLUX/SD3.5/Wan2.1) depend heavily on `shift`/`use_dynamic_shifting` in scheduler config and `scaling_factor`/`shift_factor` in `vae/config.json`.",
     snippet: r#"{
+  // 1. 管线入口类与 Diffusers 版本
   "_class_name": "FluxPipeline",
+  "_diffusers_version": "0.30.0.dev0",
+
+  // 2. 双文本编码器槽位（各自指向同名子目录）
   "text_encoder": ["transformers", "CLIPTextModel"],
+  "tokenizer": ["transformers", "CLIPTokenizer"],
   "text_encoder_2": ["transformers", "T5EncoderModel"],
+  "tokenizer_2": ["transformers", "T5TokenizerFast"],
+
+  // 3. 去噪 DiT 主干、潜空间 VAE 与时间步调度器
   "transformer": ["diffusers", "FluxTransformer2DModel"],
   "vae": ["diffusers", "AutoencoderKL"],
   "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"]
-}"#,
+}
+
+// 关键子配置：
+// - vae/config.json: { "latent_channels": 16, "scaling_factor": 0.3611, "shift_factor": 0.1159 }
+// - scheduler/scheduler_config.json: { "num_train_timesteps": 1000, "shift": 3.0, "use_dynamic_shifting": true }"#,
   },
   ConfigFileSpec {
     kind: ConfigFileKind::EmbeddingModules,
@@ -769,11 +874,21 @@ pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
     loader_en: "TEI, Candle, and `sentence-transformers` pool token hidden states strictly according to `1_Pooling/config.json`.",
     pitfall_zh: "把本该用 `last_token` 池化的解码器 Embedding 模型（如 Qwen3-Embedding）错用成 `mean` 或 `cls` 池化，余弦相似度虽能算出数值但检索召回率会断崖式下跌。",
     pitfall_en: "Applying `mean` or `cls` pooling to a decoder-based embedding model trained with `last_token` pooling silently destroys retrieval recall.",
-    snippet: r#"{
+    snippet: r#"// 1. modules.json — 串联编码器、池化层与 L2 归一化
+[
+  { "idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Transformer" },
+  { "idx": 1, "name": "1", "path": "1_Pooling", "type": "sentence_transformers.models.Pooling" },
+  { "idx": 2, "name": "2", "path": "2_Normalize", "type": "sentence_transformers.models.Normalize" }
+]
+
+// 2. 1_Pooling/config.json — 决定用哪类 Token 聚合出句向量
+{
   "word_embedding_dimension": 1024,
   "pooling_mode_cls_token": true,
   "pooling_mode_mean_tokens": false,
-  "pooling_mode_lasttoken": false
+  "pooling_mode_max_tokens": false,
+  "pooling_mode_lasttoken": false,
+  "include_prompt": true
 }"#,
   },
   ConfigFileSpec {
@@ -790,13 +905,26 @@ pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
     pitfall_zh: "若训练时扩充了词表或新加了 special token，必须检查 `modules_to_save` 是否包含 `embed_tokens` 和 `lm_head`，否则推理加载后新 token 权重会丢失。",
     pitfall_en: "When adding new special tokens during fine-tuning, `modules_to_save` must include `embed_tokens`/`lm_head`, or merged weights will revert new token rows.",
     snippet: r#"{
+  // 1. 适配器类型、任务与绑定的基座模型
   "peft_type": "LORA",
+  "task_type": "CAUSAL_LM",
   "base_model_name_or_path": "Qwen/Qwen3-8B",
+  "inference_mode": true,
+
+  // 2. 低秩秩数 r 与缩放系数（有效缩放 = lora_alpha / r）
   "r": 32,
   "lora_alpha": 64,
   "lora_dropout": 0.05,
-  "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-  "use_rslora": false
+  "bias": "none",
+  "use_rslora": false,
+  "use_dora": false,
+
+  // 3. 挂载目标线性层与全量保存模块（扩词表时需含 embed_tokens/lm_head）
+  "target_modules": [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj"
+  ],
+  "modules_to_save": null
 }"#,
   },
 ];
@@ -3695,12 +3823,251 @@ pub fn ModelConfigsGuidePage() -> Element {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineSegment<'a> {
+  Text(&'a str),
+  Code(&'a str),
+  Bold(&'a str),
+}
+
+/// 将含 `` `code` `` 与 `**bold**` 行内语法的工程说明无损切分为语义片段。
+/// 未闭合的定界符按普通文本保留，绝不丢字或 panic。
+fn tokenize_inline_markup(text: &str) -> Vec<InlineSegment<'_>> {
+  let mut out = Vec::new();
+  let bytes = text.as_bytes();
+  let mut i = 0;
+  let mut plain_start = 0;
+
+  while i < bytes.len() {
+    if bytes[i] == b'`' {
+      if let Some(rel_end) = text[i + 1..].find('`') {
+        if rel_end > 0 {
+          if plain_start < i {
+            out.push(InlineSegment::Text(&text[plain_start..i]));
+          }
+          out.push(InlineSegment::Code(&text[i + 1..i + 1 + rel_end]));
+          i += rel_end + 2;
+          plain_start = i;
+          continue;
+        }
+      }
+      i += 1;
+    } else if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+      if let Some(rel_end) = text[i + 2..].find("**") {
+        if rel_end > 0 {
+          if plain_start < i {
+            out.push(InlineSegment::Text(&text[plain_start..i]));
+          }
+          out.push(InlineSegment::Bold(&text[i + 2..i + 2 + rel_end]));
+          i += rel_end + 4;
+          plain_start = i;
+          continue;
+        }
+      }
+      i += 1;
+    } else if let Some(ch) = text[i..].chars().next() {
+      i += ch.len_utf8();
+    } else {
+      break;
+    }
+  }
+
+  if plain_start < bytes.len() {
+    out.push(InlineSegment::Text(&text[plain_start..]));
+  }
+  out
+}
+
+/// 渲染含行内代码（`` `...` ``）与加粗（`**...**`）的轻量富文本（SSR/WASM 通用，零 JS 依赖）。
+pub(crate) fn render_inline_markup(text: &str) -> Element {
+  let segments = tokenize_inline_markup(text);
+  rsx! {
+    for (idx, seg) in segments.into_iter().enumerate() {
+      match seg {
+        InlineSegment::Text(s) => rsx! {
+          span { key: "it-{idx}", "{s}" }
+        },
+        InlineSegment::Code(s) => rsx! {
+          code {
+            key: "ic-{idx}",
+            class: "px-1.5 py-0.5 mx-0.5 rounded bg-slate-200/75 dark:bg-slate-800/90 font-mono text-[0.88em] font-semibold text-indigo-700 dark:text-indigo-300 break-words",
+            "{s}"
+          }
+        },
+        InlineSegment::Bold(s) => rsx! {
+          strong {
+            key: "ib-{idx}",
+            class: "font-bold text-slate-900 dark:text-white",
+            "{s}"
+          }
+        },
+      }
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonTokenKind {
+  Whitespace,
+  Comment,
+  Key,
+  String,
+  Number,
+  Keyword,
+  Punct,
+  Plain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JsonToken<'a> {
+  kind: JsonTokenKind,
+  text: &'a str,
+}
+
+/// 纯 Rust 零依赖 JSON / JSONC 词法切分器，保证所有 token 拼接与原文严格一致。
+fn tokenize_json(src: &str) -> Vec<JsonToken<'_>> {
+  let mut out = Vec::new();
+  let bytes = src.as_bytes();
+  let len = bytes.len();
+  let mut i = 0;
+
+  while i < len {
+    let b = bytes[i];
+    if matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
+      let start = i;
+      while i < len && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+      }
+      out.push(JsonToken { kind: JsonTokenKind::Whitespace, text: &src[start..i] });
+      continue;
+    }
+
+    if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+      let start = i;
+      while i < len && bytes[i] != b'\n' {
+        i += 1;
+      }
+      out.push(JsonToken { kind: JsonTokenKind::Comment, text: &src[start..i] });
+      continue;
+    }
+
+    if b == b'"' {
+      let start = i;
+      i += 1;
+      while i < len {
+        match bytes[i] {
+          b'\\' => {
+            i += 1;
+            if let Some(ch) = src[i..].chars().next() {
+              i += ch.len_utf8();
+            }
+          }
+          b'"' => {
+            i += 1;
+            break;
+          }
+          _ => {
+            if let Some(ch) = src[i..].chars().next() {
+              i += ch.len_utf8();
+            } else {
+              break;
+            }
+          }
+        }
+      }
+      let mut peek = i;
+      while peek < len && matches!(bytes[peek], b' ' | b'\t' | b'\r' | b'\n') {
+        peek += 1;
+      }
+      let kind =
+        if peek < len && bytes[peek] == b':' { JsonTokenKind::Key } else { JsonTokenKind::String };
+      out.push(JsonToken { kind, text: &src[start..i] });
+      continue;
+    }
+
+    if matches!(b, b'{' | b'}' | b'[' | b']' | b':' | b',') {
+      out.push(JsonToken { kind: JsonTokenKind::Punct, text: &src[i..i + 1] });
+      i += 1;
+      continue;
+    }
+
+    let is_num_start =
+      b.is_ascii_digit() || (b == b'-' && i + 1 < len && bytes[i + 1].is_ascii_digit());
+    if is_num_start {
+      let start = i;
+      i += 1;
+      while i < len
+        && (bytes[i].is_ascii_digit() || matches!(bytes[i], b'.' | b'e' | b'E' | b'+' | b'-'))
+      {
+        i += 1;
+      }
+      out.push(JsonToken { kind: JsonTokenKind::Number, text: &src[start..i] });
+      continue;
+    }
+
+    if let Some(kw) = ["true", "false", "null"].into_iter().find(|k| {
+      src[i..].starts_with(k)
+        && !bytes.get(i + k.len()).is_some_and(|next| next.is_ascii_alphanumeric() || *next == b'_')
+    }) {
+      out.push(JsonToken { kind: JsonTokenKind::Keyword, text: &src[i..i + kw.len()] });
+      i += kw.len();
+      continue;
+    }
+
+    let start = i;
+    if let Some(ch) = src[i..].chars().next() {
+      i += ch.len_utf8();
+      out.push(JsonToken { kind: JsonTokenKind::Plain, text: &src[start..i] });
+    } else {
+      break;
+    }
+  }
+
+  out
+}
+
+/// 纯 Rust 渲染带语法高亮的 JSON / JSONC 代码片段（零外部 JS、SSR/WASM 一致、严格兼容无 `unsafe-eval` CSP）。
+pub(crate) fn render_highlighted_json(src: &str) -> Element {
+  let tokens = tokenize_json(src);
+  rsx! {
+    code { class: "block font-mono",
+      for (idx, tok) in tokens.into_iter().enumerate() {
+        match tok.kind {
+          JsonTokenKind::Whitespace => rsx! { "{tok.text}" },
+          JsonTokenKind::Comment => rsx! {
+            span { key: "jt-{idx}", class: "text-slate-500 italic", "{tok.text}" }
+          },
+          JsonTokenKind::Key => rsx! {
+            span { key: "jt-{idx}", class: "text-sky-300 font-medium", "{tok.text}" }
+          },
+          JsonTokenKind::String => rsx! {
+            span { key: "jt-{idx}", class: "text-emerald-300", "{tok.text}" }
+          },
+          JsonTokenKind::Number => rsx! {
+            span { key: "jt-{idx}", class: "text-amber-300", "{tok.text}" }
+          },
+          JsonTokenKind::Keyword => rsx! {
+            span { key: "jt-{idx}", class: "text-violet-300 font-semibold", "{tok.text}" }
+          },
+          JsonTokenKind::Punct => rsx! {
+            span { key: "jt-{idx}", class: "text-slate-400", "{tok.text}" }
+          },
+          JsonTokenKind::Plain => rsx! {
+            span { key: "jt-{idx}", class: "text-slate-200", "{tok.text}" }
+          },
+        }
+      }
+    }
+  }
+}
+
 #[component]
 fn ModelConfigsGuideLoaded(desc: String) -> Element {
   let lang = current_lang();
   let res = use_server_future(get_config_guide_json_cached)?;
   let active_modality = use_signal(|| "llm".to_string());
   let active_file_spec = use_signal(|| ConfigFileKind::ModelConfig);
+  let copied_snippet: Signal<Option<ConfigFileKind>> = use_signal(|| None);
   let filter_category: Signal<Option<ConfigFileCategory>> = use_signal(|| None);
   let filter_file: Signal<Option<ConfigFileKind>> = use_signal(|| None);
   let filter_group: Signal<Option<FieldGroup>> = use_signal(|| None);
@@ -3726,6 +4093,7 @@ fn ModelConfigsGuideLoaded(desc: String) -> Element {
         &desc,
         active_modality,
         active_file_spec,
+        copied_snippet,
         filter_category,
         filter_file,
         filter_group,
@@ -3741,6 +4109,7 @@ pub(crate) fn render_config_guide_content(
   desc: &str,
   mut active_modality: Signal<String>,
   mut active_file_spec: Signal<ConfigFileKind>,
+  mut copied_snippet: Signal<Option<ConfigFileKind>>,
   mut filter_category: Signal<Option<ConfigFileCategory>>,
   mut filter_file: Signal<Option<ConfigFileKind>>,
   mut filter_group: Signal<Option<FieldGroup>>,
@@ -3919,7 +4288,9 @@ pub(crate) fn render_config_guide_content(
             div { class: "space-y-1",
               div { class: "font-bold text-indigo-700 dark:text-indigo-300",
                 {lang.pick("推理加载数据流：", "Loader Pipeline Flow: ")}
-                span { class: "font-normal text-slate-700 dark:text-slate-300", "{tree.flow(lang)}" }
+                span { class: "font-normal text-slate-700 dark:text-slate-300",
+                  {render_inline_markup(tree.flow(lang))}
+                }
               }
               div { class: "font-mono text-[11px] text-slate-500 dark:text-slate-400",
                 {lang.pick("典型仓库参考：", "Reference Repos: ")}
@@ -3964,7 +4335,7 @@ pub(crate) fn render_config_guide_content(
                       }
                     }
                     p { class: "text-xs text-slate-600 dark:text-slate-400 leading-relaxed",
-                      "{item.note(lang)}"
+                      {render_inline_markup(item.note(lang))}
                     }
                     div { class: "flex items-center justify-between pt-1",
                       span { class: "text-[11px] font-mono text-slate-400", "{fk.short_name()}" }
@@ -4051,9 +4422,11 @@ pub(crate) fn render_config_guide_content(
           {
             let spec_kind = spec.kind;
             let spec_cat = spec_kind.category();
+            let snippet_for_copy = spec.snippet.clone();
+            let is_copied = copied_snippet() == Some(spec_kind);
             rsx! {
               div { class: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start pt-1",
-                div { class: "lg:col-span-7 space-y-3.5",
+                div { class: "lg:col-span-6 space-y-3.5",
                   div { class: "flex flex-wrap items-center gap-2",
                     h3 { class: "text-base sm:text-lg font-extrabold font-mono text-slate-900 dark:text-white",
                       "{spec.filenames}"
@@ -4069,14 +4442,14 @@ pub(crate) fn render_config_guide_content(
                     "{spec.role(lang)}"
                   }
                   p { class: "text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
-                    "{spec.summary(lang)}"
+                    {render_inline_markup(spec.summary(lang))}
                   }
                   div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3.5 text-xs space-y-1.5",
                     div { class: "font-bold text-slate-800 dark:text-slate-200",
                       {lang.pick("⚙ 框架与推理引擎加载方式", "⚙ How Frameworks Consume It")}
                     }
                     p { class: "text-slate-600 dark:text-slate-400 leading-relaxed",
-                      "{spec.loader(lang)}"
+                      {render_inline_markup(spec.loader(lang))}
                     }
                   }
                   div { class: "rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 p-3.5 text-xs space-y-1.5",
@@ -4084,7 +4457,7 @@ pub(crate) fn render_config_guide_content(
                       {lang.pick("⚠ 实战最容易踩的坑", "⚠ Common Pitfall")}
                     }
                     p { class: "text-amber-900/90 dark:text-amber-200/90 leading-relaxed",
-                      "{spec.pitfall(lang)}"
+                      {render_inline_markup(spec.pitfall(lang))}
                     }
                   }
                   div { class: "pt-1",
@@ -4102,14 +4475,35 @@ pub(crate) fn render_config_guide_content(
                   }
                 }
 
-                div { class: "lg:col-span-5",
-                  div { class: "rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden",
-                    div { class: "px-3.5 py-2 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-slate-400",
-                      span { "{spec_kind.short_name()}" }
-                      span { "Annotated Example" }
+                div { class: "lg:col-span-6",
+                  div { class: "rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden shadow-xs",
+                    div { class: "px-3.5 py-2 border-b border-slate-800 flex items-center justify-between gap-2 text-[11px] font-mono text-slate-400",
+                      span { class: "truncate text-slate-200 font-semibold", "{spec_kind.short_name()}" }
+                      div { class: "flex items-center gap-2 shrink-0",
+                        span { class: "hidden sm:inline text-slate-500",
+                          {lang.pick("带注释完整骨架", "Annotated Blueprint")}
+                        }
+                        button {
+                          r#type: "button",
+                          class: "px-2 py-0.5 rounded-md border border-slate-700 bg-slate-900 text-slate-200 hover:border-indigo-400 hover:text-white cursor-pointer transition-colors whitespace-nowrap",
+                          onclick: move |_| {
+                            let text = snippet_for_copy.clone();
+                            spawn(async move {
+                              if widgets::browser::copy_text(&text).await {
+                                copied_snippet.set(Some(spec_kind));
+                              }
+                            });
+                          },
+                          if is_copied {
+                            {lang.pick("✓ 已复制", "✓ Copied")}
+                          } else {
+                            {lang.pick("复制示例", "Copy")}
+                          }
+                        }
+                      }
                     }
-                    pre { class: "p-3.5 text-xs font-mono text-slate-100 overflow-x-auto leading-relaxed",
-                      "{spec.snippet}"
+                    pre { class: "p-3.5 max-h-[30rem] overflow-auto text-xs font-mono text-slate-100 leading-relaxed",
+                      {render_highlighted_json(&spec.snippet)}
                     }
                   }
                 }
@@ -4346,7 +4740,7 @@ pub(crate) fn render_config_guide_content(
                             }
 
                             p { class: "text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
-                              "{doc.summary(lang)}"
+                              {render_inline_markup(doc.summary(lang))}
                             }
 
                             if let Some(ref formula) = doc.formula_impact {
@@ -4418,19 +4812,19 @@ pub(crate) fn render_config_guide_content(
                   span { class: "font-bold text-rose-600 dark:text-rose-400 mr-1",
                     {lang.pick("现象：", "Symptom: ")}
                   }
-                  "{g.symptom(lang)}"
+                  {render_inline_markup(g.symptom(lang))}
                 }
                 p { class: "text-slate-600 dark:text-slate-400",
                   span { class: "font-bold text-slate-800 dark:text-slate-200 mr-1",
                     {lang.pick("根因：", "Cause: ")}
                   }
-                  "{g.root_cause(lang)}"
+                  {render_inline_markup(g.root_cause(lang))}
                 }
                 p { class: "text-slate-700 dark:text-slate-300",
                   span { class: "font-bold text-emerald-600 dark:text-emerald-400 mr-1",
                     {lang.pick("解法：", "Fix: ")}
                   }
-                  "{g.fix(lang)}"
+                  {render_inline_markup(g.fix(lang))}
                 }
               }
               div { class: "flex flex-wrap items-center gap-1.5 pt-1",
@@ -4787,5 +5181,38 @@ mod tests {
     let compacted = compact_aux_json_for_snapshot(&big_tok).expect("compacted");
     assert!(compacted.contains("{30 entries}"));
     assert!(compacted.contains("500 chars"));
+  }
+
+  #[test]
+  fn inline_markup_and_json_highlighter_are_lossless_and_accurate() {
+    let segs = tokenize_inline_markup(
+      "Transformers (`AutoConfig.from_pretrained`) 含**一个或多个** `*_scale_inv` 与未闭合 `tail",
+    );
+    assert!(segs.contains(&InlineSegment::Code("AutoConfig.from_pretrained")));
+    assert!(segs.contains(&InlineSegment::Bold("一个或多个")));
+    assert!(segs.contains(&InlineSegment::Code("*_scale_inv")));
+    assert!(segs.iter().any(|s| matches!(s, InlineSegment::Text(t) if t.contains("`tail"))));
+
+    for spec in CONFIG_FILE_SPECS {
+      let toks = tokenize_json(spec.snippet);
+      let reconstructed: String = toks.iter().map(|t| t.text).collect();
+      assert_eq!(reconstructed, spec.snippet, "lossy tokenization on {:?}", spec.kind);
+      assert!(
+        toks.iter().any(|t| t.kind == JsonTokenKind::Key),
+        "expected JSON keys in {:?}",
+        spec.kind
+      );
+      assert!(
+        toks.iter().any(|t| t.kind == JsonTokenKind::Comment),
+        "expected explanatory comments in {:?}",
+        spec.kind
+      );
+    }
+
+    let sample = r#"{ "rms_norm_eps": 1e-6, "use_cache": true, "modules_to_save": null }"#;
+    let toks = tokenize_json(sample);
+    assert!(toks.iter().any(|t| t.kind == JsonTokenKind::Number && t.text == "1e-6"));
+    assert!(toks.iter().any(|t| t.kind == JsonTokenKind::Keyword && t.text == "true"));
+    assert!(toks.iter().any(|t| t.kind == JsonTokenKind::Keyword && t.text == "null"));
   }
 }
