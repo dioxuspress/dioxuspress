@@ -535,6 +535,7 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
         Button {
           variant: ButtonVariant::Outline,
           size: ButtonSize::Sm,
+          class: "shrink-0 whitespace-nowrap",
           onclick: move |_| show_add_modal.set(true),
           {lang.pick("＋ 收录模型", "+ Add Model")}
         }
@@ -726,15 +727,18 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
                   }
                 }
               },
-              Input {
-                class: "h-9 text-xs font-mono bg-slate-50 dark:bg-slate-950",
-                placeholder: "输入 owner/model 回车解析...",
-                "aria-label": "Custom HuggingFace or ModelScope repository",
-                value: custom_repo(),
-                on_value_change: move |v: String| custom_repo.set(v),
+              div { class: "flex-1 min-w-0",
+                Input {
+                  class: "h-9 text-xs font-mono bg-slate-50 dark:bg-slate-950",
+                  placeholder: lang.pick("输入 owner/model 回车解析...", "Enter owner/model and press Enter..."),
+                  "aria-label": "Custom HuggingFace or ModelScope repository",
+                  value: custom_repo(),
+                  on_value_change: move |v: String| custom_repo.set(v),
+                }
               }
               Button {
                 size: ButtonSize::Sm,
+                class: "h-9 px-4 shrink-0 whitespace-nowrap",
                 onclick: move |_| {
                   let r = custom_repo().trim().to_string();
                   if !r.is_empty() {
@@ -1709,6 +1713,7 @@ pub fn SaveToAtlasModal(
             }
             Button {
               size: ButtonSize::Sm,
+              class: "h-9 shrink-0 whitespace-nowrap",
               loading: fetching(),
               onclick: move |_| do_fetch_draft(),
               {lang.pick("拉取并生成草稿", "Fetch Draft")}

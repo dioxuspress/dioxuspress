@@ -3953,6 +3953,7 @@ pub(crate) fn render_config_guide_content(
               Button {
                 variant: ButtonVariant::Outline,
                 size: ButtonSize::Sm,
+                class: "shrink-0 whitespace-nowrap",
                 onclick: move |_| {
                   filter_file.set(None);
                   filter_group.set(None);

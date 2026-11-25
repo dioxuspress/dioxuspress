@@ -349,6 +349,7 @@ pub fn AiVisualizerPage() -> Element {
             }
 
             Button {
+              class: "shrink-0 whitespace-nowrap",
               loading: loading(),
               onclick: move |_| trigger_live_fetch(),
               {lang.pick("实时拉取架构", "Inspect Live")}
