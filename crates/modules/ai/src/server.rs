@@ -660,6 +660,45 @@ pub async fn fetch_model_blueprint(
   imp::resolve_model_blueprint(&repo, &source, &revision).await.map_err(ServerFnError::new)
 }
 
+/// Dioxus Server Function：解析用户手工粘贴的 `config.json`（含 Diffusers `model_index.json`）与可选 `model.safetensors.index.json`。
+///
+/// 将大型 Diffusers 与 Safetensors 解析器收拢在服务端执行，避免将相关解析代码打包进客户端 WASM。
+#[post("/api/ai/parse-model-config")]
+pub async fn parse_custom_model_config(
+  raw_config: String,
+  raw_index: String,
+) -> Result<ModelBlueprint, ServerFnError> {
+  const MAX_CUSTOM_CONFIG_BYTES: usize = 2 * 1024 * 1024;
+  const MAX_CUSTOM_INDEX_BYTES: usize = 8 * 1024 * 1024;
+  if raw_config.trim().is_empty() {
+    return Err(ServerFnError::new("请先粘贴 config.json 内容"));
+  }
+  if raw_config.len() > MAX_CUSTOM_CONFIG_BYTES {
+    return Err(ServerFnError::new("config.json 体积超过 2 MiB 上限"));
+  }
+  if raw_index.len() > MAX_CUSTOM_INDEX_BYTES {
+    return Err(ServerFnError::new("model.safetensors.index.json 体积超过 8 MiB 上限"));
+  }
+
+  let st_opt = if raw_index.trim().is_empty() {
+    None
+  } else {
+    let (tot, wm) = crate::safetensors_meta::parse_safetensors_index_json(&raw_index)
+      .map_err(ServerFnError::new)?;
+    Some(crate::safetensors_meta::summarize_index_and_headers(tot, &wm, &[]))
+  };
+
+  crate::arch::build_model_blueprint(
+    "custom/pasted-config",
+    "Custom Local JSON",
+    &raw_config,
+    None,
+    None,
+    st_opt,
+  )
+  .map_err(ServerFnError::new)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

@@ -954,7 +954,8 @@ pub fn build_model_blueprint_with_aux(
     return Err("config.json 根节点必须是 JSON 对象".to_string());
   };
 
-  // 若输入本身是 Diffusers `model_index.json` 或独立 DiT / MMDiT / UNet 组件 `config.json`，自动转入扩散管线解析器
+  // 若输入本身是 Diffusers `model_index.json` 或独立 DiT / MMDiT / UNet 组件 `config.json`，自动转入扩散管线解析器（仅服务端编译以保持客户端 WASM 轻量）
+  #[cfg(feature = "server")]
   if is_diffusion_root_json(root_obj) {
     return build_diffusion_from_single_json(
       repo_id,
@@ -1606,6 +1607,7 @@ pub fn build_model_blueprint_with_aux(
   })
 }
 
+#[cfg(feature = "server")]
 fn collect_aux_config_snapshots(aux: AuxConfigFiles<'_>) -> Vec<AuxConfigSnapshot> {
   let mut out = Vec::new();
   for (filename, raw_opt) in [
@@ -1623,7 +1625,13 @@ fn collect_aux_config_snapshots(aux: AuxConfigFiles<'_>) -> Vec<AuxConfigSnapsho
   out
 }
 
+#[cfg(not(feature = "server"))]
+fn collect_aux_config_snapshots(_aux: AuxConfigFiles<'_>) -> Vec<AuxConfigSnapshot> {
+  Vec::new()
+}
+
 #[derive(Default)]
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 struct PreprocessorHints {
   mel_bins: Option<u64>,
   sampling_rate: Option<u64>,
@@ -1631,393 +1639,474 @@ struct PreprocessorHints {
   patch_size: Option<u64>,
 }
 
-fn parse_preprocessor_meta(raw: Option<&str>) -> PreprocessorHints {
-  let Some(s) = raw else {
-    return PreprocessorHints::default();
-  };
-  let Ok(val) = serde_json::from_str::<Value>(s) else {
-    return PreprocessorHints::default();
-  };
-  let Some(obj) = val.as_object() else {
-    return PreprocessorHints::default();
-  };
-  let mel_bins = u64_any(obj, &["feature_size", "num_mel_bins", "n_mels"]).filter(|&v| v >= 16);
-  let sampling_rate = u64_any(obj, &["sampling_rate", "sample_rate"]).filter(|&v| v >= 8000);
-  let image_size = u64_any(obj, &["image_size"]).or_else(|| {
-    obj
-      .get("size")
-      .or_else(|| obj.get("crop_size"))
-      .and_then(Value::as_object)
-      .and_then(|sz| u64_any(sz, &["height", "shortest_edge", "longest_edge"]))
-  });
-  let patch_size = u64_any(obj, &["patch_size"]);
-  PreprocessorHints { mel_bins, sampling_rate, image_size, patch_size }
-}
+#[cfg(feature = "server")]
+mod multimodal_parsers {
+  use super::*;
 
-fn parse_pooling_meta(raw: Option<&str>) -> Option<(String, u64)> {
-  let s = raw?;
-  let val = serde_json::from_str::<Value>(s).ok()?;
-  let obj = val.as_object()?;
-  let dim = u64_any(obj, &["word_embedding_dimension"]).unwrap_or(0);
-  let mode = if obj.get("pooling_mode_lasttoken").and_then(Value::as_bool) == Some(true) {
-    "last_token"
-  } else if obj.get("pooling_mode_cls_token").and_then(Value::as_bool) == Some(true) {
-    "cls"
-  } else {
-    "mean"
-  };
-  Some((mode.to_string(), dim))
-}
-
-fn parse_vision_spec(
-  vc: &serde_json::Map<String, Value>,
-  text_hidden: u64,
-  preproc: &PreprocessorHints,
-) -> Option<VisionSpec> {
-  let hidden_size = u64_any(vc, &["hidden_size", "embed_dim", "vision_width"])?;
-  if hidden_size == 0 {
-    return None;
-  }
-  let num_hidden_layers = u64_any(vc, &["num_hidden_layers", "depth"]).unwrap_or(24).max(1);
-  let num_attention_heads = u64_any(vc, &["num_attention_heads", "num_heads"]).unwrap_or(16).max(1);
-  let intermediate_size = u64_any(vc, &["intermediate_size", "mlp_dim"]).unwrap_or(hidden_size * 4);
-  let image_size = u64_any(vc, &["image_size"]).or(preproc.image_size);
-  let patch_size = u64_any(vc, &["patch_size"]).or(preproc.patch_size);
-  let model_type = vc.get("model_type").and_then(Value::as_str).unwrap_or("vision_encoder");
-
-  let patch = patch_size.unwrap_or(14);
-  let patch_embed = 3 * patch * patch * hidden_size;
-  let per_layer = 4 * hidden_size * hidden_size + 2 * hidden_size * intermediate_size;
-  let projector = hidden_size * text_hidden * 2;
-  let estimated_params = patch_embed + num_hidden_layers * per_layer + projector;
-
-  Some(VisionSpec {
-    model_type: model_type.to_string(),
-    hidden_size,
-    num_hidden_layers,
-    num_attention_heads,
-    intermediate_size,
-    image_size,
-    patch_size,
-    estimated_params,
-  })
-}
-
-fn parse_audio_spec(
-  audio_cfg: Option<&serde_json::Map<String, Value>>,
-  cfg_obj: &serde_json::Map<String, Value>,
-  text_hidden: u64,
-  is_whisper_like: bool,
-  is_ctc_asr: bool,
-  has_projector: bool,
-  preproc: &PreprocessorHints,
-) -> Option<AudioSpec> {
-  if let Some(ac) = audio_cfg {
-    let d = u64_any(ac, &["d_model", "hidden_size", "encoder_hidden_size"])?;
-    let layers = u64_any(ac, &["encoder_layers", "num_hidden_layers", "num_layers"])?;
-    let heads =
-      u64_any(ac, &["encoder_attention_heads", "num_attention_heads"]).unwrap_or(20).max(1);
-    let ffn = u64_any(ac, &["encoder_ffn_dim", "intermediate_size"]).unwrap_or(d * 4);
-    let mels = u64_any(ac, &["num_mel_bins", "n_mels"]).or(preproc.mel_bins).unwrap_or(128);
-    let sr = u64_any(ac, &["sampling_rate"]).or(preproc.sampling_rate).unwrap_or(16_000);
-    let max_pos = u64_any(ac, &["max_source_positions"]).unwrap_or(1500);
-    let mt = ac.get("model_type").and_then(Value::as_str).unwrap_or("audio_encoder");
-    let stem = mels * 3 * d + d * 3 * d + max_pos * d;
-    let trunk = layers * (4 * d * d + 2 * d * ffn + 4 * d);
-    let proj = if has_projector { d * text_hidden * 2 } else { 0 };
-    return Some(AudioSpec {
-      model_type: mt.to_string(),
-      num_mel_bins: mels,
-      sampling_rate_hz: sr,
-      hidden_size: d,
-      num_layers: layers,
-      num_heads: heads,
-      ffn_dim: ffn,
-      max_source_positions: max_pos,
-      estimated_params: stem + trunk + proj,
+  pub(super) fn parse_preprocessor_meta(raw: Option<&str>) -> PreprocessorHints {
+    let Some(s) = raw else {
+      return PreprocessorHints::default();
+    };
+    let Ok(val) = serde_json::from_str::<Value>(s) else {
+      return PreprocessorHints::default();
+    };
+    let Some(obj) = val.as_object() else {
+      return PreprocessorHints::default();
+    };
+    let mel_bins = u64_any(obj, &["feature_size", "num_mel_bins", "n_mels"]).filter(|&v| v >= 16);
+    let sampling_rate = u64_any(obj, &["sampling_rate", "sample_rate"]).filter(|&v| v >= 8000);
+    let image_size = u64_any(obj, &["image_size"]).or_else(|| {
+      obj
+        .get("size")
+        .or_else(|| obj.get("crop_size"))
+        .and_then(Value::as_object)
+        .and_then(|sz| u64_any(sz, &["height", "shortest_edge", "longest_edge"]))
     });
+    let patch_size = u64_any(obj, &["patch_size"]);
+    PreprocessorHints { mel_bins, sampling_rate, image_size, patch_size }
   }
 
-  if is_whisper_like {
-    let d = u64_any(cfg_obj, &["d_model", "hidden_size"])?;
-    let layers = u64_any(cfg_obj, &["encoder_layers"])?;
-    let heads =
-      u64_any(cfg_obj, &["encoder_attention_heads", "num_attention_heads"]).unwrap_or(20).max(1);
-    let ffn = u64_any(cfg_obj, &["encoder_ffn_dim", "intermediate_size"]).unwrap_or(d * 4);
-    let mels = u64_any(cfg_obj, &["num_mel_bins"]).or(preproc.mel_bins).unwrap_or(128);
-    let sr = preproc.sampling_rate.unwrap_or(16_000);
-    let max_pos = u64_any(cfg_obj, &["max_source_positions"]).unwrap_or(1500);
-    let stem = mels * 3 * d + d * 3 * d + max_pos * d;
-    let trunk = layers * (4 * d * d + 2 * d * ffn + 4 * d);
-    return Some(AudioSpec {
-      model_type: "whisper_encoder".to_string(),
-      num_mel_bins: mels,
-      sampling_rate_hz: sr,
-      hidden_size: d,
-      num_layers: layers,
-      num_heads: heads,
-      ffn_dim: ffn,
-      max_source_positions: max_pos,
-      estimated_params: stem + trunk,
-    });
-  }
-
-  if is_ctc_asr {
-    let mels = preproc.mel_bins.unwrap_or(80);
-    let sr = preproc.sampling_rate.unwrap_or(16_000);
-    let conv_params = 4_200_000u64;
-    return Some(AudioSpec {
-      model_type: "conv_feature_extractor".to_string(),
-      num_mel_bins: mels,
-      sampling_rate_hz: sr,
-      hidden_size: text_hidden,
-      num_layers: 7,
-      num_heads: 1,
-      ffn_dim: text_hidden,
-      max_source_positions: 1500,
-      estimated_params: conv_params,
-    });
-  }
-
-  None
-}
-
-fn parse_speech_synthesizer(
-  root_obj: &serde_json::Map<String, Value>,
-  cfg_obj: &serde_json::Map<String, Value>,
-  arch_joined: &str,
-  preproc: &PreprocessorHints,
-) -> Option<OutputHeadSpec> {
-  // 1) Qwen2.5-Omni / Qwen3-Omni: `talker_config` + `token2wav_config`
-  if root_obj.contains_key("talker_config") || root_obj.contains_key("token2wav_config") {
-    let talker_raw = root_obj.get("talker_config").and_then(Value::as_object);
-    let talker_inner =
-      talker_raw.and_then(|t| t.get("text_config").and_then(Value::as_object)).or(talker_raw);
-    let (talker_summary, talker_params) = if let Some(tc) = talker_inner {
-      let td = u64_any(tc, &["hidden_size", "d_model"]).unwrap_or(896);
-      let tl = u64_any(tc, &["num_hidden_layers", "num_layers"]).unwrap_or(24);
-      let ti = u64_any(tc, &["intermediate_size"]).unwrap_or(td * 4);
-      let tv = u64_any(tc, &["vocab_size"]).unwrap_or(8448);
-      let p = tv * td + tl * (4 * td * td + 3 * td * ti);
-      (Some(format!("Talker Dual-Track AR ({tl}L×{td}d, codec_vocab={tv})")), p)
+  pub(super) fn parse_pooling_meta(raw: Option<&str>) -> Option<(String, u64)> {
+    let s = raw?;
+    let val = serde_json::from_str::<Value>(s).ok()?;
+    let obj = val.as_object()?;
+    let dim = u64_any(obj, &["word_embedding_dimension"]).unwrap_or(0);
+    let mode = if obj.get("pooling_mode_lasttoken").and_then(Value::as_bool) == Some(true) {
+      "last_token"
+    } else if obj.get("pooling_mode_cls_token").and_then(Value::as_bool) == Some(true) {
+      "cls"
     } else {
-      (None, 0)
+      "mean"
     };
-    let t2w_params = if root_obj.contains_key("token2wav_config") { 180_000_000 } else { 0 };
-    return Some(OutputHeadSpec::SpeechSynthesizer {
-      talker_summary,
-      codec_summary: "Token2Wav (Flow-Matching DiT + BigVGAN)".to_string(),
-      num_codebooks: 1,
-      sampling_rate_hz: preproc.sampling_rate.unwrap_or(24_000),
-      estimated_params: talker_params + t2w_params,
-    });
+    Some((mode.to_string(), dim))
   }
 
-  // 2) Parler-TTS / MusicGen: `text_encoder` + `decoder` + `audio_encoder` (DAC / EnCodec)
-  if arch_joined.contains("parler_tts") || arch_joined.contains("musicgen") {
-    let te_info = root_obj.get("text_encoder").and_then(Value::as_object).map(|te| {
-      let d = u64_any(te, &["d_model", "hidden_size"]).unwrap_or(1024);
-      let l = u64_any(te, &["num_layers", "num_hidden_layers"]).unwrap_or(24);
-      (format!("Prompt Encoder ({l}L×{d}d)"), l * 12 * d * d)
-    });
-    let ae = root_obj.get("audio_encoder").and_then(Value::as_object);
-    let codebooks = u64_any(cfg_obj, &["num_codebooks"])
-      .or_else(|| ae.and_then(|a| u64_any(a, &["num_codebooks"])))
-      .unwrap_or(9);
-    let sr =
-      ae.and_then(|a| u64_any(a, &["sampling_rate"])).or(preproc.sampling_rate).unwrap_or(44_100);
-    let codec_type = ae.and_then(|a| a.get("model_type")).and_then(Value::as_str).unwrap_or("DAC");
-    let (talker_summary, te_params) = match te_info {
-      Some((s, p)) => (Some(s), p),
-      None => (None, 0),
-    };
-    return Some(OutputHeadSpec::SpeechSynthesizer {
-      talker_summary,
-      codec_summary: format!(
-        "{} Neural Audio Codec ({codebooks} RVQ Codebooks)",
-        codec_type.to_uppercase()
-      ),
-      num_codebooks: codebooks,
-      sampling_rate_hz: sr,
-      estimated_params: te_params + 75_000_000,
-    });
+  pub(super) fn parse_vision_spec(
+    vc: &serde_json::Map<String, Value>,
+    text_hidden: u64,
+    preproc: &PreprocessorHints,
+  ) -> Option<VisionSpec> {
+    let hidden_size = u64_any(vc, &["hidden_size", "embed_dim", "vision_width"])?;
+    if hidden_size == 0 {
+      return None;
+    }
+    let num_hidden_layers = u64_any(vc, &["num_hidden_layers", "depth"]).unwrap_or(24).max(1);
+    let num_attention_heads =
+      u64_any(vc, &["num_attention_heads", "num_heads"]).unwrap_or(16).max(1);
+    let intermediate_size =
+      u64_any(vc, &["intermediate_size", "mlp_dim"]).unwrap_or(hidden_size * 4);
+    let image_size = u64_any(vc, &["image_size"]).or(preproc.image_size);
+    let patch_size = u64_any(vc, &["patch_size"]).or(preproc.patch_size);
+    let model_type = vc.get("model_type").and_then(Value::as_str).unwrap_or("vision_encoder");
+
+    let patch = patch_size.unwrap_or(14);
+    let patch_embed = 3 * patch * patch * hidden_size;
+    let per_layer = 4 * hidden_size * hidden_size + 2 * hidden_size * intermediate_size;
+    let projector = hidden_size * text_hidden * 2;
+    let estimated_params = patch_embed + num_hidden_layers * per_layer + projector;
+
+    Some(VisionSpec {
+      model_type: model_type.to_string(),
+      hidden_size,
+      num_hidden_layers,
+      num_attention_heads,
+      intermediate_size,
+      image_size,
+      patch_size,
+      estimated_params,
+    })
   }
 
-  // 3) SpeechT5 / VITS / Bark / Kokoro / F5-TTS
-  if arch_joined.contains("speecht5")
-    || arch_joined.contains("vits")
-    || arch_joined.contains("bark")
-    || arch_joined.contains("kokoro")
-    || arch_joined.contains("f5tts")
-    || arch_joined.contains("cosyvoice")
-  {
-    let sr = u64_any(cfg_obj, &["sampling_rate"]).or(preproc.sampling_rate).unwrap_or(24_000);
-    return Some(OutputHeadSpec::SpeechSynthesizer {
-      talker_summary: None,
-      codec_summary: "Acoustic Post-Net / Flow-Matching / HiFi-GAN Vocoder".to_string(),
-      num_codebooks: u64_any(cfg_obj, &["num_codebooks"]).unwrap_or(1),
-      sampling_rate_hz: sr,
-      estimated_params: 28_000_000,
-    });
-  }
-
-  None
-}
-
-struct LinearSsmPlan {
-  kind_short: &'static str,
-  spec: AttentionSpec,
-  full_attn_layers: u64,
-  has_separate_ffn: bool,
-}
-
-fn detect_linear_ssm(
-  cfg: &serde_json::Map<String, Value>,
-  model_type: &str,
-  arch_joined: &str,
-  hidden_size: u64,
-  num_layers: u64,
-  num_q_heads: u64,
-) -> Option<LinearSsmPlan> {
-  // 1) Qwen3-Next: Gated DeltaNet + Full GQA (default 3:1)
-  if model_type == "qwen3_next" || cfg.contains_key("linear_num_value_heads") {
-    let v_heads = u64_any(cfg, &["linear_num_value_heads"]).unwrap_or(num_q_heads).max(1);
-    let v_dim = u64_any(cfg, &["linear_value_head_dim"]).unwrap_or(128);
-    let k_dim = u64_any(cfg, &["linear_key_head_dim"]).unwrap_or(128);
-    let conv = u64_any(cfg, &["linear_conv_kernel_dim"]).unwrap_or(4);
-    let full_attn_layers = cfg
-      .get("layer_types")
-      .and_then(Value::as_array)
-      .map(|arr| {
-        arr
-          .iter()
-          .filter(|v| v.as_str().is_some_and(|s| s.contains("full") || s == "attention"))
-          .count() as u64
-      })
-      .filter(|&c| c > 0)
-      .unwrap_or_else(|| {
-        let interval = u64_any(cfg, &["full_attention_interval"]).unwrap_or(4).max(2);
-        (num_layers / interval).max(1)
+  pub(super) fn parse_audio_spec(
+    audio_cfg: Option<&serde_json::Map<String, Value>>,
+    cfg_obj: &serde_json::Map<String, Value>,
+    text_hidden: u64,
+    is_whisper_like: bool,
+    is_ctc_asr: bool,
+    has_projector: bool,
+    preproc: &PreprocessorHints,
+  ) -> Option<AudioSpec> {
+    if let Some(ac) = audio_cfg {
+      let d = u64_any(ac, &["d_model", "hidden_size", "encoder_hidden_size"])?;
+      let layers = u64_any(ac, &["encoder_layers", "num_hidden_layers", "num_layers"])?;
+      let heads =
+        u64_any(ac, &["encoder_attention_heads", "num_attention_heads"]).unwrap_or(20).max(1);
+      let ffn = u64_any(ac, &["encoder_ffn_dim", "intermediate_size"]).unwrap_or(d * 4);
+      let mels = u64_any(ac, &["num_mel_bins", "n_mels"]).or(preproc.mel_bins).unwrap_or(128);
+      let sr = u64_any(ac, &["sampling_rate"]).or(preproc.sampling_rate).unwrap_or(16_000);
+      let max_pos = u64_any(ac, &["max_source_positions"]).unwrap_or(1500);
+      let mt = ac.get("model_type").and_then(Value::as_str).unwrap_or("audio_encoder");
+      let stem = mels * 3 * d + d * 3 * d + max_pos * d;
+      let trunk = layers * (4 * d * d + 2 * d * ffn + 4 * d);
+      let proj = if has_projector { d * text_hidden * 2 } else { 0 };
+      return Some(AudioSpec {
+        model_type: mt.to_string(),
+        num_mel_bins: mels,
+        sampling_rate_hz: sr,
+        hidden_size: d,
+        num_layers: layers,
+        num_heads: heads,
+        ffn_dim: ffn,
+        max_source_positions: max_pos,
+        estimated_params: stem + trunk + proj,
       });
-    return Some(LinearSsmPlan {
-      kind_short: "Gated DeltaNet",
-      spec: AttentionSpec::LinearRecurrent {
-        kind: "Gated DeltaNet".to_string(),
-        num_heads: v_heads,
-        head_dim: v_dim,
-        state_dim: k_dim,
-        conv_kernel: conv,
-        expand_factor: 1,
-      },
-      full_attn_layers,
-      has_separate_ffn: true,
-    });
+    }
+
+    if is_whisper_like {
+      let d = u64_any(cfg_obj, &["d_model", "hidden_size"])?;
+      let layers = u64_any(cfg_obj, &["encoder_layers"])?;
+      let heads =
+        u64_any(cfg_obj, &["encoder_attention_heads", "num_attention_heads"]).unwrap_or(20).max(1);
+      let ffn = u64_any(cfg_obj, &["encoder_ffn_dim", "intermediate_size"]).unwrap_or(d * 4);
+      let mels = u64_any(cfg_obj, &["num_mel_bins"]).or(preproc.mel_bins).unwrap_or(128);
+      let sr = preproc.sampling_rate.unwrap_or(16_000);
+      let max_pos = u64_any(cfg_obj, &["max_source_positions"]).unwrap_or(1500);
+      let stem = mels * 3 * d + d * 3 * d + max_pos * d;
+      let trunk = layers * (4 * d * d + 2 * d * ffn + 4 * d);
+      return Some(AudioSpec {
+        model_type: "whisper_encoder".to_string(),
+        num_mel_bins: mels,
+        sampling_rate_hz: sr,
+        hidden_size: d,
+        num_layers: layers,
+        num_heads: heads,
+        ffn_dim: ffn,
+        max_source_positions: max_pos,
+        estimated_params: stem + trunk,
+      });
+    }
+
+    if is_ctc_asr {
+      let mels = preproc.mel_bins.unwrap_or(80);
+      let sr = preproc.sampling_rate.unwrap_or(16_000);
+      let conv_params = 4_200_000u64;
+      return Some(AudioSpec {
+        model_type: "conv_feature_extractor".to_string(),
+        num_mel_bins: mels,
+        sampling_rate_hz: sr,
+        hidden_size: text_hidden,
+        num_layers: 7,
+        num_heads: 1,
+        ffn_dim: text_hidden,
+        max_source_positions: 1500,
+        estimated_params: conv_params,
+      });
+    }
+
+    None
   }
 
-  // 2) Pure Mamba / Mamba-2 / Falcon-Mamba
-  if matches!(model_type, "mamba" | "mamba2" | "falcon_mamba") {
-    let expand = u64_any(cfg, &["expand"]).unwrap_or(2).max(1);
-    let d_inner = expand * hidden_size;
-    let is_m2 = model_type == "mamba2";
-    let state_dim = u64_any(cfg, &["state_size", "ssm_state_size", "d_state"])
-      .unwrap_or(if is_m2 { 128 } else { 16 });
-    let conv = u64_any(cfg, &["conv_kernel", "d_conv"]).unwrap_or(4);
-    let head_dim = u64_any(cfg, &["head_dim", "headdim"]).unwrap_or(64).max(1);
-    let n_heads = u64_any(cfg, &["n_heads"]).unwrap_or((d_inner / head_dim).max(1));
-    let kind_short = if is_m2 { "Mamba-2 SSD" } else { "Mamba Selective SSM" };
-    return Some(LinearSsmPlan {
-      kind_short,
-      spec: AttentionSpec::LinearRecurrent {
-        kind: kind_short.to_string(),
-        num_heads: n_heads,
-        head_dim,
-        state_dim,
-        conv_kernel: conv,
-        expand_factor: expand,
-      },
-      full_attn_layers: 0,
-      has_separate_ffn: false,
-    });
+  pub(super) fn parse_speech_synthesizer(
+    root_obj: &serde_json::Map<String, Value>,
+    cfg_obj: &serde_json::Map<String, Value>,
+    arch_joined: &str,
+    preproc: &PreprocessorHints,
+  ) -> Option<OutputHeadSpec> {
+    // 1) Qwen2.5-Omni / Qwen3-Omni: `talker_config` + `token2wav_config`
+    if root_obj.contains_key("talker_config") || root_obj.contains_key("token2wav_config") {
+      let talker_raw = root_obj.get("talker_config").and_then(Value::as_object);
+      let talker_inner =
+        talker_raw.and_then(|t| t.get("text_config").and_then(Value::as_object)).or(talker_raw);
+      let (talker_summary, talker_params) = if let Some(tc) = talker_inner {
+        let td = u64_any(tc, &["hidden_size", "d_model"]).unwrap_or(896);
+        let tl = u64_any(tc, &["num_hidden_layers", "num_layers"]).unwrap_or(24);
+        let ti = u64_any(tc, &["intermediate_size"]).unwrap_or(td * 4);
+        let tv = u64_any(tc, &["vocab_size"]).unwrap_or(8448);
+        let p = tv * td + tl * (4 * td * td + 3 * td * ti);
+        (Some(format!("Talker Dual-Track AR ({tl}L×{td}d, codec_vocab={tv})")), p)
+      } else {
+        (None, 0)
+      };
+      let t2w_params = if root_obj.contains_key("token2wav_config") { 180_000_000 } else { 0 };
+      return Some(OutputHeadSpec::SpeechSynthesizer {
+        talker_summary,
+        codec_summary: "Token2Wav (Flow-Matching DiT + BigVGAN)".to_string(),
+        num_codebooks: 1,
+        sampling_rate_hz: preproc.sampling_rate.unwrap_or(24_000),
+        estimated_params: talker_params + t2w_params,
+      });
+    }
+
+    // 2) Parler-TTS / MusicGen: `text_encoder` + `decoder` + `audio_encoder` (DAC / EnCodec)
+    if arch_joined.contains("parler_tts") || arch_joined.contains("musicgen") {
+      let te_info = root_obj.get("text_encoder").and_then(Value::as_object).map(|te| {
+        let d = u64_any(te, &["d_model", "hidden_size"]).unwrap_or(1024);
+        let l = u64_any(te, &["num_layers", "num_hidden_layers"]).unwrap_or(24);
+        (format!("Prompt Encoder ({l}L×{d}d)"), l * 12 * d * d)
+      });
+      let ae = root_obj.get("audio_encoder").and_then(Value::as_object);
+      let codebooks = u64_any(cfg_obj, &["num_codebooks"])
+        .or_else(|| ae.and_then(|a| u64_any(a, &["num_codebooks"])))
+        .unwrap_or(9);
+      let sr =
+        ae.and_then(|a| u64_any(a, &["sampling_rate"])).or(preproc.sampling_rate).unwrap_or(44_100);
+      let codec_type =
+        ae.and_then(|a| a.get("model_type")).and_then(Value::as_str).unwrap_or("DAC");
+      let (talker_summary, te_params) = match te_info {
+        Some((s, p)) => (Some(s), p),
+        None => (None, 0),
+      };
+      return Some(OutputHeadSpec::SpeechSynthesizer {
+        talker_summary,
+        codec_summary: format!(
+          "{} Neural Audio Codec ({codebooks} RVQ Codebooks)",
+          codec_type.to_uppercase()
+        ),
+        num_codebooks: codebooks,
+        sampling_rate_hz: sr,
+        estimated_params: te_params + 75_000_000,
+      });
+    }
+
+    // 3) SpeechT5 / VITS / Bark / Kokoro / F5-TTS
+    if arch_joined.contains("speecht5")
+      || arch_joined.contains("vits")
+      || arch_joined.contains("bark")
+      || arch_joined.contains("kokoro")
+      || arch_joined.contains("f5tts")
+      || arch_joined.contains("cosyvoice")
+    {
+      let sr = u64_any(cfg_obj, &["sampling_rate"]).or(preproc.sampling_rate).unwrap_or(24_000);
+      return Some(OutputHeadSpec::SpeechSynthesizer {
+        talker_summary: None,
+        codec_summary: "Acoustic Post-Net / Flow-Matching / HiFi-GAN Vocoder".to_string(),
+        num_codebooks: u64_any(cfg_obj, &["num_codebooks"]).unwrap_or(1),
+        sampling_rate_hz: sr,
+        estimated_params: 28_000_000,
+      });
+    }
+
+    None
   }
 
-  // 3) Hybrid Mamba + Transformer (Jamba / Bamba / Zamba2 / Nemotron-H / Granite-4)
-  if matches!(model_type, "jamba" | "bamba" | "zamba2" | "nemotron_h" | "granite_moe_hybrid")
-    || cfg.contains_key("mamba_d_state")
-    || cfg.contains_key("attn_layer_period")
-  {
-    let expand = u64_any(cfg, &["mamba_expand", "expand"]).unwrap_or(2).max(1);
-    let state_dim = u64_any(cfg, &["mamba_d_state", "ssm_state_size", "state_size"]).unwrap_or(16);
-    let conv = u64_any(cfg, &["mamba_d_conv", "conv_kernel", "d_conv"]).unwrap_or(4);
-    let head_dim = u64_any(cfg, &["mamba_headdim", "head_dim"]).unwrap_or(64).max(1);
-    let n_heads = ((expand * hidden_size) / head_dim).max(1);
-    let period = u64_any(cfg, &["attn_layer_period"]).unwrap_or(8).max(2);
-    let full_attn_layers = cfg
-      .get("hybrid_override_pattern")
-      .and_then(Value::as_str)
-      .map(|pat| pat.chars().filter(|&c| c == '*' || c == 'A').count() as u64)
-      .filter(|&c| c > 0)
-      .unwrap_or_else(|| (num_layers / period).max(1));
-    return Some(LinearSsmPlan {
-      kind_short: "Mamba SSM",
-      spec: AttentionSpec::LinearRecurrent {
-        kind: "Mamba Selective SSM".to_string(),
-        num_heads: n_heads,
-        head_dim,
-        state_dim,
-        conv_kernel: conv,
-        expand_factor: 1,
-      },
-      full_attn_layers,
-      has_separate_ffn: true,
-    });
+  pub(super) struct LinearSsmPlan {
+    pub(super) kind_short: &'static str,
+    pub(super) spec: AttentionSpec,
+    pub(super) full_attn_layers: u64,
+    pub(super) has_separate_ffn: bool,
   }
 
-  // 4) RWKV-6 / RWKV-7 Recurrent WKV
-  if arch_joined.contains("rwkv") {
-    let head_dim = u64_any(cfg, &["head_size", "head_dim"]).unwrap_or(64).max(1);
-    let n_heads = (hidden_size / head_dim).max(1);
-    let kind_short = if arch_joined.contains("rwkv7") { "RWKV-7 WKV" } else { "RWKV WKV" };
-    return Some(LinearSsmPlan {
-      kind_short,
-      spec: AttentionSpec::LinearRecurrent {
-        kind: kind_short.to_string(),
-        num_heads: n_heads,
-        head_dim,
-        state_dim: head_dim,
-        conv_kernel: 2,
-        expand_factor: 1,
-      },
-      full_attn_layers: 0,
-      has_separate_ffn: true,
-    });
-  }
+  pub(super) fn detect_linear_ssm(
+    cfg: &serde_json::Map<String, Value>,
+    model_type: &str,
+    arch_joined: &str,
+    hidden_size: u64,
+    num_layers: u64,
+    num_q_heads: u64,
+  ) -> Option<LinearSsmPlan> {
+    // 1) Qwen3-Next: Gated DeltaNet + Full GQA (default 3:1)
+    if model_type == "qwen3_next" || cfg.contains_key("linear_num_value_heads") {
+      let v_heads = u64_any(cfg, &["linear_num_value_heads"]).unwrap_or(num_q_heads).max(1);
+      let v_dim = u64_any(cfg, &["linear_value_head_dim"]).unwrap_or(128);
+      let k_dim = u64_any(cfg, &["linear_key_head_dim"]).unwrap_or(128);
+      let conv = u64_any(cfg, &["linear_conv_kernel_dim"]).unwrap_or(4);
+      let full_attn_layers = cfg
+        .get("layer_types")
+        .and_then(Value::as_array)
+        .map(|arr| {
+          arr
+            .iter()
+            .filter(|v| v.as_str().is_some_and(|s| s.contains("full") || s == "attention"))
+            .count() as u64
+        })
+        .filter(|&c| c > 0)
+        .unwrap_or_else(|| {
+          let interval = u64_any(cfg, &["full_attention_interval"]).unwrap_or(4).max(2);
+          (num_layers / interval).max(1)
+        });
+      return Some(LinearSsmPlan {
+        kind_short: "Gated DeltaNet",
+        spec: AttentionSpec::LinearRecurrent {
+          kind: "Gated DeltaNet".to_string(),
+          num_heads: v_heads,
+          head_dim: v_dim,
+          state_dim: k_dim,
+          conv_kernel: conv,
+          expand_factor: 1,
+        },
+        full_attn_layers,
+        has_separate_ffn: true,
+      });
+    }
 
-  // 5) MiniMax-01 Lightning Linear Attention + Softmax GQA
-  if arch_joined.contains("minimax") && cfg.contains_key("attn_type_list") {
-    let head_dim = u64_any(cfg, &["head_dim"]).unwrap_or(hidden_size / num_q_heads).max(1);
-    let full_attn_layers = cfg
-      .get("attn_type_list")
-      .and_then(Value::as_array)
-      .map(|arr| arr.iter().filter(|v| v.as_u64() == Some(1)).count() as u64)
-      .filter(|&c| c > 0)
-      .unwrap_or_else(|| (num_layers / 8).max(1));
-    return Some(LinearSsmPlan {
-      kind_short: "Lightning Linear",
-      spec: AttentionSpec::LinearRecurrent {
-        kind: "Lightning Linear Attn".to_string(),
-        num_heads: num_q_heads,
-        head_dim,
-        state_dim: head_dim,
-        conv_kernel: 0,
-        expand_factor: 1,
-      },
-      full_attn_layers,
-      has_separate_ffn: true,
-    });
-  }
+    // 2) Pure Mamba / Mamba-2 / Falcon-Mamba
+    if matches!(model_type, "mamba" | "mamba2" | "falcon_mamba") {
+      let expand = u64_any(cfg, &["expand"]).unwrap_or(2).max(1);
+      let d_inner = expand * hidden_size;
+      let is_m2 = model_type == "mamba2";
+      let state_dim = u64_any(cfg, &["state_size", "ssm_state_size", "d_state"])
+        .unwrap_or(if is_m2 { 128 } else { 16 });
+      let conv = u64_any(cfg, &["conv_kernel", "d_conv"]).unwrap_or(4);
+      let head_dim = u64_any(cfg, &["head_dim", "headdim"]).unwrap_or(64).max(1);
+      let n_heads = u64_any(cfg, &["n_heads"]).unwrap_or((d_inner / head_dim).max(1));
+      let kind_short = if is_m2 { "Mamba-2 SSD" } else { "Mamba Selective SSM" };
+      return Some(LinearSsmPlan {
+        kind_short,
+        spec: AttentionSpec::LinearRecurrent {
+          kind: kind_short.to_string(),
+          num_heads: n_heads,
+          head_dim,
+          state_dim,
+          conv_kernel: conv,
+          expand_factor: expand,
+        },
+        full_attn_layers: 0,
+        has_separate_ffn: false,
+      });
+    }
 
-  None
+    // 3) Hybrid Mamba + Transformer (Jamba / Bamba / Zamba2 / Nemotron-H / Granite-4)
+    if matches!(model_type, "jamba" | "bamba" | "zamba2" | "nemotron_h" | "granite_moe_hybrid")
+      || cfg.contains_key("mamba_d_state")
+      || cfg.contains_key("attn_layer_period")
+    {
+      let expand = u64_any(cfg, &["mamba_expand", "expand"]).unwrap_or(2).max(1);
+      let state_dim =
+        u64_any(cfg, &["mamba_d_state", "ssm_state_size", "state_size"]).unwrap_or(16);
+      let conv = u64_any(cfg, &["mamba_d_conv", "conv_kernel", "d_conv"]).unwrap_or(4);
+      let head_dim = u64_any(cfg, &["mamba_headdim", "head_dim"]).unwrap_or(64).max(1);
+      let n_heads = ((expand * hidden_size) / head_dim).max(1);
+      let period = u64_any(cfg, &["attn_layer_period"]).unwrap_or(8).max(2);
+      let full_attn_layers = cfg
+        .get("hybrid_override_pattern")
+        .and_then(Value::as_str)
+        .map(|pat| pat.chars().filter(|&c| c == '*' || c == 'A').count() as u64)
+        .filter(|&c| c > 0)
+        .unwrap_or_else(|| (num_layers / period).max(1));
+      return Some(LinearSsmPlan {
+        kind_short: "Mamba SSM",
+        spec: AttentionSpec::LinearRecurrent {
+          kind: "Mamba Selective SSM".to_string(),
+          num_heads: n_heads,
+          head_dim,
+          state_dim,
+          conv_kernel: conv,
+          expand_factor: 1,
+        },
+        full_attn_layers,
+        has_separate_ffn: true,
+      });
+    }
+
+    // 4) RWKV-6 / RWKV-7 Recurrent WKV
+    if arch_joined.contains("rwkv") {
+      let head_dim = u64_any(cfg, &["head_size", "head_dim"]).unwrap_or(64).max(1);
+      let n_heads = (hidden_size / head_dim).max(1);
+      let kind_short = if arch_joined.contains("rwkv7") { "RWKV-7 WKV" } else { "RWKV WKV" };
+      return Some(LinearSsmPlan {
+        kind_short,
+        spec: AttentionSpec::LinearRecurrent {
+          kind: kind_short.to_string(),
+          num_heads: n_heads,
+          head_dim,
+          state_dim: head_dim,
+          conv_kernel: 2,
+          expand_factor: 1,
+        },
+        full_attn_layers: 0,
+        has_separate_ffn: true,
+      });
+    }
+
+    // 5) MiniMax-01 Lightning Linear Attention + Softmax GQA
+    if arch_joined.contains("minimax") && cfg.contains_key("attn_type_list") {
+      let head_dim = u64_any(cfg, &["head_dim"]).unwrap_or(hidden_size / num_q_heads).max(1);
+      let full_attn_layers = cfg
+        .get("attn_type_list")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter(|v| v.as_u64() == Some(1)).count() as u64)
+        .filter(|&c| c > 0)
+        .unwrap_or_else(|| (num_layers / 8).max(1));
+      return Some(LinearSsmPlan {
+        kind_short: "Lightning Linear",
+        spec: AttentionSpec::LinearRecurrent {
+          kind: "Lightning Linear Attn".to_string(),
+          num_heads: num_q_heads,
+          head_dim,
+          state_dim: head_dim,
+          conv_kernel: 0,
+          expand_factor: 1,
+        },
+        full_attn_layers,
+        has_separate_ffn: true,
+      });
+    }
+
+    None
+  }
 }
+
+#[cfg(feature = "server")]
+use multimodal_parsers::{
+  detect_linear_ssm, parse_audio_spec, parse_pooling_meta, parse_preprocessor_meta,
+  parse_speech_synthesizer, parse_vision_spec,
+};
+
+#[cfg(not(feature = "server"))]
+mod multimodal_parsers_wasm_stub {
+  use super::*;
+
+  pub(super) struct LinearSsmPlan {
+    pub(super) kind_short: &'static str,
+    pub(super) spec: AttentionSpec,
+    pub(super) full_attn_layers: u64,
+    pub(super) has_separate_ffn: bool,
+  }
+
+  pub(super) fn parse_preprocessor_meta(_raw: Option<&str>) -> PreprocessorHints {
+    PreprocessorHints::default()
+  }
+
+  pub(super) fn parse_pooling_meta(_raw: Option<&str>) -> Option<(String, u64)> {
+    None
+  }
+
+  pub(super) fn parse_vision_spec(
+    _vc: &serde_json::Map<String, Value>,
+    _llm_hidden: u64,
+    _preproc: &PreprocessorHints,
+  ) -> Option<VisionSpec> {
+    None
+  }
+
+  pub(super) fn parse_audio_spec(
+    _audio_obj: Option<&serde_json::Map<String, Value>>,
+    _cfg_obj: &serde_json::Map<String, Value>,
+    _llm_hidden: u64,
+    _is_whisper_like: bool,
+    _is_ctc_asr: bool,
+    _is_nested_omni: bool,
+    _preproc: &PreprocessorHints,
+  ) -> Option<AudioSpec> {
+    None
+  }
+
+  pub(super) fn parse_speech_synthesizer(
+    _root_obj: &serde_json::Map<String, Value>,
+    _cfg_obj: &serde_json::Map<String, Value>,
+    _arch_joined: &str,
+    _preproc: &PreprocessorHints,
+  ) -> Option<OutputHeadSpec> {
+    None
+  }
+
+  pub(super) fn detect_linear_ssm(
+    _cfg: &serde_json::Map<String, Value>,
+    _model_type: &str,
+    _arch_joined: &str,
+    _hidden_size: u64,
+    _num_layers: u64,
+    _num_q_heads: u64,
+  ) -> Option<LinearSsmPlan> {
+    None
+  }
+}
+
+#[cfg(not(feature = "server"))]
+use multimodal_parsers_wasm_stub::{
+  detect_linear_ssm, parse_audio_spec, parse_pooling_meta, parse_preprocessor_meta,
+  parse_speech_synthesizer, parse_vision_spec,
+};
 
 fn detect_nope_interval(cfg: &serde_json::Map<String, Value>) -> Option<u64> {
   let arr = cfg.get("no_rope_layers")?.as_array()?;
@@ -3272,516 +3361,528 @@ fn llama3_8b_safetensors_snapshot() -> SafetensorsSummary {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Diffusers 图像 / 视频扩散与流匹配多组件管线解析器（FLUX.1 / SD3.5 / Wan2.1 / HunyuanVideo / SDXL）
+// 仅服务端编译，避免将 700+ 行 Diffusers 解析器打入客户端 WASM。
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn is_diffusion_root_json(obj: &serde_json::Map<String, Value>) -> bool {
-  let Some(cls) = obj.get("_class_name").and_then(Value::as_str) else {
-    return false;
-  };
-  cls.ends_with("Pipeline")
-    || obj.contains_key("_diffusers_version")
-      && (cls.contains("Transformer2DModel")
-        || cls.contains("Transformer3DModel")
-        || cls.contains("UNet2DConditionModel")
-        || cls.contains("UNetSpatioTemporalConditionModel")
-        || cls.contains("FluxTransformer")
-        || cls.contains("WanTransformer")
-        || cls.contains("HunyuanVideoTransformer")
-        || cls.contains("SD3Transformer")
-        || cls.contains("CogVideoXTransformer")
-        || cls.contains("LTXVideoTransformer"))
-}
+#[cfg(feature = "server")]
+mod diffusion_parser {
+  use super::*;
 
-fn diffusion_slot_role(slot: &str, class_name: &str) -> Option<&'static str> {
-  let sl = slot.to_ascii_lowercase();
-  let cl = class_name.to_ascii_lowercase();
-  if sl.starts_with("tokenizer")
-    || sl.contains("processor")
-    || sl.contains("extractor")
-    || sl.contains("safety_checker")
-    || sl.contains("watermarker")
-    || sl.starts_with("image_encoder")
-  {
-    return None;
+  pub(super) fn is_diffusion_root_json(obj: &serde_json::Map<String, Value>) -> bool {
+    let Some(cls) = obj.get("_class_name").and_then(Value::as_str) else {
+      return false;
+    };
+    cls.ends_with("Pipeline")
+      || obj.contains_key("_diffusers_version")
+        && (cls.contains("Transformer2DModel")
+          || cls.contains("Transformer3DModel")
+          || cls.contains("UNet2DConditionModel")
+          || cls.contains("UNetSpatioTemporalConditionModel")
+          || cls.contains("FluxTransformer")
+          || cls.contains("WanTransformer")
+          || cls.contains("HunyuanVideoTransformer")
+          || cls.contains("SD3Transformer")
+          || cls.contains("CogVideoXTransformer")
+          || cls.contains("LTXVideoTransformer"))
   }
-  if sl == "scheduler" || cl.contains("scheduler") {
-    Some("scheduler")
-  } else if sl.starts_with("text_encoder") {
-    Some("conditioner")
-  } else if sl == "vae" || cl.contains("autoencoder") {
-    Some("vae")
-  } else if sl.starts_with("transformer")
-    || sl.starts_with("unet")
-    || sl == "prior"
-    || cl.contains("transformer2d")
-    || cl.contains("transformer3d")
-    || cl.contains("unet")
-  {
-    Some("denoiser")
-  } else {
-    None
-  }
-}
 
-/// 解析 `model_index.json`，返回 `(pipeline_class, Vec<(slot, class_name)>)`（已过滤分词器/安全检查器并按管线顺序排列）。
-pub fn extract_diffusion_slots(
-  model_index_json: &str,
-) -> Result<(String, Vec<(String, String)>), String> {
-  let val: Value = serde_json::from_str(model_index_json)
-    .map_err(|e| format!("解析 model_index.json 失败: {e}"))?;
-  let Some(obj) = val.as_object() else {
-    return Err("model_index.json 根节点必须是 JSON 对象".to_string());
-  };
-  let pipeline_class =
-    obj.get("_class_name").and_then(Value::as_str).unwrap_or("DiffusionPipeline").to_string();
-
-  let mut items: Vec<(u8, String, String)> = Vec::new();
-  for (k, v) in obj {
-    if k.starts_with('_') {
-      continue;
+  fn diffusion_slot_role(slot: &str, class_name: &str) -> Option<&'static str> {
+    let sl = slot.to_ascii_lowercase();
+    let cl = class_name.to_ascii_lowercase();
+    if sl.starts_with("tokenizer")
+      || sl.contains("processor")
+      || sl.contains("extractor")
+      || sl.contains("safety_checker")
+      || sl.contains("watermarker")
+      || sl.starts_with("image_encoder")
+    {
+      return None;
     }
-    let class_opt = v
-      .as_array()
-      .and_then(|arr| arr.get(1).or_else(|| arr.first()))
-      .and_then(Value::as_str)
-      .filter(|s| !s.is_empty());
-    let Some(cls) = class_opt else {
-      continue;
-    };
-    let Some(role) = diffusion_slot_role(k, cls) else {
-      continue;
-    };
-    let order = match role {
-      "conditioner" => 0,
-      "scheduler" => 1,
-      "denoiser" => 2,
-      "vae" => 3,
-      _ => 4,
-    };
-    items.push((order, k.clone(), cls.to_string()));
-  }
-  items.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-  let slots = items.into_iter().map(|(_, s, c)| (s, c)).collect();
-  Ok((pipeline_class, slots))
-}
-
-fn build_diffusion_from_single_json(
-  repo_id: &str,
-  source_label: &str,
-  root_obj: &serde_json::Map<String, Value>,
-  raw_json: &str,
-  safetensors: Option<SafetensorsSummary>,
-) -> Result<ModelBlueprint, String> {
-  let cls = root_obj.get("_class_name").and_then(Value::as_str).unwrap_or("DiffusionPipeline");
-  if cls.ends_with("Pipeline") {
-    return build_diffusion_pipeline_blueprint(repo_id, source_label, raw_json, &[], safetensors);
-  }
-  let slot = if cls.to_ascii_lowercase().contains("unet") { "unet" } else { "transformer" };
-  let synth_index = serde_json::json!({
-    "_class_name": format!("{cls}Pipeline"),
-    slot: ["diffusers", cls],
-  })
-  .to_string();
-  let comps = vec![(slot.to_string(), raw_json.to_string())];
-  build_diffusion_pipeline_blueprint(repo_id, source_label, &synth_index, &comps, safetensors)
-}
-
-fn parse_conditioner_component(
-  slot: &str,
-  class_name: &str,
-  cfg_opt: Option<&serde_json::Map<String, Value>>,
-) -> PipelineComponentSpec {
-  let cl = class_name.to_ascii_lowercase();
-  if let Some(c) = cfg_opt {
-    let sub = c.get("text_config").and_then(Value::as_object).unwrap_or(c);
-    let d = u64_any(sub, &["hidden_size", "d_model"]).unwrap_or(768);
-    let layers = u64_any(sub, &["num_hidden_layers", "num_layers"]).unwrap_or(12);
-    let vocab = u64_any(sub, &["vocab_size"]).unwrap_or(49_408);
-    let ffn = u64_any(sub, &["intermediate_size", "d_ff"]).unwrap_or(d * 4);
-    let is_gated = sub.get("is_gated_act").and_then(Value::as_bool).unwrap_or(false)
-      || sub.get("feed_forward_proj").and_then(Value::as_str).is_some_and(|s| s.contains("gated"))
-      || cl.contains("llama")
-      || cl.contains("qwen")
-      || cl.contains("gemma")
-      || cl.contains("mistral");
-    let ffn_mats = if is_gated { 3 } else { 2 };
-    let est = vocab * d + layers * (4 * d * d + ffn_mats * d * ffn);
-    return PipelineComponentSpec {
-      slot: slot.to_string(),
-      class_name: class_name.to_string(),
-      role: "conditioner".to_string(),
-      spec_summary: format!("{layers}L × {d}d (FFN={ffn})"),
-      estimated_params: est,
-    };
-  }
-
-  let (summary, est) = if cl.contains("umt5") {
-    ("24L × 4096d (Multilingual UMT5-XXL)".to_string(), 5_680_000_000)
-  } else if cl.contains("t5") {
-    ("24L × 4096d (T5-XXL Encoder)".to_string(), 4_762_000_000)
-  } else if cl.contains("llama") || cl.contains("mistral") {
-    ("32L × 4096d (LLM Conditioner)".to_string(), 7_500_000_000)
-  } else if cl.contains("clip") && slot.ends_with('2') {
-    ("32L × 1280d (OpenCLIP-bigG)".to_string(), 694_000_000)
-  } else {
-    ("12L × 768d (CLIP-ViT-L/14)".to_string(), 123_060_000)
-  };
-  PipelineComponentSpec {
-    slot: slot.to_string(),
-    class_name: class_name.to_string(),
-    role: "conditioner".to_string(),
-    spec_summary: summary,
-    estimated_params: est,
-  }
-}
-
-fn parse_scheduler_component(
-  slot: &str,
-  class_name: &str,
-  cfg_opt: Option<&serde_json::Map<String, Value>>,
-) -> (PipelineComponentSpec, String) {
-  let mut parts = vec![class_name.to_string()];
-  if let Some(c) = cfg_opt {
-    if let Some(t) = u64_any(c, &["num_train_timesteps"]) {
-      parts.push(format!("{t}T"));
-    }
-    if let Some(sh) = f64_any(c, &["flow_shift", "shift", "base_shift"]) {
-      parts.push(format!("shift={sh:.2}"));
-    } else if c.get("use_dynamic_shifting").and_then(Value::as_bool) == Some(true) {
-      parts.push("dynamic-shift".to_string());
-    }
-    if let Some(pt) = c.get("prediction_type").and_then(Value::as_str) {
-      parts.push(pt.to_string());
+    if sl == "scheduler" || cl.contains("scheduler") {
+      Some("scheduler")
+    } else if sl.starts_with("text_encoder") {
+      Some("conditioner")
+    } else if sl == "vae" || cl.contains("autoencoder") {
+      Some("vae")
+    } else if sl.starts_with("transformer")
+      || sl.starts_with("unet")
+      || sl == "prior"
+      || cl.contains("transformer2d")
+      || cl.contains("transformer3d")
+      || cl.contains("unet")
+    {
+      Some("denoiser")
+    } else {
+      None
     }
   }
-  let summary = parts.join(" · ");
-  let comp = PipelineComponentSpec {
-    slot: slot.to_string(),
-    class_name: class_name.to_string(),
-    role: "scheduler".to_string(),
-    spec_summary: summary.clone(),
-    estimated_params: 0,
-  };
-  (comp, summary)
-}
 
-fn parse_vae_component(
-  slot: &str,
-  class_name: &str,
-  cfg_opt: Option<&serde_json::Map<String, Value>>,
-  is_video_hint: bool,
-) -> (PipelineComponentSpec, u64, u64, u64) {
-  let cl = class_name.to_ascii_lowercase();
-  let is_3d = is_video_hint
-    || cl.contains("wan")
-    || cl.contains("hunyuan")
-    || cl.contains("cogvideo")
-    || cl.contains("video")
-    || cl.contains("3d");
+  /// 解析 `model_index.json`，返回 `(pipeline_class, Vec<(slot, class_name)>)`（已过滤分词器/安全检查器并按管线顺序排列）。
+  pub fn extract_diffusion_slots(
+    model_index_json: &str,
+  ) -> Result<(String, Vec<(String, String)>), String> {
+    let val: Value = serde_json::from_str(model_index_json)
+      .map_err(|e| format!("解析 model_index.json 失败: {e}"))?;
+    let Some(obj) = val.as_object() else {
+      return Err("model_index.json 根节点必须是 JSON 对象".to_string());
+    };
+    let pipeline_class =
+      obj.get("_class_name").and_then(Value::as_str).unwrap_or("DiffusionPipeline").to_string();
 
-  let latent_ch = cfg_opt
-    .and_then(|c| u64_any(c, &["latent_channels", "z_dim"]))
-    .unwrap_or(if cl.contains("sdxl") { 4 } else { 16 });
-  let n_stages = cfg_opt
-    .and_then(|c| c.get("block_out_channels").and_then(Value::as_array).map(Vec::len))
-    .unwrap_or(4);
-  let spatial_comp = 1u64 << (n_stages.saturating_sub(1).min(5) as u32);
-  let temporal_comp = if is_3d {
-    cfg_opt
-      .and_then(|c| u64_any(c, &["temporal_compression_ratio"]))
-      .unwrap_or(if cl.contains("ltx") { 8 } else { 4 })
-  } else {
-    1
-  };
-  let est = if is_3d { 127_000_000 } else { 83_800_000 };
-  let summary = if is_3d {
-    format!("{latent_ch}ch 3D Causal Latent ({temporal_comp}×{spatial_comp}×{spatial_comp})")
-  } else {
-    format!("{latent_ch}ch 2D Latent ({spatial_comp}×{spatial_comp} Spatial)")
-  };
-  (
+    let mut items: Vec<(u8, String, String)> = Vec::new();
+    for (k, v) in obj {
+      if k.starts_with('_') {
+        continue;
+      }
+      let class_opt = v
+        .as_array()
+        .and_then(|arr| arr.get(1).or_else(|| arr.first()))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+      let Some(cls) = class_opt else {
+        continue;
+      };
+      let Some(role) = diffusion_slot_role(k, cls) else {
+        continue;
+      };
+      let order = match role {
+        "conditioner" => 0,
+        "scheduler" => 1,
+        "denoiser" => 2,
+        "vae" => 3,
+        _ => 4,
+      };
+      items.push((order, k.clone(), cls.to_string()));
+    }
+    items.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let slots = items.into_iter().map(|(_, s, c)| (s, c)).collect();
+    Ok((pipeline_class, slots))
+  }
+
+  pub(super) fn build_diffusion_from_single_json(
+    repo_id: &str,
+    source_label: &str,
+    root_obj: &serde_json::Map<String, Value>,
+    raw_json: &str,
+    safetensors: Option<SafetensorsSummary>,
+  ) -> Result<ModelBlueprint, String> {
+    let cls = root_obj.get("_class_name").and_then(Value::as_str).unwrap_or("DiffusionPipeline");
+    if cls.ends_with("Pipeline") {
+      return build_diffusion_pipeline_blueprint(repo_id, source_label, raw_json, &[], safetensors);
+    }
+    let slot = if cls.to_ascii_lowercase().contains("unet") { "unet" } else { "transformer" };
+    let synth_index = serde_json::json!({
+      "_class_name": format!("{cls}Pipeline"),
+      slot: ["diffusers", cls],
+    })
+    .to_string();
+    let comps = vec![(slot.to_string(), raw_json.to_string())];
+    build_diffusion_pipeline_blueprint(repo_id, source_label, &synth_index, &comps, safetensors)
+  }
+
+  fn parse_conditioner_component(
+    slot: &str,
+    class_name: &str,
+    cfg_opt: Option<&serde_json::Map<String, Value>>,
+  ) -> PipelineComponentSpec {
+    let cl = class_name.to_ascii_lowercase();
+    if let Some(c) = cfg_opt {
+      let sub = c.get("text_config").and_then(Value::as_object).unwrap_or(c);
+      let d = u64_any(sub, &["hidden_size", "d_model"]).unwrap_or(768);
+      let layers = u64_any(sub, &["num_hidden_layers", "num_layers"]).unwrap_or(12);
+      let vocab = u64_any(sub, &["vocab_size"]).unwrap_or(49_408);
+      let ffn = u64_any(sub, &["intermediate_size", "d_ff"]).unwrap_or(d * 4);
+      let is_gated = sub.get("is_gated_act").and_then(Value::as_bool).unwrap_or(false)
+        || sub
+          .get("feed_forward_proj")
+          .and_then(Value::as_str)
+          .is_some_and(|s| s.contains("gated"))
+        || cl.contains("llama")
+        || cl.contains("qwen")
+        || cl.contains("gemma")
+        || cl.contains("mistral");
+      let ffn_mats = if is_gated { 3 } else { 2 };
+      let est = vocab * d + layers * (4 * d * d + ffn_mats * d * ffn);
+      return PipelineComponentSpec {
+        slot: slot.to_string(),
+        class_name: class_name.to_string(),
+        role: "conditioner".to_string(),
+        spec_summary: format!("{layers}L × {d}d (FFN={ffn})"),
+        estimated_params: est,
+      };
+    }
+
+    let (summary, est) = if cl.contains("umt5") {
+      ("24L × 4096d (Multilingual UMT5-XXL)".to_string(), 5_680_000_000)
+    } else if cl.contains("t5") {
+      ("24L × 4096d (T5-XXL Encoder)".to_string(), 4_762_000_000)
+    } else if cl.contains("llama") || cl.contains("mistral") {
+      ("32L × 4096d (LLM Conditioner)".to_string(), 7_500_000_000)
+    } else if cl.contains("clip") && slot.ends_with('2') {
+      ("32L × 1280d (OpenCLIP-bigG)".to_string(), 694_000_000)
+    } else {
+      ("12L × 768d (CLIP-ViT-L/14)".to_string(), 123_060_000)
+    };
     PipelineComponentSpec {
       slot: slot.to_string(),
       class_name: class_name.to_string(),
-      role: "vae".to_string(),
+      role: "conditioner".to_string(),
       spec_summary: summary,
       estimated_params: est,
-    },
-    latent_ch,
-    spatial_comp.max(8),
-    temporal_comp,
-  )
-}
-
-/// 从 `model_index.json` 与子目录 `<slot>/config.json` 集合构建完整的图像/视频扩散生成管线蓝图。
-pub fn build_diffusion_pipeline_blueprint(
-  repo_id: &str,
-  source_label: &str,
-  model_index_json: &str,
-  component_configs: &[(String, String)],
-  safetensors: Option<SafetensorsSummary>,
-) -> Result<ModelBlueprint, String> {
-  let (pipeline_class, slots) = extract_diffusion_slots(model_index_json)?;
-  let mut parsed_cfgs: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
-  for (slot, raw) in component_configs {
-    if let Ok(v) = serde_json::from_str::<Value>(raw) {
-      parsed_cfgs.insert(slot.clone(), v);
     }
   }
 
-  let pipe_lc = format!("{} {}", pipeline_class, repo_id).to_ascii_lowercase();
-  let mut is_video = pipe_lc.contains("video")
-    || pipe_lc.contains("wan")
-    || pipe_lc.contains("t2v")
-    || pipe_lc.contains("i2v")
-    || pipe_lc.contains("cogvideo")
-    || pipe_lc.contains("ltx");
+  fn parse_scheduler_component(
+    slot: &str,
+    class_name: &str,
+    cfg_opt: Option<&serde_json::Map<String, Value>>,
+  ) -> (PipelineComponentSpec, String) {
+    let mut parts = vec![class_name.to_string()];
+    if let Some(c) = cfg_opt {
+      if let Some(t) = u64_any(c, &["num_train_timesteps"]) {
+        parts.push(format!("{t}T"));
+      }
+      if let Some(sh) = f64_any(c, &["flow_shift", "shift", "base_shift"]) {
+        parts.push(format!("shift={sh:.2}"));
+      } else if c.get("use_dynamic_shifting").and_then(Value::as_bool) == Some(true) {
+        parts.push("dynamic-shift".to_string());
+      }
+      if let Some(pt) = c.get("prediction_type").and_then(Value::as_str) {
+        parts.push(pt.to_string());
+      }
+    }
+    let summary = parts.join(" · ");
+    let comp = PipelineComponentSpec {
+      slot: slot.to_string(),
+      class_name: class_name.to_string(),
+      role: "scheduler".to_string(),
+      spec_summary: summary.clone(),
+      estimated_params: 0,
+    };
+    (comp, summary)
+  }
 
-  let mut components: Vec<PipelineComponentSpec> = Vec::new();
-  let mut conditioner_params = 0u64;
-  let mut scheduler_summary = "FlowMatch / Diffusion Scheduler".to_string();
-  let mut denoiser_slot_cls: Option<(String, String)> = None;
-  let mut vae_slot_cls: Option<(String, String)> = None;
+  fn parse_vae_component(
+    slot: &str,
+    class_name: &str,
+    cfg_opt: Option<&serde_json::Map<String, Value>>,
+    is_video_hint: bool,
+  ) -> (PipelineComponentSpec, u64, u64, u64) {
+    let cl = class_name.to_ascii_lowercase();
+    let is_3d = is_video_hint
+      || cl.contains("wan")
+      || cl.contains("hunyuan")
+      || cl.contains("cogvideo")
+      || cl.contains("video")
+      || cl.contains("3d");
 
-  for (slot, cls) in &slots {
-    if cls.to_ascii_lowercase().contains("3d") || cls.to_ascii_lowercase().contains("video") {
+    let latent_ch = cfg_opt
+      .and_then(|c| u64_any(c, &["latent_channels", "z_dim"]))
+      .unwrap_or(if cl.contains("sdxl") { 4 } else { 16 });
+    let n_stages = cfg_opt
+      .and_then(|c| c.get("block_out_channels").and_then(Value::as_array).map(Vec::len))
+      .unwrap_or(4);
+    let spatial_comp = 1u64 << (n_stages.saturating_sub(1).min(5) as u32);
+    let temporal_comp = if is_3d {
+      cfg_opt
+        .and_then(|c| u64_any(c, &["temporal_compression_ratio"]))
+        .unwrap_or(if cl.contains("ltx") { 8 } else { 4 })
+    } else {
+      1
+    };
+    let est = if is_3d { 127_000_000 } else { 83_800_000 };
+    let summary = if is_3d {
+      format!("{latent_ch}ch 3D Causal Latent ({temporal_comp}×{spatial_comp}×{spatial_comp})")
+    } else {
+      format!("{latent_ch}ch 2D Latent ({spatial_comp}×{spatial_comp} Spatial)")
+    };
+    (
+      PipelineComponentSpec {
+        slot: slot.to_string(),
+        class_name: class_name.to_string(),
+        role: "vae".to_string(),
+        spec_summary: summary,
+        estimated_params: est,
+      },
+      latent_ch,
+      spatial_comp.max(8),
+      temporal_comp,
+    )
+  }
+
+  /// 从 `model_index.json` 与子目录 `<slot>/config.json` 集合构建完整的图像/视频扩散生成管线蓝图。
+  pub fn build_diffusion_pipeline_blueprint(
+    repo_id: &str,
+    source_label: &str,
+    model_index_json: &str,
+    component_configs: &[(String, String)],
+    safetensors: Option<SafetensorsSummary>,
+  ) -> Result<ModelBlueprint, String> {
+    let (pipeline_class, slots) = extract_diffusion_slots(model_index_json)?;
+    let mut parsed_cfgs: std::collections::HashMap<String, Value> =
+      std::collections::HashMap::new();
+    for (slot, raw) in component_configs {
+      if let Ok(v) = serde_json::from_str::<Value>(raw) {
+        parsed_cfgs.insert(slot.clone(), v);
+      }
+    }
+
+    let pipe_lc = format!("{} {}", pipeline_class, repo_id).to_ascii_lowercase();
+    let mut is_video = pipe_lc.contains("video")
+      || pipe_lc.contains("wan")
+      || pipe_lc.contains("t2v")
+      || pipe_lc.contains("i2v")
+      || pipe_lc.contains("cogvideo")
+      || pipe_lc.contains("ltx");
+
+    let mut components: Vec<PipelineComponentSpec> = Vec::new();
+    let mut conditioner_params = 0u64;
+    let mut scheduler_summary = "FlowMatch / Diffusion Scheduler".to_string();
+    let mut denoiser_slot_cls: Option<(String, String)> = None;
+    let mut vae_slot_cls: Option<(String, String)> = None;
+
+    for (slot, cls) in &slots {
+      if cls.to_ascii_lowercase().contains("3d") || cls.to_ascii_lowercase().contains("video") {
+        is_video = true;
+      }
+      match diffusion_slot_role(slot, cls) {
+        Some("conditioner") => {
+          let comp = parse_conditioner_component(
+            slot,
+            cls,
+            parsed_cfgs.get(slot).and_then(Value::as_object),
+          );
+          conditioner_params += comp.estimated_params;
+          components.push(comp);
+        }
+        Some("scheduler") => {
+          let (comp, sched_s) =
+            parse_scheduler_component(slot, cls, parsed_cfgs.get(slot).and_then(Value::as_object));
+          scheduler_summary = sched_s;
+          components.push(comp);
+        }
+        Some("denoiser") if denoiser_slot_cls.is_none() => {
+          denoiser_slot_cls = Some((slot.clone(), cls.clone()));
+        }
+        Some("vae") if vae_slot_cls.is_none() => {
+          vae_slot_cls = Some((slot.clone(), cls.clone()));
+        }
+        _ => {}
+      }
+    }
+
+    let (den_slot, den_cls) = denoiser_slot_cls.unwrap_or_else(|| {
+      let fallback_cls = if pipe_lc.contains("xl") {
+        "UNet2DConditionModel"
+      } else if is_video {
+        "WanTransformer3DModel"
+      } else {
+        "FluxTransformer2DModel"
+      };
+      ("transformer".to_string(), fallback_cls.to_string())
+    });
+    let den_obj = parsed_cfgs.get(&den_slot).and_then(Value::as_object);
+    let den_lc = den_cls.to_ascii_lowercase();
+    if den_lc.contains("3d") || den_lc.contains("wan") || den_lc.contains("hunyuanvideo") {
       is_video = true;
     }
-    match diffusion_slot_role(slot, cls) {
-      Some("conditioner") => {
-        let comp =
-          parse_conditioner_component(slot, cls, parsed_cfgs.get(slot).and_then(Value::as_object));
-        conditioner_params += comp.estimated_params;
-        components.push(comp);
-      }
-      Some("scheduler") => {
-        let (comp, sched_s) =
-          parse_scheduler_component(slot, cls, parsed_cfgs.get(slot).and_then(Value::as_object));
-        scheduler_summary = sched_s;
-        components.push(comp);
-      }
-      Some("denoiser") if denoiser_slot_cls.is_none() => {
-        denoiser_slot_cls = Some((slot.clone(), cls.clone()));
-      }
-      Some("vae") if vae_slot_cls.is_none() => {
-        vae_slot_cls = Some((slot.clone(), cls.clone()));
-      }
-      _ => {}
-    }
-  }
 
-  let (den_slot, den_cls) = denoiser_slot_cls.unwrap_or_else(|| {
-    let fallback_cls = if pipe_lc.contains("xl") {
-      "UNet2DConditionModel"
-    } else if is_video {
-      "WanTransformer3DModel"
-    } else {
-      "FluxTransformer2DModel"
-    };
-    ("transformer".to_string(), fallback_cls.to_string())
-  });
-  let den_obj = parsed_cfgs.get(&den_slot).and_then(Value::as_object);
-  let den_lc = den_cls.to_ascii_lowercase();
-  if den_lc.contains("3d") || den_lc.contains("wan") || den_lc.contains("hunyuanvideo") {
-    is_video = true;
-  }
-
-  let (vae_comp, mut latent_channels, spatial_comp, temporal_comp) =
-    if let Some((vs, vc)) = vae_slot_cls {
-      parse_vae_component(&vs, &vc, parsed_cfgs.get(&vs).and_then(Value::as_object), is_video)
-    } else {
-      parse_vae_component(
-        "vae",
-        if is_video { "AutoencoderKL3DCausal" } else { "AutoencoderKL" },
-        None,
-        is_video,
-      )
-    };
-  let vae_class = vae_comp.class_name.clone();
-  let vae_params = vae_comp.estimated_params;
-
-  // 解析去噪主干（MMDiT 双+单流 / 纯联合 MMDiT / 3D Video DiT / 多尺度 CrossAttn UNet）
-  let is_unet = den_slot.starts_with("unet") || den_lc.contains("unet");
-  let mut patch_summary =
-    if is_video { "[1, 2, 2] 3D Patch".to_string() } else { "2×2 Patch".to_string() };
-  let mut rope_summary = if is_video {
-    "3D RoPE (Temporal + H + W)".to_string()
-  } else {
-    "2D Axial / RoPE + AdaLN-Zero".to_string()
-  };
-  let mut torch_dtype = "bfloat16".to_string();
-  let denoiser_kind: String;
-  let hidden_size: u64;
-  let num_hidden_layers: u64;
-  let segments: Vec<LayerSegment>;
-  let denoiser_attn_params: u64;
-  let denoiser_ffn_params: u64;
-  let denoiser_mod_params: u64;
-
-  if is_unet {
-    denoiser_kind = "Multi-Scale Cross-Attention UNet".to_string();
-    patch_summary = "Conv2d 3×3 Stem (Latent Grid)".to_string();
-    rope_summary = "Sinusoidal Timestep + Spatial CrossAttn".to_string();
-    let chans: Vec<u64> = den_obj
-      .and_then(|c| c.get("block_out_channels"))
-      .and_then(Value::as_array)
-      .map(|a| a.iter().filter_map(Value::as_u64).collect())
-      .filter(|v: &Vec<u64>| !v.is_empty())
-      .unwrap_or_else(|| vec![320, 640, 1280]);
-    let tf_per_block: Vec<u64> = den_obj
-      .and_then(|c| c.get("transformer_layers_per_block"))
-      .and_then(Value::as_array)
-      .map(|a| a.iter().filter_map(Value::as_u64).collect())
-      .unwrap_or_else(|| vec![1, 2, 10]);
-    if let Some(in_c) = den_obj.and_then(|c| u64_any(c, &["in_channels"])) {
-      latent_channels = in_c.min(latent_channels.max(4));
-    }
-    torch_dtype = "float16".to_string();
-    let top_ch = *chans.last().unwrap_or(&1280);
-    hidden_size = top_ch;
-    let down_n = chans.len() as u64;
-    num_hidden_layers = down_n * 2 + 1;
-    let head_d = 64u64;
-    let heads = (top_ch / head_d).max(8);
-
-    // 精确核算 ResNet2D + SpatialTransformer 多尺度卷积与交叉注意力参数
-    let mut unet_attn = 0u64;
-    let mut unet_ffn = 0u64;
-    let cross_d = den_obj.and_then(|c| u64_any(c, &["cross_attention_dim"])).unwrap_or(2048);
-    let layers_per_blk = den_obj.and_then(|c| u64_any(c, &["layers_per_block"])).unwrap_or(2);
-    for (idx, &ch) in chans.iter().enumerate() {
-      let n_tf = tf_per_block.get(idx).copied().unwrap_or(1);
-      // Down (layers_per_blk) + Up (layers_per_blk + 1)
-      let stage_blocks = 2 * layers_per_blk + 1;
-      let res_conv = stage_blocks * 2 * 9 * ch * ch;
-      let tf_a = stage_blocks * n_tf * (4 * ch * ch + 2 * ch * ch + 2 * ch * cross_d);
-      let tf_f = stage_blocks * n_tf * (8 * ch * ch);
-      unet_attn += tf_a;
-      unet_ffn += res_conv + tf_f;
-    }
-    // Mid bottleneck block at top_ch
-    let mid_tf = tf_per_block.last().copied().unwrap_or(10);
-    unet_attn += mid_tf * (6 * top_ch * top_ch + 2 * top_ch * cross_d);
-    unet_ffn += 4 * 9 * top_ch * top_ch + mid_tf * 8 * top_ch * top_ch;
-    denoiser_attn_params = unet_attn;
-    denoiser_ffn_params = unet_ffn;
-    denoiser_mod_params = 64 * top_ch * top_ch / 16;
-
-    let attn_spec = AttentionSpec::StandardGqa {
-      num_q_heads: heads,
-      num_kv_heads: heads,
-      head_dim: head_d,
-      qkv_bias: false,
-      o_bias: true,
-      qk_norm: false,
-      sliding_window: None,
-      sliding_window_pattern: None,
-      nope_layer_interval: None,
-      is_causal: false,
-      has_cross_attn: true,
-    };
-    let ffn_spec = FfnSpec::DenseGated {
-      intermediate_size: top_ch * 4,
-      act_fn: "geglu + conv3x3".to_string(),
-      bias: true,
-      fused_gate_up: false,
-      is_gated: true,
-    };
-    segments = vec![
-      LayerSegment {
-        start_layer: 0,
-        end_layer: down_n - 1,
-        title: format!("UNet 下采样编码塔 (Down Blocks {:?})", chans),
-        attention: attn_spec.clone(),
-        ffn: ffn_spec.clone(),
-        norms_per_layer: 2,
-        schedule_note: Some(
-          "逐级 2× 空间下采样并将多尺度特征通过 Skip Connection 缓存至解码端".to_string(),
-        ),
-      },
-      LayerSegment {
-        start_layer: down_n,
-        end_layer: down_n,
-        title: format!("UNet 瓶颈交叉注意力层 (Mid Block {top_ch}ch)"),
-        attention: attn_spec.clone(),
-        ffn: ffn_spec.clone(),
-        norms_per_layer: 2,
-        schedule_note: None,
-      },
-      LayerSegment {
-        start_layer: down_n + 1,
-        end_layer: num_hidden_layers - 1,
-        title: "UNet 跳跃连接上采样解码塔 (Up Blocks + Skip Concat)".to_string(),
-        attention: attn_spec,
-        ffn: ffn_spec,
-        norms_per_layer: 2,
-        schedule_note: None,
-      },
-    ];
-  } else {
-    // DiT / MMDiT / 3D Spatio-Temporal Video DiT
-    let heads = den_obj
-      .and_then(|c| u64_any(c, &["num_attention_heads", "num_heads"]))
-      .unwrap_or(if is_video { 40 } else { 24 })
-      .max(1);
-    let head_dim =
-      den_obj.and_then(|c| u64_any(c, &["attention_head_dim", "head_dim"])).unwrap_or(128).max(1);
-    hidden_size = den_obj
-      .and_then(|c| u64_any(c, &["dim", "hidden_size", "inner_dim"]))
-      .unwrap_or(heads * head_dim)
-      .max(64);
-    let double_layers = den_obj
-      .and_then(|c| u64_any(c, &["num_layers", "depth"]))
-      .unwrap_or(if is_video { 40 } else { 19 })
-      .max(1);
-    let single_layers = den_obj.and_then(|c| u64_any(c, &["num_single_layers"])).unwrap_or(0);
-    num_hidden_layers = double_layers + single_layers;
-
-    if let Some(c) = den_obj {
-      if let Some(arr) = c.get("patch_size").and_then(Value::as_array) {
-        let dims: Vec<String> =
-          arr.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect();
-        if !dims.is_empty() {
-          patch_summary = format!("[{}] 3D Patchify", dims.join("×"));
-        }
-      } else if let Some(p) = u64_any(c, &["patch_size"]) {
-        if let Some(pt) = u64_any(c, &["patch_size_t"]) {
-          patch_summary = format!("[{pt}×{p}×{p}] 3D Patchify");
-        } else {
-          patch_summary = format!("{p}×{p} Patchify");
-        }
-      }
-      if let Some(axes) = c.get("axes_dims_rope").and_then(Value::as_array) {
-        let dims: Vec<String> =
-          axes.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect();
-        if !dims.is_empty() {
-          rope_summary = format!("Multi-Axis RoPE [{}] + AdaLN-Zero", dims.join("+"));
-        }
-      }
-    }
-
-    let is_joint_mmdit = single_layers > 0
-      || den_lc.contains("flux")
-      || den_lc.contains("sd3")
-      || den_lc.contains("mmdit")
-      || den_obj.is_some_and(|c| {
-        c.contains_key("joint_attention_dim") || c.contains_key("caption_projection_dim")
-      });
-
-    if single_layers > 0 {
-      denoiser_kind = if is_video {
-        "Hybrid Double+Single Stream 3D MMDiT".to_string()
+    let (vae_comp, mut latent_channels, spatial_comp, temporal_comp) =
+      if let Some((vs, vc)) = vae_slot_cls {
+        parse_vae_component(&vs, &vc, parsed_cfgs.get(&vs).and_then(Value::as_object), is_video)
       } else {
-        "Hybrid Double+Single Stream MMDiT".to_string()
+        parse_vae_component(
+          "vae",
+          if is_video { "AutoencoderKL3DCausal" } else { "AutoencoderKL" },
+          None,
+          is_video,
+        )
       };
-      // Double-stream: img+txt QKVO (8 D²) + img+txt 2-layer MLP (16 D²) + dual 6-way AdaLN-Zero (12 D²) = 36 D²
-      // Single-stream: fused QKVO (4 D²) + 2-layer MLP (8 D²) + 3-way AdaLN-Zero (3 D²) = 15 D²
-      let d2 = hidden_size * hidden_size;
-      denoiser_attn_params = double_layers * 8 * d2 + single_layers * 4 * d2;
-      denoiser_ffn_params = double_layers * 16 * d2 + single_layers * 8 * d2;
-      denoiser_mod_params = double_layers * 12 * d2 + single_layers * 3 * d2 + 6 * d2;
+    let vae_class = vae_comp.class_name.clone();
+    let vae_params = vae_comp.estimated_params;
 
+    // 解析去噪主干（MMDiT 双+单流 / 纯联合 MMDiT / 3D Video DiT / 多尺度 CrossAttn UNet）
+    let is_unet = den_slot.starts_with("unet") || den_lc.contains("unet");
+    let mut patch_summary =
+      if is_video { "[1, 2, 2] 3D Patch".to_string() } else { "2×2 Patch".to_string() };
+    let mut rope_summary = if is_video {
+      "3D RoPE (Temporal + H + W)".to_string()
+    } else {
+      "2D Axial / RoPE + AdaLN-Zero".to_string()
+    };
+    let mut torch_dtype = "bfloat16".to_string();
+    let denoiser_kind: String;
+    let hidden_size: u64;
+    let num_hidden_layers: u64;
+    let segments: Vec<LayerSegment>;
+    let denoiser_attn_params: u64;
+    let denoiser_ffn_params: u64;
+    let denoiser_mod_params: u64;
+
+    if is_unet {
+      denoiser_kind = "Multi-Scale Cross-Attention UNet".to_string();
+      patch_summary = "Conv2d 3×3 Stem (Latent Grid)".to_string();
+      rope_summary = "Sinusoidal Timestep + Spatial CrossAttn".to_string();
+      let chans: Vec<u64> = den_obj
+        .and_then(|c| c.get("block_out_channels"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_u64).collect())
+        .filter(|v: &Vec<u64>| !v.is_empty())
+        .unwrap_or_else(|| vec![320, 640, 1280]);
+      let tf_per_block: Vec<u64> = den_obj
+        .and_then(|c| c.get("transformer_layers_per_block"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_u64).collect())
+        .unwrap_or_else(|| vec![1, 2, 10]);
+      if let Some(in_c) = den_obj.and_then(|c| u64_any(c, &["in_channels"])) {
+        latent_channels = in_c.min(latent_channels.max(4));
+      }
+      torch_dtype = "float16".to_string();
+      let top_ch = *chans.last().unwrap_or(&1280);
+      hidden_size = top_ch;
+      let down_n = chans.len() as u64;
+      num_hidden_layers = down_n * 2 + 1;
+      let head_d = 64u64;
+      let heads = (top_ch / head_d).max(8);
+
+      // 精确核算 ResNet2D + SpatialTransformer 多尺度卷积与交叉注意力参数
+      let mut unet_attn = 0u64;
+      let mut unet_ffn = 0u64;
+      let cross_d = den_obj.and_then(|c| u64_any(c, &["cross_attention_dim"])).unwrap_or(2048);
+      let layers_per_blk = den_obj.and_then(|c| u64_any(c, &["layers_per_block"])).unwrap_or(2);
+      for (idx, &ch) in chans.iter().enumerate() {
+        let n_tf = tf_per_block.get(idx).copied().unwrap_or(1);
+        // Down (layers_per_blk) + Up (layers_per_blk + 1)
+        let stage_blocks = 2 * layers_per_blk + 1;
+        let res_conv = stage_blocks * 2 * 9 * ch * ch;
+        let tf_a = stage_blocks * n_tf * (4 * ch * ch + 2 * ch * ch + 2 * ch * cross_d);
+        let tf_f = stage_blocks * n_tf * (8 * ch * ch);
+        unet_attn += tf_a;
+        unet_ffn += res_conv + tf_f;
+      }
+      // Mid bottleneck block at top_ch
+      let mid_tf = tf_per_block.last().copied().unwrap_or(10);
+      unet_attn += mid_tf * (6 * top_ch * top_ch + 2 * top_ch * cross_d);
+      unet_ffn += 4 * 9 * top_ch * top_ch + mid_tf * 8 * top_ch * top_ch;
+      denoiser_attn_params = unet_attn;
+      denoiser_ffn_params = unet_ffn;
+      denoiser_mod_params = 64 * top_ch * top_ch / 16;
+
+      let attn_spec = AttentionSpec::StandardGqa {
+        num_q_heads: heads,
+        num_kv_heads: heads,
+        head_dim: head_d,
+        qkv_bias: false,
+        o_bias: true,
+        qk_norm: false,
+        sliding_window: None,
+        sliding_window_pattern: None,
+        nope_layer_interval: None,
+        is_causal: false,
+        has_cross_attn: true,
+      };
+      let ffn_spec = FfnSpec::DenseGated {
+        intermediate_size: top_ch * 4,
+        act_fn: "geglu + conv3x3".to_string(),
+        bias: true,
+        fused_gate_up: false,
+        is_gated: true,
+      };
       segments = vec![
+        LayerSegment {
+          start_layer: 0,
+          end_layer: down_n - 1,
+          title: format!("UNet 下采样编码塔 (Down Blocks {:?})", chans),
+          attention: attn_spec.clone(),
+          ffn: ffn_spec.clone(),
+          norms_per_layer: 2,
+          schedule_note: Some(
+            "逐级 2× 空间下采样并将多尺度特征通过 Skip Connection 缓存至解码端".to_string(),
+          ),
+        },
+        LayerSegment {
+          start_layer: down_n,
+          end_layer: down_n,
+          title: format!("UNet 瓶颈交叉注意力层 (Mid Block {top_ch}ch)"),
+          attention: attn_spec.clone(),
+          ffn: ffn_spec.clone(),
+          norms_per_layer: 2,
+          schedule_note: None,
+        },
+        LayerSegment {
+          start_layer: down_n + 1,
+          end_layer: num_hidden_layers - 1,
+          title: "UNet 跳跃连接上采样解码塔 (Up Blocks + Skip Concat)".to_string(),
+          attention: attn_spec,
+          ffn: ffn_spec,
+          norms_per_layer: 2,
+          schedule_note: None,
+        },
+      ];
+    } else {
+      // DiT / MMDiT / 3D Spatio-Temporal Video DiT
+      let heads = den_obj
+        .and_then(|c| u64_any(c, &["num_attention_heads", "num_heads"]))
+        .unwrap_or(if is_video { 40 } else { 24 })
+        .max(1);
+      let head_dim =
+        den_obj.and_then(|c| u64_any(c, &["attention_head_dim", "head_dim"])).unwrap_or(128).max(1);
+      hidden_size = den_obj
+        .and_then(|c| u64_any(c, &["dim", "hidden_size", "inner_dim"]))
+        .unwrap_or(heads * head_dim)
+        .max(64);
+      let double_layers = den_obj
+        .and_then(|c| u64_any(c, &["num_layers", "depth"]))
+        .unwrap_or(if is_video { 40 } else { 19 })
+        .max(1);
+      let single_layers = den_obj.and_then(|c| u64_any(c, &["num_single_layers"])).unwrap_or(0);
+      num_hidden_layers = double_layers + single_layers;
+
+      if let Some(c) = den_obj {
+        if let Some(arr) = c.get("patch_size").and_then(Value::as_array) {
+          let dims: Vec<String> =
+            arr.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect();
+          if !dims.is_empty() {
+            patch_summary = format!("[{}] 3D Patchify", dims.join("×"));
+          }
+        } else if let Some(p) = u64_any(c, &["patch_size"]) {
+          if let Some(pt) = u64_any(c, &["patch_size_t"]) {
+            patch_summary = format!("[{pt}×{p}×{p}] 3D Patchify");
+          } else {
+            patch_summary = format!("{p}×{p} Patchify");
+          }
+        }
+        if let Some(axes) = c.get("axes_dims_rope").and_then(Value::as_array) {
+          let dims: Vec<String> =
+            axes.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect();
+          if !dims.is_empty() {
+            rope_summary = format!("Multi-Axis RoPE [{}] + AdaLN-Zero", dims.join("+"));
+          }
+        }
+      }
+
+      let is_joint_mmdit = single_layers > 0
+        || den_lc.contains("flux")
+        || den_lc.contains("sd3")
+        || den_lc.contains("mmdit")
+        || den_obj.is_some_and(|c| {
+          c.contains_key("joint_attention_dim") || c.contains_key("caption_projection_dim")
+        });
+
+      if single_layers > 0 {
+        denoiser_kind = if is_video {
+          "Hybrid Double+Single Stream 3D MMDiT".to_string()
+        } else {
+          "Hybrid Double+Single Stream MMDiT".to_string()
+        };
+        // Double-stream: img+txt QKVO (8 D²) + img+txt 2-layer MLP (16 D²) + dual 6-way AdaLN-Zero (12 D²) = 36 D²
+        // Single-stream: fused QKVO (4 D²) + 2-layer MLP (8 D²) + 3-way AdaLN-Zero (3 D²) = 15 D²
+        let d2 = hidden_size * hidden_size;
+        denoiser_attn_params = double_layers * 8 * d2 + single_layers * 4 * d2;
+        denoiser_ffn_params = double_layers * 16 * d2 + single_layers * 8 * d2;
+        denoiser_mod_params = double_layers * 12 * d2 + single_layers * 3 * d2 + 6 * d2;
+
+        segments = vec![
         LayerSegment {
           start_layer: 0,
           end_layer: double_layers - 1,
@@ -3843,215 +3944,221 @@ pub fn build_diffusion_pipeline_blueprint(
           ),
         },
       ];
-    } else if is_joint_mmdit {
-      denoiser_kind = "Joint Multimodal Diffusion Transformer (MMDiT)".to_string();
-      let d2 = hidden_size * hidden_size;
-      denoiser_attn_params = double_layers * 8 * d2;
-      denoiser_ffn_params = double_layers * 16 * d2;
-      denoiser_mod_params = double_layers * 12 * d2 + 4 * d2;
-      segments = vec![LayerSegment {
-        start_layer: 0,
-        end_layer: double_layers - 1,
-        title: format!("双流联合去噪主干 (Joint MMDiT ×{double_layers})"),
-        attention: AttentionSpec::StandardGqa {
-          num_q_heads: heads,
-          num_kv_heads: heads,
-          head_dim,
-          qkv_bias: true,
-          o_bias: true,
-          qk_norm: true,
-          sliding_window: None,
-          sliding_window_pattern: None,
-          nope_layer_interval: None,
-          is_causal: false,
-          has_cross_attn: true,
-        },
-        ffn: FfnSpec::DenseGated {
-          intermediate_size: hidden_size * 4,
-          act_fn: "gelu_tanh (Dual Stream)".to_string(),
-          bias: true,
-          fused_gate_up: false,
-          is_gated: false,
-        },
-        norms_per_layer: 4,
-        schedule_note: Some(
-          "全程双向空间注意力（无自回归因果掩码）+ AdaLN-Zero 时间步调制".to_string(),
-        ),
-      }];
-    } else {
-      denoiser_kind = if is_video {
-        "3D Spatio-Temporal Video DiT".to_string()
+      } else if is_joint_mmdit {
+        denoiser_kind = "Joint Multimodal Diffusion Transformer (MMDiT)".to_string();
+        let d2 = hidden_size * hidden_size;
+        denoiser_attn_params = double_layers * 8 * d2;
+        denoiser_ffn_params = double_layers * 16 * d2;
+        denoiser_mod_params = double_layers * 12 * d2 + 4 * d2;
+        segments = vec![LayerSegment {
+          start_layer: 0,
+          end_layer: double_layers - 1,
+          title: format!("双流联合去噪主干 (Joint MMDiT ×{double_layers})"),
+          attention: AttentionSpec::StandardGqa {
+            num_q_heads: heads,
+            num_kv_heads: heads,
+            head_dim,
+            qkv_bias: true,
+            o_bias: true,
+            qk_norm: true,
+            sliding_window: None,
+            sliding_window_pattern: None,
+            nope_layer_interval: None,
+            is_causal: false,
+            has_cross_attn: true,
+          },
+          ffn: FfnSpec::DenseGated {
+            intermediate_size: hidden_size * 4,
+            act_fn: "gelu_tanh (Dual Stream)".to_string(),
+            bias: true,
+            fused_gate_up: false,
+            is_gated: false,
+          },
+          norms_per_layer: 4,
+          schedule_note: Some(
+            "全程双向空间注意力（无自回归因果掩码）+ AdaLN-Zero 时间步调制".to_string(),
+          ),
+        }];
       } else {
-        "Diffusion Transformer (DiT)".to_string()
-      };
-      let ffn_dim = den_obj
-        .and_then(|c| u64_any(c, &["ffn_dim", "intermediate_size"]))
-        .unwrap_or(hidden_size * 4);
-      let has_cross = den_obj.is_none_or(|c| {
-        c.contains_key("text_dim") || c.contains_key("cross_attention_dim") || is_video
-      });
-      let attn_mats = if has_cross { 8 } else { 4 };
-      let d2 = hidden_size * hidden_size;
-      denoiser_attn_params = double_layers * attn_mats * d2;
-      denoiser_ffn_params = double_layers * 2 * hidden_size * ffn_dim;
-      denoiser_mod_params = double_layers * 6 * hidden_size * 256 + 8 * d2;
-      segments = vec![LayerSegment {
-        start_layer: 0,
-        end_layer: double_layers - 1,
-        title: if is_video {
-          format!("3D 时空视频去噪层栈 (3D Full-Attn + CrossAttn ×{double_layers})")
+        denoiser_kind = if is_video {
+          "3D Spatio-Temporal Video DiT".to_string()
         } else {
-          format!("DiT 空间去噪层栈 (DiT Blocks ×{double_layers})")
-        },
-        attention: AttentionSpec::StandardGqa {
-          num_q_heads: heads,
-          num_kv_heads: heads,
-          head_dim,
-          qkv_bias: true,
-          o_bias: true,
-          qk_norm: true,
-          sliding_window: None,
-          sliding_window_pattern: None,
-          nope_layer_interval: None,
-          is_causal: false,
-          has_cross_attn: has_cross,
-        },
-        ffn: FfnSpec::DenseGated {
-          intermediate_size: ffn_dim,
-          act_fn: "gelu_tanh".to_string(),
-          bias: true,
-          fused_gate_up: false,
-          is_gated: false,
-        },
-        norms_per_layer: 2,
-        schedule_note: Some(if is_video {
-          "对完整 3D 视频潜空间网格 [F', H', W'] 执行全时空自注意力，并经 Cross-Attention 注入文本语义"
+          "Diffusion Transformer (DiT)".to_string()
+        };
+        let ffn_dim = den_obj
+          .and_then(|c| u64_any(c, &["ffn_dim", "intermediate_size"]))
+          .unwrap_or(hidden_size * 4);
+        let has_cross = den_obj.is_none_or(|c| {
+          c.contains_key("text_dim") || c.contains_key("cross_attention_dim") || is_video
+        });
+        let attn_mats = if has_cross { 8 } else { 4 };
+        let d2 = hidden_size * hidden_size;
+        denoiser_attn_params = double_layers * attn_mats * d2;
+        denoiser_ffn_params = double_layers * 2 * hidden_size * ffn_dim;
+        denoiser_mod_params = double_layers * 6 * hidden_size * 256 + 8 * d2;
+        segments = vec![LayerSegment {
+          start_layer: 0,
+          end_layer: double_layers - 1,
+          title: if is_video {
+            format!("3D 时空视频去噪层栈 (3D Full-Attn + CrossAttn ×{double_layers})")
+          } else {
+            format!("DiT 空间去噪层栈 (DiT Blocks ×{double_layers})")
+          },
+          attention: AttentionSpec::StandardGqa {
+            num_q_heads: heads,
+            num_kv_heads: heads,
+            head_dim,
+            qkv_bias: true,
+            o_bias: true,
+            qk_norm: true,
+            sliding_window: None,
+            sliding_window_pattern: None,
+            nope_layer_interval: None,
+            is_causal: false,
+            has_cross_attn: has_cross,
+          },
+          ffn: FfnSpec::DenseGated {
+            intermediate_size: ffn_dim,
+            act_fn: "gelu_tanh".to_string(),
+            bias: true,
+            fused_gate_up: false,
+            is_gated: false,
+          },
+          norms_per_layer: 2,
+          schedule_note: Some(if is_video {
+            "对完整 3D 视频潜空间网格 [F', H', W'] 执行全时空自注意力，并经 Cross-Attention 注入文本语义"
             .to_string()
-        } else {
-          "对 2D 潜空间 Patch 网格执行全双向注意力与 AdaLN 时间步条件调制".to_string()
-        }),
-      }];
+          } else {
+            "对 2D 潜空间 Patch 网格执行全双向注意力与 AdaLN 时间步条件调制".to_string()
+          }),
+        }];
+      }
     }
-  }
 
-  let denoiser_total = denoiser_attn_params + denoiser_ffn_params + denoiser_mod_params;
-  components.push(PipelineComponentSpec {
-    slot: den_slot,
-    class_name: den_cls.clone(),
-    role: "denoiser".to_string(),
-    spec_summary: format!("{num_hidden_layers}L × {hidden_size}d ({denoiser_kind})"),
-    estimated_params: denoiser_total,
-  });
-  components.push(vae_comp);
+    let denoiser_total = denoiser_attn_params + denoiser_ffn_params + denoiser_mod_params;
+    components.push(PipelineComponentSpec {
+      slot: den_slot,
+      class_name: den_cls.clone(),
+      role: "denoiser".to_string(),
+      spec_summary: format!("{num_hidden_layers}L × {hidden_size}d ({denoiser_kind})"),
+      estimated_params: denoiser_total,
+    });
+    components.push(vae_comp);
 
-  let default_latent_shape = if is_video {
-    format!(
-      "81f×832×480 → Latent [B, {latent_channels}, {}, {}, {}] (~32.8K tokens)",
-      81_u64.div_ceil(temporal_comp),
-      480 / spatial_comp,
-      832 / spatial_comp
-    )
-  } else {
-    format!(
-      "1024×1024 px → Latent [B, {latent_channels}, {}, {}] (4096 tokens)",
-      1024 / spatial_comp,
-      1024 / spatial_comp
-    )
-  };
-  let max_latent_tokens = if is_video { 32_768 } else { 4_096 };
+    let default_latent_shape = if is_video {
+      format!(
+        "81f×832×480 → Latent [B, {latent_channels}, {}, {}, {}] (~32.8K tokens)",
+        81_u64.div_ceil(temporal_comp),
+        480 / spatial_comp,
+        832 / spatial_comp
+      )
+    } else {
+      format!(
+        "1024×1024 px → Latent [B, {latent_channels}, {}, {}] (4096 tokens)",
+        1024 / spatial_comp,
+        1024 / spatial_comp
+      )
+    };
+    let max_latent_tokens = if is_video { 32_768 } else { 4_096 };
 
-  let total_params = conditioner_params + denoiser_total + vae_params;
-  let params = ParamBreakdown {
-    vision_encoder: vae_params,
-    audio_and_speech: 0,
-    embedding: conditioner_params,
-    attention: denoiser_attn_params,
-    dense_ffn: denoiser_ffn_params,
-    moe_routed: 0,
-    moe_shared: 0,
-    norms_and_routers: denoiser_mod_params,
-    lm_head: 0,
-    mtp_head: 0,
-    total_params,
-    // 单步迭代去噪（t = T..1）仅激活去噪主干（Text Encoder 前置单次运行，VAE 末尾单次解码）
-    active_params: denoiser_total,
-  };
+    let total_params = conditioner_params + denoiser_total + vae_params;
+    let params = ParamBreakdown {
+      vision_encoder: vae_params,
+      audio_and_speech: 0,
+      embedding: conditioner_params,
+      attention: denoiser_attn_params,
+      dense_ffn: denoiser_ffn_params,
+      moe_routed: 0,
+      moe_shared: 0,
+      norms_and_routers: denoiser_mod_params,
+      lm_head: 0,
+      mtp_head: 0,
+      total_params,
+      // 单步迭代去噪（t = T..1）仅激活去噪主干（Text Encoder 前置单次运行，VAE 末尾单次解码）
+      active_params: denoiser_total,
+    };
 
-  let mut combined_json = serde_json::Map::new();
-  if let Ok(idx_val) = serde_json::from_str::<Value>(model_index_json) {
-    combined_json.insert("model_index.json".to_string(), idx_val);
-  }
-  for (slot, raw) in component_configs {
-    if let Ok(v) = serde_json::from_str::<Value>(raw) {
-      combined_json.insert(format!("{slot}/config.json"), v);
+    let mut combined_json = serde_json::Map::new();
+    if let Ok(idx_val) = serde_json::from_str::<Value>(model_index_json) {
+      combined_json.insert("model_index.json".to_string(), idx_val);
     }
-  }
-  let raw_config_pretty = serde_json::to_string_pretty(&Value::Object(combined_json))
-    .unwrap_or_else(|_| model_index_json.to_string());
+    for (slot, raw) in component_configs {
+      if let Ok(v) = serde_json::from_str::<Value>(raw) {
+        combined_json.insert(format!("{slot}/config.json"), v);
+      }
+    }
+    let raw_config_pretty = serde_json::to_string_pretty(&Value::Object(combined_json))
+      .unwrap_or_else(|_| model_index_json.to_string());
 
-  let comp_count = components.len();
-  let multimodal_note = Some(format!(
+    let comp_count = components.len();
+    let multimodal_note = Some(format!(
     "{} 多组件{}生成管线（共 {comp_count} 个协同子模块：Prompt 编码 → {scheduler_summary} → {den_cls} → {vae_class}）",
     pipeline_class,
     if is_video { "视频" } else { "图像" }
   ));
 
-  Ok(ModelBlueprint {
-    repo_id: repo_id.to_string(),
-    source_label: source_label.to_string(),
-    family: ArchFamily::DiffusionPipeline,
-    architectures: vec![pipeline_class.clone(), den_cls],
-    model_type: if is_video {
-      "video_diffusion_pipeline".to_string()
-    } else {
-      "image_diffusion_pipeline".to_string()
-    },
-    torch_dtype,
-    quantization_summary: None,
-    multimodal_note,
-    vision: None,
-    audio: None,
-    diffusion: Some(DiffusionPipelineSpec {
-      pipeline_class,
-      is_video,
-      scheduler_summary,
-      denoiser_kind,
-      latent_channels,
-      spatial_compression: spatial_comp,
-      temporal_compression: temporal_comp,
-      patch_summary,
-      default_latent_shape,
-      components,
-    }),
-    output_head: OutputHeadSpec::LatentDecoder {
-      vae_class,
-      latent_channels,
-      spatial_compression: spatial_comp,
-      temporal_compression: temporal_comp,
-      is_video,
-      estimated_params: vae_params,
-    },
-    vocab_size: 0,
-    hidden_size,
-    num_hidden_layers,
-    max_position_embeddings: max_latent_tokens,
-    rms_norm_eps: Some(1e-6),
-    tie_word_embeddings: false,
-    rope_summary,
-    hidden_act: "gelu_tanh".to_string(),
-    num_nextn_predict_layers: 0,
-    tokenizer_class: None,
-    default_temperature: None,
-    default_top_p: None,
-    segments,
-    params,
-    safetensors,
-    raw_config_pretty,
-    aux_configs: Vec::new(),
-  })
+    Ok(ModelBlueprint {
+      repo_id: repo_id.to_string(),
+      source_label: source_label.to_string(),
+      family: ArchFamily::DiffusionPipeline,
+      architectures: vec![pipeline_class.clone(), den_cls],
+      model_type: if is_video {
+        "video_diffusion_pipeline".to_string()
+      } else {
+        "image_diffusion_pipeline".to_string()
+      },
+      torch_dtype,
+      quantization_summary: None,
+      multimodal_note,
+      vision: None,
+      audio: None,
+      diffusion: Some(DiffusionPipelineSpec {
+        pipeline_class,
+        is_video,
+        scheduler_summary,
+        denoiser_kind,
+        latent_channels,
+        spatial_compression: spatial_comp,
+        temporal_compression: temporal_comp,
+        patch_summary,
+        default_latent_shape,
+        components,
+      }),
+      output_head: OutputHeadSpec::LatentDecoder {
+        vae_class,
+        latent_channels,
+        spatial_compression: spatial_comp,
+        temporal_compression: temporal_comp,
+        is_video,
+        estimated_params: vae_params,
+      },
+      vocab_size: 0,
+      hidden_size,
+      num_hidden_layers,
+      max_position_embeddings: max_latent_tokens,
+      rms_norm_eps: Some(1e-6),
+      tie_word_embeddings: false,
+      rope_summary,
+      hidden_act: "gelu_tanh".to_string(),
+      num_nextn_predict_layers: 0,
+      tokenizer_class: None,
+      default_temperature: None,
+      default_top_p: None,
+      segments,
+      params,
+      safetensors,
+      raw_config_pretty,
+      aux_configs: Vec::new(),
+    })
+  }
 }
 
-#[cfg(test)]
+#[cfg(feature = "server")]
+use diffusion_parser::{build_diffusion_from_single_json, is_diffusion_root_json};
+#[cfg(feature = "server")]
+pub use diffusion_parser::{build_diffusion_pipeline_blueprint, extract_diffusion_slots};
+
+#[cfg(all(test, feature = "server"))]
 mod tests {
   use super::*;
 

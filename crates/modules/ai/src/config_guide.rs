@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use app_core::i18n::Language;
 use dioxus::prelude::*;
 use dioxus_shadcn::{
-  badge_class, card_class, BadgeVariant, Button, ButtonSize, ButtonVariant, Input,
+  badge_class, card_class, BadgeVariant, Button, ButtonSize, ButtonVariant, Input, Spinner,
+  SpinnerSize,
 };
 use serde_json::Value;
 use widgets::PageMeta;
@@ -75,6 +76,19 @@ impl ConfigFileKind {
     }
   }
 
+  pub fn from_id(id: &str) -> Self {
+    match id {
+      "safetensors-index" => Self::SafetensorsIndex,
+      "tokenizer-config" => Self::TokenizerConfig,
+      "generation-config" => Self::GenerationConfig,
+      "preprocessor-config" => Self::PreprocessorConfig,
+      "diffusion-pipeline" => Self::DiffusionPipeline,
+      "embedding-modules" => Self::EmbeddingModules,
+      "adapter-config" => Self::AdapterConfig,
+      _ => Self::ModelConfig,
+    }
+  }
+
   pub fn from_filename(filename: &str) -> Self {
     let lower = filename.trim().to_ascii_lowercase();
     if lower.contains("generation_config") {
@@ -97,7 +111,8 @@ impl ConfigFileKind {
   }
 }
 
-/// 单个配置文件类型的全景蓝图说明。
+/// 单个配置文件类型的全景蓝图说明（服务端静态表）。
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigFileSpec {
   pub kind: ConfigFileKind,
@@ -115,6 +130,7 @@ pub struct ConfigFileSpec {
   pub snippet: &'static str,
 }
 
+#[cfg(feature = "server")]
 impl ConfigFileSpec {
   pub fn modalities(&self, lang: Language) -> &'static str {
     lang.pick(self.modalities_zh, self.modalities_en)
@@ -134,6 +150,46 @@ impl ConfigFileSpec {
 
   pub fn pitfall(&self, lang: Language) -> &'static str {
     lang.pick(self.pitfall_zh, self.pitfall_en)
+  }
+}
+
+/// 跨端传输的配置文件蓝图 DTO（通过共享 `serde_json::Value` 解析，避免 `ciborium`/`serde` 结构体派生膨胀 WASM）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigFileSpecDto {
+  pub kind: ConfigFileKind,
+  pub filenames: String,
+  pub modalities_zh: String,
+  pub modalities_en: String,
+  pub role_zh: String,
+  pub role_en: String,
+  pub summary_zh: String,
+  pub summary_en: String,
+  pub loader_zh: String,
+  pub loader_en: String,
+  pub pitfall_zh: String,
+  pub pitfall_en: String,
+  pub snippet: String,
+}
+
+impl ConfigFileSpecDto {
+  pub fn modalities(&self, lang: Language) -> &str {
+    lang.pick(&self.modalities_zh, &self.modalities_en)
+  }
+
+  pub fn role(&self, lang: Language) -> &str {
+    lang.pick(&self.role_zh, &self.role_en)
+  }
+
+  pub fn summary(&self, lang: Language) -> &str {
+    lang.pick(&self.summary_zh, &self.summary_en)
+  }
+
+  pub fn loader(&self, lang: Language) -> &str {
+    lang.pick(&self.loader_zh, &self.loader_en)
+  }
+
+  pub fn pitfall(&self, lang: Language) -> &str {
+    lang.pick(&self.pitfall_zh, &self.pitfall_en)
   }
 }
 
@@ -172,6 +228,18 @@ impl FieldGroup {
     }
   }
 
+  pub fn from_id(id: &str) -> Self {
+    match id {
+      "attention-kv" => Self::AttentionKv,
+      "ffn-moe" => Self::FfnMoe,
+      "position-context" => Self::PositionContext,
+      "quant-precision" => Self::QuantPrecision,
+      "multimodal-pipeline" => Self::MultimodalPipeline,
+      "tokenizer-generation" => Self::TokenizerGeneration,
+      _ => Self::Backbone,
+    }
+  }
+
   pub fn label(self, lang: Language) -> &'static str {
     match self {
       Self::Backbone => lang.pick("主干维度与身份", "Backbone & Identity"),
@@ -189,7 +257,8 @@ impl FieldGroup {
   }
 }
 
-/// 单个配置字段的中英双语工程字典条目。
+/// 单个配置字段的中英双语工程字典条目（服务端静态表）。
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigFieldDoc {
   /// 规范键名（支持顶层键或点分嵌套路径，如 `rope_scaling.type`、`vision_config.patch_size`）
@@ -211,13 +280,37 @@ pub struct ConfigFieldDoc {
   pub lab_link: Option<(&'static str, &'static str)>,
 }
 
+#[cfg(feature = "server")]
 impl ConfigFieldDoc {
   pub fn summary(&self, lang: Language) -> &'static str {
     lang.pick(self.summary_zh, self.summary_en)
   }
 }
 
-/// 典型模型仓库按模态划分的文件树条目。
+/// 跨端传输的配置字段词典条目 DTO。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigFieldDocDto {
+  pub key: String,
+  pub aliases: Vec<String>,
+  pub file: ConfigFileKind,
+  pub group: FieldGroup,
+  pub value_type: String,
+  pub summary_zh: String,
+  pub summary_en: String,
+  pub formula_impact: Option<String>,
+  pub focus: Option<InspectorFocus>,
+  pub example_model_slug: Option<String>,
+  pub lab_link: Option<(String, String)>,
+}
+
+impl ConfigFieldDocDto {
+  pub fn summary(&self, lang: Language) -> &str {
+    lang.pick(&self.summary_zh, &self.summary_en)
+  }
+}
+
+/// 典型模型仓库按模态划分的文件树条目（服务端静态表）。
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepoTreeItem {
   pub path: &'static str,
@@ -227,13 +320,31 @@ pub struct RepoTreeItem {
   pub note_en: &'static str,
 }
 
+#[cfg(feature = "server")]
 impl RepoTreeItem {
   pub fn note(&self, lang: Language) -> &'static str {
     lang.pick(self.note_zh, self.note_en)
   }
 }
 
-/// 按模态组织的标准仓库文件树蓝图（LLM / VLM / Diffusion / Embedding / LoRA）。
+/// 跨端传输的仓库文件树条目 DTO。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoTreeItemDto {
+  pub path: String,
+  pub required: bool,
+  pub file_kind: ConfigFileKind,
+  pub note_zh: String,
+  pub note_en: String,
+}
+
+impl RepoTreeItemDto {
+  pub fn note(&self, lang: Language) -> &str {
+    lang.pick(&self.note_zh, &self.note_en)
+  }
+}
+
+/// 按模态组织的标准仓库文件树蓝图（服务端静态表）。
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepoModalityBlueprint {
   pub id: &'static str,
@@ -246,6 +357,7 @@ pub struct RepoModalityBlueprint {
   pub items: &'static [RepoTreeItem],
 }
 
+#[cfg(feature = "server")]
 impl RepoModalityBlueprint {
   pub fn label(&self, lang: Language) -> &'static str {
     lang.pick(self.label_zh, self.label_en)
@@ -256,7 +368,31 @@ impl RepoModalityBlueprint {
   }
 }
 
-/// 常见大模型配置文件工程踩坑速查条目。
+/// 跨端传输的模态仓库文件树蓝图 DTO。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoModalityBlueprintDto {
+  pub id: String,
+  pub label_zh: String,
+  pub label_en: String,
+  pub example_repo: String,
+  pub example_slug: Option<String>,
+  pub flow_zh: String,
+  pub flow_en: String,
+  pub items: Vec<RepoTreeItemDto>,
+}
+
+impl RepoModalityBlueprintDto {
+  pub fn label(&self, lang: Language) -> &str {
+    lang.pick(&self.label_zh, &self.label_en)
+  }
+
+  pub fn flow(&self, lang: Language) -> &str {
+    lang.pick(&self.flow_zh, &self.flow_en)
+  }
+}
+
+/// 常见大模型配置文件工程踩坑速查条目（服务端静态表）。
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigGotcha {
   pub id: &'static str,
@@ -272,6 +408,7 @@ pub struct ConfigGotcha {
   pub related_keys: &'static [&'static str],
 }
 
+#[cfg(feature = "server")]
 impl ConfigGotcha {
   pub fn title(&self, lang: Language) -> &'static str {
     lang.pick(self.title_zh, self.title_en)
@@ -290,10 +427,54 @@ impl ConfigGotcha {
   }
 }
 
+/// 跨端传输的工程踩坑条目 DTO。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigGotchaDto {
+  pub id: String,
+  pub badge: String,
+  pub title_zh: String,
+  pub title_en: String,
+  pub symptom_zh: String,
+  pub symptom_en: String,
+  pub root_cause_zh: String,
+  pub root_cause_en: String,
+  pub fix_zh: String,
+  pub fix_en: String,
+  pub related_keys: Vec<String>,
+}
+
+impl ConfigGotchaDto {
+  pub fn title(&self, lang: Language) -> &str {
+    lang.pick(&self.title_zh, &self.title_en)
+  }
+
+  pub fn symptom(&self, lang: Language) -> &str {
+    lang.pick(&self.symptom_zh, &self.symptom_en)
+  }
+
+  pub fn root_cause(&self, lang: Language) -> &str {
+    lang.pick(&self.root_cause_zh, &self.root_cause_en)
+  }
+
+  pub fn fix(&self, lang: Language) -> &str {
+    lang.pick(&self.fix_zh, &self.fix_en)
+  }
+}
+
+/// `/models/configs` 全景指南页的完整服务端下发载荷。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConfigGuidePayload {
+  pub file_specs: Vec<ConfigFileSpecDto>,
+  pub repo_trees: Vec<RepoModalityBlueprintDto>,
+  pub field_docs: Vec<ConfigFieldDocDto>,
+  pub gotchas: Vec<ConfigGotchaDto>,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. 8 类主流大模型配置文件蓝图
+// 1. 8 类主流大模型配置文件蓝图（仅服务端编译，避免静态长文撑大客户端 WASM）
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "server")]
 pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
   ConfigFileSpec {
     kind: ConfigFileKind::ModelConfig,
@@ -478,6 +659,7 @@ pub const CONFIG_FILE_SPECS: &[ConfigFileSpec] = &[
 // 2. 五大模态仓库文件树全景蓝图
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "server")]
 pub const REPO_MODALITY_BLUEPRINTS: &[RepoModalityBlueprint] = &[
   RepoModalityBlueprint {
     id: "llm",
@@ -701,6 +883,7 @@ pub const REPO_MODALITY_BLUEPRINTS: &[RepoModalityBlueprint] = &[
 // 3. ~88 个高频配置字段双语工程词典（Single Source of Truth）
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "server")]
 pub const CONFIG_FIELD_DOCS: &[ConfigFieldDoc] = &[
   // ── A. Backbone & Identity（主干维度与身份）──
   ConfigFieldDoc {
@@ -2361,6 +2544,7 @@ pub const CONFIG_FIELD_DOCS: &[ConfigFieldDoc] = &[
 // 4. 常见大模型配置文件工程踩坑速查（Gotchas）
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "server")]
 pub const CONFIG_GOTCHAS: &[ConfigGotcha] = &[
   ConfigGotcha {
     id: "tie-word-embeddings",
@@ -2443,8 +2627,398 @@ pub const CONFIG_GOTCHAS: &[ConfigGotcha] = &[
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. JSON 扁平化与逐字段注解解析引擎
+// 5. 服务端载荷构造、Zero-DB Server Functions 与 JSON 逐字段注解引擎
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "server")]
+pub fn build_config_field_docs() -> Vec<ConfigFieldDocDto> {
+  CONFIG_FIELD_DOCS
+    .iter()
+    .map(|d| ConfigFieldDocDto {
+      key: d.key.to_string(),
+      aliases: d.aliases.iter().map(|s| (*s).to_string()).collect(),
+      file: d.file,
+      group: d.group,
+      value_type: d.value_type.to_string(),
+      summary_zh: d.summary_zh.to_string(),
+      summary_en: d.summary_en.to_string(),
+      formula_impact: d.formula_impact.map(str::to_string),
+      focus: d.focus,
+      example_model_slug: d.example_model_slug.map(str::to_string),
+      lab_link: d.lab_link.map(|(h, l)| (h.to_string(), l.to_string())),
+    })
+    .collect()
+}
+
+#[cfg(feature = "server")]
+pub fn build_config_guide_payload() -> ConfigGuidePayload {
+  ConfigGuidePayload {
+    file_specs: CONFIG_FILE_SPECS
+      .iter()
+      .map(|s| ConfigFileSpecDto {
+        kind: s.kind,
+        filenames: s.filenames.to_string(),
+        modalities_zh: s.modalities_zh.to_string(),
+        modalities_en: s.modalities_en.to_string(),
+        role_zh: s.role_zh.to_string(),
+        role_en: s.role_en.to_string(),
+        summary_zh: s.summary_zh.to_string(),
+        summary_en: s.summary_en.to_string(),
+        loader_zh: s.loader_zh.to_string(),
+        loader_en: s.loader_en.to_string(),
+        pitfall_zh: s.pitfall_zh.to_string(),
+        pitfall_en: s.pitfall_en.to_string(),
+        snippet: s.snippet.to_string(),
+      })
+      .collect(),
+    repo_trees: REPO_MODALITY_BLUEPRINTS
+      .iter()
+      .map(|b| RepoModalityBlueprintDto {
+        id: b.id.to_string(),
+        label_zh: b.label_zh.to_string(),
+        label_en: b.label_en.to_string(),
+        example_repo: b.example_repo.to_string(),
+        example_slug: b.example_slug.map(str::to_string),
+        flow_zh: b.flow_zh.to_string(),
+        flow_en: b.flow_en.to_string(),
+        items: b
+          .items
+          .iter()
+          .map(|it| RepoTreeItemDto {
+            path: it.path.to_string(),
+            required: it.required,
+            file_kind: it.file_kind,
+            note_zh: it.note_zh.to_string(),
+            note_en: it.note_en.to_string(),
+          })
+          .collect(),
+      })
+      .collect(),
+    field_docs: build_config_field_docs(),
+    gotchas: CONFIG_GOTCHAS
+      .iter()
+      .map(|g| ConfigGotchaDto {
+        id: g.id.to_string(),
+        badge: g.badge.to_string(),
+        title_zh: g.title_zh.to_string(),
+        title_en: g.title_en.to_string(),
+        symptom_zh: g.symptom_zh.to_string(),
+        symptom_en: g.symptom_en.to_string(),
+        root_cause_zh: g.root_cause_zh.to_string(),
+        root_cause_en: g.root_cause_en.to_string(),
+        fix_zh: g.fix_zh.to_string(),
+        fix_en: g.fix_en.to_string(),
+        related_keys: g.related_keys.iter().map(|s| (*s).to_string()).collect(),
+      })
+      .collect(),
+  }
+}
+
+#[cfg(feature = "server")]
+fn focus_code(f: InspectorFocus) -> &'static str {
+  match f {
+    InspectorFocus::Vision => "v",
+    InspectorFocus::Audio => "a",
+    InspectorFocus::Embedding => "e",
+    InspectorFocus::Attention => "t",
+    InspectorFocus::FfnOrMoe => "f",
+    InspectorFocus::NormAndResidual => "n",
+    InspectorFocus::LmHead => "l",
+    InspectorFocus::MtpHead => "m",
+  }
+}
+
+fn focus_from_code(s: &str) -> Option<InspectorFocus> {
+  match s {
+    "v" => Some(InspectorFocus::Vision),
+    "a" => Some(InspectorFocus::Audio),
+    "e" => Some(InspectorFocus::Embedding),
+    "t" => Some(InspectorFocus::Attention),
+    "f" => Some(InspectorFocus::FfnOrMoe),
+    "n" => Some(InspectorFocus::NormAndResidual),
+    "l" => Some(InspectorFocus::LmHead),
+    "m" => Some(InspectorFocus::MtpHead),
+    _ => None,
+  }
+}
+
+#[cfg(feature = "server")]
+static SERVER_GUIDE_JSON_CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// 将服务端静态词典编码为紧凑 JSON 字符串（复用 `Result<String, ServerFnError>` 零 `ciborium`/`serde` 结构体派生开销）。
+#[cfg(feature = "server")]
+pub fn build_config_guide_json() -> String {
+  SERVER_GUIDE_JSON_CACHE
+    .get_or_init(|| {
+      let s: Vec<Value> = CONFIG_FILE_SPECS
+        .iter()
+        .map(|x| {
+          Value::Array(vec![
+            Value::String(x.kind.id().to_string()),
+            Value::String(x.filenames.to_string()),
+            Value::String(x.modalities_zh.to_string()),
+            Value::String(x.modalities_en.to_string()),
+            Value::String(x.role_zh.to_string()),
+            Value::String(x.role_en.to_string()),
+            Value::String(x.summary_zh.to_string()),
+            Value::String(x.summary_en.to_string()),
+            Value::String(x.loader_zh.to_string()),
+            Value::String(x.loader_en.to_string()),
+            Value::String(x.pitfall_zh.to_string()),
+            Value::String(x.pitfall_en.to_string()),
+            Value::String(x.snippet.to_string()),
+          ])
+        })
+        .collect();
+      let r: Vec<Value> = REPO_MODALITY_BLUEPRINTS
+        .iter()
+        .map(|b| {
+          let items = b
+            .items
+            .iter()
+            .map(|it| {
+              Value::Array(vec![
+                Value::String(it.path.to_string()),
+                Value::Bool(it.required),
+                Value::String(it.file_kind.id().to_string()),
+                Value::String(it.note_zh.to_string()),
+                Value::String(it.note_en.to_string()),
+              ])
+            })
+            .collect();
+          Value::Array(vec![
+            Value::String(b.id.to_string()),
+            Value::String(b.label_zh.to_string()),
+            Value::String(b.label_en.to_string()),
+            Value::String(b.example_repo.to_string()),
+            b.example_slug.map(|v| Value::String(v.to_string())).unwrap_or(Value::Null),
+            Value::String(b.flow_zh.to_string()),
+            Value::String(b.flow_en.to_string()),
+            Value::Array(items),
+          ])
+        })
+        .collect();
+      let d: Vec<Value> = CONFIG_FIELD_DOCS
+        .iter()
+        .map(|f| {
+          let aliases = f.aliases.iter().map(|a| Value::String((*a).to_string())).collect();
+          let lab = match f.lab_link {
+            Some((h, l)) => {
+              Value::Array(vec![Value::String(h.to_string()), Value::String(l.to_string())])
+            }
+            None => Value::Null,
+          };
+          Value::Array(vec![
+            Value::String(f.key.to_string()),
+            Value::Array(aliases),
+            Value::String(f.file.id().to_string()),
+            Value::String(f.group.id().to_string()),
+            Value::String(f.value_type.to_string()),
+            Value::String(f.summary_zh.to_string()),
+            Value::String(f.summary_en.to_string()),
+            f.formula_impact.map(|v| Value::String(v.to_string())).unwrap_or(Value::Null),
+            f.focus.map(|fc| Value::String(focus_code(fc).to_string())).unwrap_or(Value::Null),
+            f.example_model_slug.map(|v| Value::String(v.to_string())).unwrap_or(Value::Null),
+            lab,
+          ])
+        })
+        .collect();
+      let g: Vec<Value> = CONFIG_GOTCHAS
+        .iter()
+        .map(|x| {
+          let rks = x.related_keys.iter().map(|k| Value::String((*k).to_string())).collect();
+          Value::Array(vec![
+            Value::String(x.id.to_string()),
+            Value::String(x.badge.to_string()),
+            Value::String(x.title_zh.to_string()),
+            Value::String(x.title_en.to_string()),
+            Value::String(x.symptom_zh.to_string()),
+            Value::String(x.symptom_en.to_string()),
+            Value::String(x.root_cause_zh.to_string()),
+            Value::String(x.root_cause_en.to_string()),
+            Value::String(x.fix_zh.to_string()),
+            Value::String(x.fix_en.to_string()),
+            Value::Array(rks),
+          ])
+        })
+        .collect();
+      serde_json::to_string(&Value::Array(vec![
+        Value::Array(s),
+        Value::Array(r),
+        Value::Array(d),
+        Value::Array(g),
+      ]))
+      .unwrap_or_default()
+    })
+    .clone()
+}
+
+fn arr_str(a: &[Value], idx: usize) -> String {
+  a.get(idx).and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+fn arr_opt_str(a: &[Value], idx: usize) -> Option<String> {
+  a.get(idx).and_then(Value::as_str).map(str::to_string)
+}
+
+fn arr_str_list(a: &[Value], idx: usize) -> Vec<String> {
+  a.get(idx)
+    .and_then(Value::as_array)
+    .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+    .unwrap_or_default()
+}
+
+/// 解析紧凑 JSON 载荷并缓存为静态引用（客户端与服务端各只解析一次，避免 `use_memo` 泛型单态化膨胀）。
+pub fn get_or_parse_config_guide(raw: &str) -> &'static ConfigGuidePayload {
+  static PARSED_GUIDE_CACHE: std::sync::OnceLock<ConfigGuidePayload> = std::sync::OnceLock::new();
+  PARSED_GUIDE_CACHE.get_or_init(|| parse_config_guide_json(raw))
+}
+
+fn parse_field_docs_slice(rows: &[Value]) -> Vec<ConfigFieldDocDto> {
+  rows
+    .iter()
+    .filter_map(Value::as_array)
+    .map(|a| ConfigFieldDocDto {
+      key: arr_str(a, 0),
+      aliases: arr_str_list(a, 1),
+      file: ConfigFileKind::from_id(&arr_str(a, 2)),
+      group: FieldGroup::from_id(&arr_str(a, 3)),
+      value_type: arr_str(a, 4),
+      summary_zh: arr_str(a, 5),
+      summary_en: arr_str(a, 6),
+      formula_impact: arr_opt_str(a, 7),
+      focus: a.get(8).and_then(Value::as_str).and_then(focus_from_code),
+      example_model_slug: arr_opt_str(a, 9),
+      lab_link: a
+        .get(10)
+        .and_then(Value::as_array)
+        .and_then(|p| Some((p.first()?.as_str()?.to_string(), p.get(1)?.as_str()?.to_string()))),
+    })
+    .collect()
+}
+
+/// 解析 `/api/ai/config-guide` 紧凑 JSON 载荷为完整的 `ConfigGuidePayload`。
+pub fn parse_config_guide_json(raw: &str) -> ConfigGuidePayload {
+  let Ok(Value::Array(top)) = serde_json::from_str::<Value>(raw) else {
+    return ConfigGuidePayload::default();
+  };
+  let file_specs = top
+    .first()
+    .and_then(Value::as_array)
+    .map(|rows| {
+      rows
+        .iter()
+        .filter_map(Value::as_array)
+        .map(|a| ConfigFileSpecDto {
+          kind: ConfigFileKind::from_id(&arr_str(a, 0)),
+          filenames: arr_str(a, 1),
+          modalities_zh: arr_str(a, 2),
+          modalities_en: arr_str(a, 3),
+          role_zh: arr_str(a, 4),
+          role_en: arr_str(a, 5),
+          summary_zh: arr_str(a, 6),
+          summary_en: arr_str(a, 7),
+          loader_zh: arr_str(a, 8),
+          loader_en: arr_str(a, 9),
+          pitfall_zh: arr_str(a, 10),
+          pitfall_en: arr_str(a, 11),
+          snippet: arr_str(a, 12),
+        })
+        .collect()
+    })
+    .unwrap_or_default();
+  let repo_trees = top
+    .get(1)
+    .and_then(Value::as_array)
+    .map(|rows| {
+      rows
+        .iter()
+        .filter_map(Value::as_array)
+        .map(|a| {
+          let items = a
+            .get(7)
+            .and_then(Value::as_array)
+            .map(|it_rows| {
+              it_rows
+                .iter()
+                .filter_map(Value::as_array)
+                .map(|it| RepoTreeItemDto {
+                  path: arr_str(it, 0),
+                  required: it.get(1).and_then(Value::as_bool).unwrap_or(false),
+                  file_kind: ConfigFileKind::from_id(&arr_str(it, 2)),
+                  note_zh: arr_str(it, 3),
+                  note_en: arr_str(it, 4),
+                })
+                .collect()
+            })
+            .unwrap_or_default();
+          RepoModalityBlueprintDto {
+            id: arr_str(a, 0),
+            label_zh: arr_str(a, 1),
+            label_en: arr_str(a, 2),
+            example_repo: arr_str(a, 3),
+            example_slug: arr_opt_str(a, 4),
+            flow_zh: arr_str(a, 5),
+            flow_en: arr_str(a, 6),
+            items,
+          }
+        })
+        .collect()
+    })
+    .unwrap_or_default();
+  let field_docs =
+    parse_field_docs_slice(top.get(2).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]));
+  let gotchas = top
+    .get(3)
+    .and_then(Value::as_array)
+    .map(|rows| {
+      rows
+        .iter()
+        .filter_map(Value::as_array)
+        .map(|a| ConfigGotchaDto {
+          id: arr_str(a, 0),
+          badge: arr_str(a, 1),
+          title_zh: arr_str(a, 2),
+          title_en: arr_str(a, 3),
+          symptom_zh: arr_str(a, 4),
+          symptom_en: arr_str(a, 5),
+          root_cause_zh: arr_str(a, 6),
+          root_cause_en: arr_str(a, 7),
+          fix_zh: arr_str(a, 8),
+          fix_en: arr_str(a, 9),
+          related_keys: arr_str_list(a, 10),
+        })
+        .collect()
+    })
+    .unwrap_or_default();
+  ConfigGuidePayload { file_specs, repo_trees, field_docs, gotchas }
+}
+
+/// 下发 `/models/configs` 与 `/models/:slug` 共用的紧凑 JSON 词典载荷（零数据库依赖，复用 `String` 传输避免客户端 WASM 膨胀）。
+#[get("/api/ai/config-guide")]
+pub async fn get_config_guide_json() -> Result<String, ServerFnError> {
+  Ok(build_config_guide_json())
+}
+
+#[cfg(not(feature = "server"))]
+static CLIENT_GUIDE_JSON_CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// 带客户端内存缓存的词典 JSON 获取入口，切换页面或标签页时避免重复发起 HTTP 请求。
+pub async fn get_config_guide_json_cached() -> Result<String, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    Ok(build_config_guide_json())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    if let Some(cached) = CLIENT_GUIDE_JSON_CACHE.get() {
+      return Ok(cached.clone());
+    }
+    let raw = get_config_guide_json().await?;
+    let _ = CLIENT_GUIDE_JSON_CACHE.set(raw.clone());
+    Ok(raw)
+  }
+}
 
 /// 单个真实模型配置中解析出的一条注解字段。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2458,17 +3032,19 @@ pub struct AnnotatedConfigField {
   /// 语义分组
   pub group: FieldGroup,
   /// 命中的词典文档（未知扩展字段为 `None`）
-  pub doc: Option<&'static ConfigFieldDoc>,
+  pub doc: Option<ConfigFieldDocDto>,
   /// 推荐的架构图联动焦点
   pub focus: Option<InspectorFocus>,
 }
 
-/// 按规范键、别名与多模态/Diffusers 槽位前缀剥离规则查询字段词典。
+/// 按规范键、别名与多模态/Diffusers 槽位前缀剥离规则查询服务端静态字段词典。
+#[cfg(feature = "server")]
 pub fn lookup_field_doc(path: &str) -> Option<&'static ConfigFieldDoc> {
   lookup_field_doc_with_hint(path, None)
 }
 
-/// 带文件类型提示的字段词典查询（用于区分 `generation_config.json` / `tokenizer_config.json` / `1_Pooling/config.json` 等同名键）。
+/// 带文件类型提示的服务端静态字段词典查询。
+#[cfg(feature = "server")]
 pub fn lookup_field_doc_with_hint(
   path: &str,
   file_hint: Option<ConfigFileKind>,
@@ -2478,15 +3054,78 @@ pub fn lookup_field_doc_with_hint(
     return None;
   }
 
+  let find_static = |candidate: &str| -> Option<&'static ConfigFieldDoc> {
+    if let Some(hint) = file_hint {
+      if let Some(doc) = CONFIG_FIELD_DOCS
+        .iter()
+        .find(|d| d.file == hint && (d.key == candidate || d.aliases.contains(&candidate)))
+      {
+        return Some(doc);
+      }
+    }
+    CONFIG_FIELD_DOCS.iter().find(|d| d.key == candidate || d.aliases.contains(&candidate))
+  };
+
+  if let Some(doc) = find_static(clean) {
+    return Some(doc);
+  }
+  let stripped = strip_known_container_prefix(clean);
+  if stripped != clean {
+    if let Some(doc) = find_static(stripped) {
+      return Some(doc);
+    }
+  }
+  if let Some(rest) =
+    clean.strip_prefix("thinker_config.").or_else(|| clean.strip_prefix("talker_config."))
+  {
+    if let Some(doc) = find_static(rest) {
+      return Some(doc);
+    }
+  }
+  if let Some((prefix, leaf)) = stripped.rsplit_once('.') {
+    let is_isolated_submodel = prefix.contains("vision_config")
+      || prefix.contains("audio_config")
+      || prefix.contains("text_encoder")
+      || prefix.contains("tokenizer")
+      || prefix.contains("vae");
+    if !is_isolated_submodel {
+      if let Some(doc) = find_static(leaf) {
+        return Some(doc);
+      }
+    } else if prefix.contains("vae")
+      || prefix.contains("vision_config")
+      || prefix.contains("audio_config")
+    {
+      if let Some(doc) = find_static(leaf)
+        .filter(|d| d.group == FieldGroup::MultimodalPipeline || d.key == "torch_dtype")
+      {
+        return Some(doc);
+      }
+    }
+  }
+  None
+}
+
+/// 在已加载的字段词典切片中按规范键、别名与多模态/Diffusers 槽位前缀剥离规则查询条目（服务端/WASM 通用）。
+pub fn lookup_field_doc_in<'a>(
+  docs: &'a [ConfigFieldDocDto],
+  path: &str,
+  file_hint: Option<ConfigFileKind>,
+) -> Option<&'a ConfigFieldDocDto> {
+  let clean = path.trim();
+  if clean.is_empty() {
+    return None;
+  }
+
   // 1. 直接精确匹配（优先命中指定文件类型）
-  if let Some(doc) = find_exact(clean, file_hint) {
+  if let Some(doc) = find_exact_in(docs, clean, file_hint) {
     return Some(doc);
   }
 
   // 2. 剥离已知顶层多模态外壳或 Diffusers 槽位前缀后精确匹配
   let stripped = strip_known_container_prefix(clean);
   if stripped != clean {
-    if let Some(doc) = find_exact(stripped, file_hint) {
+    if let Some(doc) = find_exact_in(docs, stripped, file_hint) {
       return Some(doc);
     }
   }
@@ -2495,7 +3134,7 @@ pub fn lookup_field_doc_with_hint(
   if let Some(rest) =
     clean.strip_prefix("thinker_config.").or_else(|| clean.strip_prefix("talker_config."))
   {
-    if let Some(doc) = find_exact(rest, file_hint) {
+    if let Some(doc) = find_exact_in(docs, rest, file_hint) {
       return Some(doc);
     }
   }
@@ -2509,7 +3148,7 @@ pub fn lookup_field_doc_with_hint(
       || prefix.contains("tokenizer")
       || prefix.contains("vae");
     if !is_isolated_submodel {
-      if let Some(doc) = find_exact(leaf, file_hint) {
+      if let Some(doc) = find_exact_in(docs, leaf, file_hint) {
         return Some(doc);
       }
     } else if prefix.contains("vae")
@@ -2517,7 +3156,7 @@ pub fn lookup_field_doc_with_hint(
       || prefix.contains("audio_config")
     {
       // 仅匹配明确归属多模态/扩散/池化组的词条，防止把 vision/vae 的 `hidden_size` 误认成 LLM 主干
-      if let Some(doc) = find_exact(leaf, file_hint)
+      if let Some(doc) = find_exact_in(docs, leaf, file_hint)
         .filter(|d| d.group == FieldGroup::MultimodalPipeline || d.key == "torch_dtype")
       {
         return Some(doc);
@@ -2528,19 +3167,20 @@ pub fn lookup_field_doc_with_hint(
   None
 }
 
-fn find_exact(
+fn find_exact_in<'a>(
+  docs: &'a [ConfigFieldDocDto],
   candidate: &str,
   file_hint: Option<ConfigFileKind>,
-) -> Option<&'static ConfigFieldDoc> {
+) -> Option<&'a ConfigFieldDocDto> {
   if let Some(hint) = file_hint {
-    if let Some(doc) = CONFIG_FIELD_DOCS
+    if let Some(doc) = docs
       .iter()
-      .find(|d| d.file == hint && (d.key == candidate || d.aliases.contains(&candidate)))
+      .find(|d| d.file == hint && (d.key == candidate || d.aliases.iter().any(|a| a == candidate)))
     {
       return Some(doc);
     }
   }
-  CONFIG_FIELD_DOCS.iter().find(|d| d.key == candidate || d.aliases.contains(&candidate))
+  docs.iter().find(|d| d.key == candidate || d.aliases.iter().any(|a| a == candidate))
 }
 
 fn strip_known_container_prefix(path: &str) -> &str {
@@ -2567,15 +3207,27 @@ fn strip_known_container_prefix(path: &str) -> &str {
   path
 }
 
-/// 将任意模型的 `raw_config_pretty`（含标准 `config.json` 与 Diffusers 多槽位组合 JSON）解析为带词典释义的扁平字段列表。
+/// 将任意模型的 `raw_config_pretty`（含标准 `config.json` 与 Diffusers 多槽位组合 JSON）解析为带词典释义的扁平字段列表（服务端便捷入口）。
+#[cfg(feature = "server")]
 pub fn extract_annotated_fields(raw_json: &str) -> Vec<AnnotatedConfigField> {
   extract_annotated_fields_for_file(raw_json, ConfigFileKind::ModelConfig)
 }
 
-/// 面向指定配置文件类型的 JSON 逐字段解析器（复用同一引擎，支持 `generation_config.json` / `tokenizer_config.json` / `preprocessor_config.json` / `1_Pooling/config.json`）。
+/// 面向指定配置文件类型的 JSON 逐字段解析器（服务端便捷入口）。
+#[cfg(feature = "server")]
 pub fn extract_annotated_fields_for_file(
   raw_json: &str,
   default_file: ConfigFileKind,
+) -> Vec<AnnotatedConfigField> {
+  let docs = build_config_field_docs();
+  extract_annotated_fields_with_docs(raw_json, default_file, &docs)
+}
+
+/// 面向指定配置文件类型与已下发词典的 JSON 逐字段解析器（服务端/WASM 通用）。
+pub fn extract_annotated_fields_with_docs(
+  raw_json: &str,
+  default_file: ConfigFileKind,
+  docs: &[ConfigFieldDocDto],
 ) -> Vec<AnnotatedConfigField> {
   let Ok(root) = serde_json::from_str::<Value>(raw_json) else {
     return Vec::new();
@@ -2601,17 +3253,17 @@ pub fn extract_annotated_fields_for_file(
         ConfigFileKind::ModelConfig
       };
       if let Some(slot_obj) = slot_val.as_object() {
-        flatten_object(slot_obj, "", Some(slot_key.as_str()), slot_hint, 0, &mut out);
+        flatten_object(slot_obj, "", Some(slot_key.as_str()), slot_hint, 0, docs, &mut out);
       } else {
-        push_leaf(slot_key, slot_val, None, slot_hint, &mut out);
+        push_leaf(slot_key, slot_val, None, slot_hint, docs, &mut out);
       }
     }
   } else {
-    flatten_object(obj, "", None, default_file, 0, &mut out);
+    flatten_object(obj, "", None, default_file, 0, docs, &mut out);
   }
 
-  // 排序：按语义分组有序聚合，组内优先展示命中词典的重点字段，再按原始键名字母序稳定排列
-  out.sort_by(|a, b| {
+  // 排序：按语义分组有序聚合，组内优先展示命中词典的重点字段，再按原始键名字母序确定性排列
+  out.sort_unstable_by(|a, b| {
     a.group
       .cmp(&b.group)
       .then_with(|| b.doc.is_some().cmp(&a.doc.is_some()))
@@ -2633,6 +3285,7 @@ pub fn group_annotated_fields(
 }
 
 /// 对附属配置文件（如 `tokenizer_config.json`）做体积安全的摘要裁剪，避免 `added_tokens_decoder` 等超大字典撑爆 SSR/数据库序列化体积。
+#[cfg(feature = "server")]
 pub fn compact_aux_json_for_snapshot(raw_json: &str) -> Option<String> {
   let val: Value = serde_json::from_str(raw_json).ok()?;
   let obj = val.as_object()?;
@@ -2664,6 +3317,7 @@ fn flatten_object(
   source_slot: Option<&str>,
   file_hint: ConfigFileKind,
   depth: usize,
+  docs: &[ConfigFieldDocDto],
   out: &mut Vec<AnnotatedConfigField>,
 ) {
   for (k, v) in obj {
@@ -2677,12 +3331,12 @@ fn flatten_object(
             "id2label" | "label2id" | "added_tokens_decoder" | "special_tokens_map" | "weight_map"
           );
         if is_noisy_map || depth >= 3 || sub.is_empty() {
-          push_leaf(&full_key, v, source_slot, file_hint, out);
+          push_leaf(&full_key, v, source_slot, file_hint, docs, out);
         } else {
-          flatten_object(sub, &full_key, source_slot, file_hint, depth + 1, out);
+          flatten_object(sub, &full_key, source_slot, file_hint, depth + 1, docs, out);
         }
       }
-      _ => push_leaf(&full_key, v, source_slot, file_hint, out),
+      _ => push_leaf(&full_key, v, source_slot, file_hint, docs, out),
     }
   }
 }
@@ -2692,14 +3346,15 @@ fn push_leaf(
   val: &Value,
   source_slot: Option<&str>,
   file_hint: ConfigFileKind,
+  docs: &[ConfigFieldDocDto],
   out: &mut Vec<AnnotatedConfigField>,
 ) {
   let lookup_path = match source_slot {
     Some(slot) => format!("{slot}.{full_key}"),
     None => full_key.to_string(),
   };
-  let doc = lookup_field_doc_with_hint(&lookup_path, Some(file_hint))
-    .or_else(|| lookup_field_doc_with_hint(full_key, Some(file_hint)));
+  let doc = lookup_field_doc_in(docs, &lookup_path, Some(file_hint))
+    .or_else(|| lookup_field_doc_in(docs, full_key, Some(file_hint)));
 
   let group = infer_group(&lookup_path, doc, file_hint);
   let focus = infer_focus(&lookup_path, doc);
@@ -2710,14 +3365,14 @@ fn push_leaf(
     source_slot: source_slot.map(str::to_string),
     display_value,
     group,
-    doc,
+    doc: doc.cloned(),
     focus,
   });
 }
 
 fn infer_group(
   path: &str,
-  doc: Option<&'static ConfigFieldDoc>,
+  doc: Option<&ConfigFieldDocDto>,
   file_hint: ConfigFileKind,
 ) -> FieldGroup {
   if let Some(d) = doc {
@@ -2776,7 +3431,7 @@ fn infer_group(
   }
 }
 
-fn infer_focus(path: &str, doc: Option<&'static ConfigFieldDoc>) -> Option<InspectorFocus> {
+fn infer_focus(path: &str, doc: Option<&ConfigFieldDocDto>) -> Option<InspectorFocus> {
   if let Some(d) = doc {
     if let Some(f) = d.focus {
       return Some(f);
@@ -2872,26 +3527,94 @@ pub fn ModelConfigsGuidePage() -> Element {
     )
     .to_string();
 
-  let mut active_modality = use_signal(|| "llm".to_string());
-  let mut active_file_spec = use_signal(|| ConfigFileKind::ModelConfig);
-  let mut filter_file: Signal<Option<ConfigFileKind>> = use_signal(|| None);
-  let mut filter_group: Signal<Option<FieldGroup>> = use_signal(|| None);
-  let mut search_q = use_signal(String::new);
+  rsx! {
+    PageMeta {
+      title: title.clone(),
+      description: desc.clone(),
+      path: "/models/configs".to_string(),
+    }
 
-  let cur_tree = REPO_MODALITY_BLUEPRINTS
+    section { class: "py-10 bg-white dark:bg-slate-950 min-h-screen",
+      div { class: "max-w-7xl mx-auto px-4 sm:px-6",
+        SuspenseBoundary {
+          fallback: |_| rsx! {
+            div { class: "flex items-center justify-center py-24",
+              Spinner { size: SpinnerSize::Lg, class: "border-t-primary" }
+            }
+          },
+          ModelConfigsGuideLoaded { desc }
+        }
+      }
+    }
+  }
+}
+
+#[component]
+fn ModelConfigsGuideLoaded(desc: String) -> Element {
+  let lang = current_lang();
+  let res = use_server_future(get_config_guide_json_cached)?;
+  let active_modality = use_signal(|| "llm".to_string());
+  let active_file_spec = use_signal(|| ConfigFileKind::ModelConfig);
+  let filter_file: Signal<Option<ConfigFileKind>> = use_signal(|| None);
+  let filter_group: Signal<Option<FieldGroup>> = use_signal(|| None);
+  let search_q = use_signal(String::new);
+
+  match res() {
+    Some(Err(_)) => rsx! {
+      widgets::LoadFailed {
+        message: lang
+          .pick("配置文件全景指南加载失败，请稍后重试", "Failed to load Model Config Files Guide")
+          .to_string(),
+      }
+    },
+    None => rsx! {
+      div { class: "flex items-center justify-center py-24",
+        Spinner { size: SpinnerSize::Lg, class: "border-t-primary" }
+      }
+    },
+    Some(Ok(json)) => {
+      let payload = get_or_parse_config_guide(&json);
+      render_config_guide_content(
+        payload,
+        &desc,
+        active_modality,
+        active_file_spec,
+        filter_file,
+        filter_group,
+        search_q,
+      )
+    }
+  }
+}
+
+pub(crate) fn render_config_guide_content(
+  payload: &ConfigGuidePayload,
+  desc: &str,
+  mut active_modality: Signal<String>,
+  mut active_file_spec: Signal<ConfigFileKind>,
+  mut filter_file: Signal<Option<ConfigFileKind>>,
+  mut filter_group: Signal<Option<FieldGroup>>,
+  mut search_q: Signal<String>,
+) -> Element {
+  let lang = current_lang();
+
+  let cur_tree = payload
+    .repo_trees
     .iter()
     .find(|b| b.id == active_modality())
-    .or_else(|| REPO_MODALITY_BLUEPRINTS.first());
-  let cur_spec = CONFIG_FILE_SPECS
+    .or_else(|| payload.repo_trees.first());
+  let cur_spec = payload
+    .file_specs
     .iter()
     .find(|s| s.kind == active_file_spec())
-    .or_else(|| CONFIG_FILE_SPECS.first());
+    .or_else(|| payload.file_specs.first());
 
   let q_norm = search_q().trim().to_ascii_lowercase();
   let sel_file = filter_file();
   let sel_group = filter_group();
 
-  let filtered_docs: Vec<&'static ConfigFieldDoc> = CONFIG_FIELD_DOCS
+  let filtered_docs: Vec<&ConfigFieldDocDto> = payload
+    .field_docs
     .iter()
     .filter(|d| sel_file.is_none_or(|f| d.file == f))
     .filter(|d| sel_group.is_none_or(|g| d.group == g))
@@ -2904,226 +3627,371 @@ pub fn ModelConfigsGuidePage() -> Element {
         || d.summary_zh.to_ascii_lowercase().contains(&q_norm)
         || d.summary_en.to_ascii_lowercase().contains(&q_norm)
         || d.file.short_name().to_ascii_lowercase().contains(&q_norm)
-        || d.formula_impact.is_some_and(|f| f.to_ascii_lowercase().contains(&q_norm))
+        || d.formula_impact.as_deref().is_some_and(|f| f.to_ascii_lowercase().contains(&q_norm))
     })
     .collect();
 
   let has_active_filter = sel_file.is_some() || sel_group.is_some() || !q_norm.is_empty();
 
   rsx! {
-    PageMeta {
-      title: title.clone(),
-      description: desc.clone(),
-      path: "/models/configs".to_string(),
-    }
-
-    section { class: "py-10 bg-white dark:bg-slate-950 min-h-screen",
-      div { class: "max-w-7xl mx-auto px-4 sm:px-6 space-y-10",
-        // 1. 顶部 Hero 区域
-        div { class: "rounded-3xl border border-slate-200 dark:border-slate-800 bg-linear-to-br from-slate-50 via-white to-indigo-50/70 dark:from-slate-900 dark:via-slate-950 dark:to-indigo-950/30 p-6 sm:p-8 shadow-xs",
-          div { class: "flex flex-wrap items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 mb-3",
-            Link { to: "/models", class: "hover:underline",
-              {lang.pick("← 返回主流大模型架构图鉴", "← Back to Model Atlas")}
-            }
-            span { class: "text-slate-300 dark:text-slate-700", "·" }
-            Link { to: "/ai/visualizer", class: "hover:underline text-slate-600 dark:text-slate-400",
-              {lang.pick("打开任意仓库实时解析器 →", "Open Live Repo Visualizer →")}
-            }
+    div { class: "space-y-10",
+      // 1. 顶部 Hero 区域
+      div { class: "rounded-3xl border border-slate-200 dark:border-slate-800 bg-linear-to-br from-slate-50 via-white to-indigo-50/70 dark:from-slate-900 dark:via-slate-950 dark:to-indigo-950/30 p-6 sm:p-8 shadow-xs",
+        div { class: "flex flex-wrap items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 mb-3",
+          Link { to: "/models", class: "hover:underline",
+            {lang.pick("← 返回主流大模型架构图鉴", "← Back to Model Atlas")}
           }
-
-          div { class: "flex flex-col lg:flex-row lg:items-end justify-between gap-6",
-            div { class: "max-w-3xl",
-              div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-2",
-                span { class: "px-2.5 py-0.5 rounded-full bg-indigo-600 text-white text-[10px]",
-                  "Config Anatomy"
-                }
-                span {
-                  {lang.pick(
-                    "读懂仓库里每一个 JSON · 与架构拓扑图双向联动",
-                    "Master Every Repo JSON · Linked to Live Architecture Graphs",
-                  )}
-                }
-              }
-              h1 { class: "text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white",
-                {lang.pick("大模型配置文件全景解剖指南", "Model Repository Config Files Guide")}
-              }
-              p { class: "mt-2.5 text-sm sm:text-base text-slate-600 dark:text-slate-400 leading-relaxed",
-                "{desc}"
-              }
-            }
-
-            div { class: "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-2.5 shrink-0",
-              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
-                div { class: "text-lg font-extrabold font-mono text-indigo-600 dark:text-indigo-400",
-                  "{CONFIG_FILE_SPECS.len()}"
-                }
-                div { class: "text-[11px] text-slate-500 dark:text-slate-400",
-                  {lang.pick("类核心配置文件", "Core Config Files")}
-                }
-              }
-              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
-                div { class: "text-lg font-extrabold font-mono text-emerald-600 dark:text-emerald-400",
-                  "{CONFIG_FIELD_DOCS.len()}+"
-                }
-                div { class: "text-[11px] text-slate-500 dark:text-slate-400",
-                  {lang.pick("高频字段双语词典", "Annotated Fields")}
-                }
-              }
-              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
-                div { class: "text-lg font-extrabold font-mono text-violet-600 dark:text-violet-400",
-                  "{REPO_MODALITY_BLUEPRINTS.len()}"
-                }
-                div { class: "text-[11px] text-slate-500 dark:text-slate-400",
-                  {lang.pick("模态仓库文件树", "Modality Repo Trees")}
-                }
-              }
-              div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
-                div { class: "text-lg font-extrabold font-mono text-amber-600 dark:text-amber-400",
-                  "{CONFIG_GOTCHAS.len()}"
-                }
-                div { class: "text-[11px] text-slate-500 dark:text-slate-400",
-                  {lang.pick("工程高频踩坑", "Production Gotchas")}
-                }
-              }
-            }
+          span { class: "text-slate-300 dark:text-slate-700", "·" }
+          Link { to: "/ai/visualizer", class: "hover:underline text-slate-600 dark:text-slate-400",
+            {lang.pick("打开任意仓库实时解析器 →", "Open Live Repo Visualizer →")}
           }
         }
 
-        // 2. 按模态切换仓库文件树全景图
-        div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
-          div { class: "flex flex-col md:flex-row md:items-center justify-between gap-3",
-            div {
-              h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
-                {lang.pick("1. 模型仓库文件树与加载协作关系", "1. Repository File Tree by Modality")}
+        div { class: "flex flex-col lg:flex-row lg:items-end justify-between gap-6",
+          div { class: "max-w-3xl",
+            div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-2",
+              span { class: "px-2.5 py-0.5 rounded-full bg-indigo-600 text-white text-[10px]",
+                "Config Anatomy"
               }
-              p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+              span {
                 {lang.pick(
-                  "切换不同模态，快速看清打开一个 HuggingFace / ModelScope 仓库时，各个文件各自管什么、按什么顺序被推理引擎消费。",
-                  "Switch modalities to see what each JSON/weight file controls and how inference engines load them together.",
+                  "读懂仓库里每一个 JSON · 与架构拓扑图双向联动",
+                  "Master Every Repo JSON · Linked to Live Architecture Graphs",
                 )}
               }
             }
-
-            div { class: "flex flex-wrap gap-1.5",
-              for bp in REPO_MODALITY_BLUEPRINTS {
-                {
-                  let bid = bp.id;
-                  let active = active_modality() == bid;
-                  let cls = if active {
-                    "px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 text-white shadow-xs cursor-pointer transition-all"
-                  } else {
-                    "px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer transition-all"
-                  };
-                  rsx! {
-                    button {
-                      key: "tree-{bid}",
-                      r#type: "button",
-                      class: cls,
-                      onclick: move |_| active_modality.set(bid.to_string()),
-                      "{bp.label(lang)}"
-                    }
-                  }
-                }
-              }
+            h1 { class: "text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white",
+              {lang.pick("大模型配置文件全景解剖指南", "Model Repository Config Files Guide")}
+            }
+            p { class: "mt-2.5 text-sm sm:text-base text-slate-600 dark:text-slate-400 leading-relaxed",
+              "{desc}"
             }
           }
 
-          if let Some(tree) = cur_tree {
-            div { class: "rounded-2xl border border-indigo-200/80 dark:border-indigo-900/60 bg-indigo-50/50 dark:bg-indigo-950/25 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs",
-              div { class: "space-y-1",
-                div { class: "font-bold text-indigo-700 dark:text-indigo-300",
-                  {lang.pick("推理加载数据流：", "Loader Pipeline Flow: ")}
-                  span { class: "font-normal text-slate-700 dark:text-slate-300", "{tree.flow(lang)}" }
-                }
-                div { class: "font-mono text-[11px] text-slate-500 dark:text-slate-400",
-                  {lang.pick("典型仓库参考：", "Reference Repos: ")}
-                  "{tree.example_repo}"
-                }
+          div { class: "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-2.5 shrink-0",
+            div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
+              div { class: "text-lg font-extrabold font-mono text-indigo-600 dark:text-indigo-400",
+                "{payload.file_specs.len()}"
               }
-              if let Some(slug) = tree.example_slug {
-                Link {
-                  to: format!("/models/{slug}"),
-                  class: "shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition-colors",
-                  {lang.pick("查看真实代表模型 →", "Inspect Example Model →")}
-                }
+              div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+                {lang.pick("类核心配置文件", "Core Config Files")}
               }
             }
-
-            div { class: "grid grid-cols-1 md:grid-cols-2 gap-3",
-              for item in tree.items {
-                {
-                  let fk = item.file_kind;
-                  rsx! {
-                    div {
-                      key: "{tree.id}-{item.path}",
-                      class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-3.5 flex flex-col justify-between gap-2",
-                      div { class: "flex items-start justify-between gap-2",
-                        code { class: "text-xs sm:text-sm font-mono font-bold text-slate-900 dark:text-white break-all",
-                          "{item.path}"
-                        }
-                        if item.required {
-                          span { class: badge_class(BadgeVariant::Default, "text-[10px] shrink-0"),
-                            {lang.pick("必需", "Required")}
-                          }
-                        } else {
-                          span { class: badge_class(BadgeVariant::Secondary, "text-[10px] shrink-0"),
-                            {lang.pick("可选", "Optional")}
-                          }
-                        }
-                      }
-                      p { class: "text-xs text-slate-600 dark:text-slate-400 leading-relaxed",
-                        "{item.note(lang)}"
-                      }
-                      div { class: "flex items-center justify-between pt-1",
-                        span { class: "text-[11px] font-mono text-slate-400", "{fk.short_name()}" }
-                        button {
-                          r#type: "button",
-                          class: "text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer",
-                          onclick: move |_| {
-                            active_file_spec.set(fk);
-                            filter_file.set(Some(fk));
-                          },
-                          {lang.pick("聚焦此文件蓝图与字段 ↓", "Inspect File & Fields ↓")}
-                        }
-                      }
-                    }
-                  }
-                }
+            div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
+              div { class: "text-lg font-extrabold font-mono text-emerald-600 dark:text-emerald-400",
+                "{payload.field_docs.len()}+"
+              }
+              div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+                {lang.pick("高频字段双语词典", "Annotated Fields")}
+              }
+            }
+            div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
+              div { class: "text-lg font-extrabold font-mono text-violet-600 dark:text-violet-400",
+                "{payload.repo_trees.len()}"
+              }
+              div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+                {lang.pick("模态仓库文件树", "Modality Repo Trees")}
+              }
+            }
+            div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
+              div { class: "text-lg font-extrabold font-mono text-amber-600 dark:text-amber-400",
+                "{payload.gotchas.len()}"
+              }
+              div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+                {lang.pick("工程高频踩坑", "Production Gotchas")}
               }
             }
           }
         }
+      }
 
-        // 3. 8 类主流配置文件深度蓝图
-        div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
+      // 2. 按模态切换仓库文件树全景图
+      div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
+        div { class: "flex flex-col md:flex-row md:items-center justify-between gap-3",
           div {
             h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
-              {lang.pick("2. 八大主流配置文件深度拆解", "2. Deep Dive: The 8 Standard Config Files")}
+              {lang.pick("1. 模型仓库文件树与加载协作关系", "1. Repository File Tree by Modality")}
             }
             p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
               {lang.pick(
-                "点击任意配置文件类型，查看它的核心职责、推理框架消费机制、典型避坑点与真实精简 JSON 示例。",
-                "Select any config file type to view its responsibilities, engine loading mechanics, pitfalls, and real JSON anatomy.",
+                "切换不同模态，快速看清打开一个 HuggingFace / ModelScope 仓库时，各个文件各自管什么、按什么顺序被推理引擎消费。",
+                "Switch modalities to see what each JSON/weight file controls and how inference engines load them together.",
               )}
             }
           }
 
           div { class: "flex flex-wrap gap-1.5",
-            for spec in CONFIG_FILE_SPECS {
+            for bp in payload.repo_trees.iter() {
               {
-                let kind = spec.kind;
-                let active = active_file_spec() == kind;
+                let bid = bp.id.clone();
+                let active = active_modality() == bid;
                 let cls = if active {
-                  "px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer transition-all"
+                  "px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 text-white shadow-xs cursor-pointer transition-all"
                 } else {
-                  "px-3 py-1.5 rounded-xl text-xs font-mono font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer transition-all"
+                  "px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer transition-all"
                 };
                 rsx! {
                   button {
-                    key: "spec-{kind.id()}",
+                    key: "tree-{bid}",
                     r#type: "button",
                     class: cls,
-                    onclick: move |_| active_file_spec.set(kind),
+                    onclick: move |_| active_modality.set(bid.clone()),
+                    "{bp.label(lang)}"
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if let Some(tree) = cur_tree {
+          div { class: "rounded-2xl border border-indigo-200/80 dark:border-indigo-900/60 bg-indigo-50/50 dark:bg-indigo-950/25 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs",
+            div { class: "space-y-1",
+              div { class: "font-bold text-indigo-700 dark:text-indigo-300",
+                {lang.pick("推理加载数据流：", "Loader Pipeline Flow: ")}
+                span { class: "font-normal text-slate-700 dark:text-slate-300", "{tree.flow(lang)}" }
+              }
+              div { class: "font-mono text-[11px] text-slate-500 dark:text-slate-400",
+                {lang.pick("典型仓库参考：", "Reference Repos: ")}
+                "{tree.example_repo}"
+              }
+            }
+            if let Some(ref slug) = tree.example_slug {
+              Link {
+                to: format!("/models/{slug}"),
+                class: "shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition-colors",
+                {lang.pick("查看真实代表模型 →", "Inspect Example Model →")}
+              }
+            }
+          }
+
+          div { class: "grid grid-cols-1 md:grid-cols-2 gap-3",
+            for item in tree.items.iter() {
+              {
+                let fk = item.file_kind;
+                rsx! {
+                  div {
+                    key: "{tree.id}-{item.path}",
+                    class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-3.5 flex flex-col justify-between gap-2",
+                    div { class: "flex items-start justify-between gap-2",
+                      code { class: "text-xs sm:text-sm font-mono font-bold text-slate-900 dark:text-white break-all",
+                        "{item.path}"
+                      }
+                      if item.required {
+                        span { class: badge_class(BadgeVariant::Default, "text-[10px] shrink-0"),
+                          {lang.pick("必需", "Required")}
+                        }
+                      } else {
+                        span { class: badge_class(BadgeVariant::Secondary, "text-[10px] shrink-0"),
+                          {lang.pick("可选", "Optional")}
+                        }
+                      }
+                    }
+                    p { class: "text-xs text-slate-600 dark:text-slate-400 leading-relaxed",
+                      "{item.note(lang)}"
+                    }
+                    div { class: "flex items-center justify-between pt-1",
+                      span { class: "text-[11px] font-mono text-slate-400", "{fk.short_name()}" }
+                      button {
+                        r#type: "button",
+                        class: "text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer",
+                        onclick: move |_| {
+                          active_file_spec.set(fk);
+                          filter_file.set(Some(fk));
+                        },
+                        {lang.pick("聚焦此文件蓝图与字段 ↓", "Inspect File & Fields ↓")}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 3. 8 类主流配置文件深度蓝图
+      div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
+        div {
+          h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+            {lang.pick("2. 八大主流配置文件深度拆解", "2. Deep Dive: The 8 Standard Config Files")}
+          }
+          p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+            {lang.pick(
+              "点击任意配置文件类型，查看它的核心职责、推理框架消费机制、典型避坑点与真实精简 JSON 示例。",
+              "Select any config file type to view its responsibilities, engine loading mechanics, pitfalls, and real JSON anatomy.",
+            )}
+          }
+        }
+
+        div { class: "flex flex-wrap gap-1.5",
+          for spec in payload.file_specs.iter() {
+            {
+              let kind = spec.kind;
+              let active = active_file_spec() == kind;
+              let cls = if active {
+                "px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer transition-all"
+              } else {
+                "px-3 py-1.5 rounded-xl text-xs font-mono font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer transition-all"
+              };
+              rsx! {
+                button {
+                  key: "spec-{kind.id()}",
+                  r#type: "button",
+                  class: cls,
+                  onclick: move |_| active_file_spec.set(kind),
+                  "{kind.short_name()}"
+                }
+              }
+            }
+          }
+        }
+
+        if let Some(spec) = cur_spec {
+          {
+            let spec_kind = spec.kind;
+            rsx! {
+              div { class: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start",
+                div { class: "lg:col-span-7 space-y-3.5",
+                  div { class: "flex flex-wrap items-center gap-2",
+                    h3 { class: "text-base sm:text-lg font-extrabold font-mono text-slate-900 dark:text-white",
+                      "{spec.filenames}"
+                    }
+                    span { class: badge_class(BadgeVariant::Secondary, "text-[11px]"),
+                      "{spec.modalities(lang)}"
+                    }
+                  }
+                  div { class: "text-sm font-bold text-indigo-600 dark:text-indigo-400",
+                    "{spec.role(lang)}"
+                  }
+                  p { class: "text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
+                    "{spec.summary(lang)}"
+                  }
+                  div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3.5 text-xs space-y-1.5",
+                    div { class: "font-bold text-slate-800 dark:text-slate-200",
+                      {lang.pick("⚙ 框架与推理引擎加载方式", "⚙ How Frameworks Consume It")}
+                    }
+                    p { class: "text-slate-600 dark:text-slate-400 leading-relaxed",
+                      "{spec.loader(lang)}"
+                    }
+                  }
+                  div { class: "rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 p-3.5 text-xs space-y-1.5",
+                    div { class: "font-bold text-amber-800 dark:text-amber-300",
+                      {lang.pick("⚠ 实战最容易踩的坑", "⚠ Common Pitfall")}
+                    }
+                    p { class: "text-amber-900/90 dark:text-amber-200/90 leading-relaxed",
+                      "{spec.pitfall(lang)}"
+                    }
+                  }
+                  div { class: "pt-1",
+                    Button {
+                      variant: ButtonVariant::Outline,
+                      size: ButtonSize::Sm,
+                      onclick: move |_| {
+                        filter_file.set(Some(spec_kind));
+                        filter_group.set(None);
+                      },
+                      {lang.pick("在下方词典中只看该文件的字段 ↓", "Filter Dictionary to This File ↓")}
+                    }
+                  }
+                }
+
+                div { class: "lg:col-span-5",
+                  div { class: "rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden",
+                    div { class: "px-3.5 py-2 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-slate-400",
+                      span { "{spec_kind.short_name()}" }
+                      span { "Annotated Example" }
+                    }
+                    pre { class: "p-3.5 text-xs font-mono text-slate-100 overflow-x-auto leading-relaxed",
+                      "{spec.snippet}"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 4. 交互式高频配置字段速查词典
+      div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
+        div { class: "flex flex-col md:flex-row md:items-end justify-between gap-3",
+          div {
+            h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+              {lang.pick("3. 交互式配置字段速查词典", "3. Interactive Config Field Dictionary")}
+            }
+            p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+              {lang.pick(
+                "按文件、语义分组或关键词（如 kv / rope / fp8 / eos / patch / lora）即时检索，附显存与维度影响公式、代表真实模型及实验室直达。",
+                "Filter by file, semantic group, or keyword (e.g. kv, rope, fp8, eos, patch, lora) with memory/shape formulas and live model links.",
+              )}
+            }
+          }
+          div { class: "text-xs font-mono text-slate-500 dark:text-slate-400 shrink-0",
+            {lang.pick("当前命中 ", "Showing ")}
+            span { class: "font-bold text-indigo-600 dark:text-indigo-400", "{filtered_docs.len()}" }
+            " / {payload.field_docs.len()}"
+          }
+        }
+
+        // 搜索与筛选控件
+        div { class: "space-y-3",
+          div { class: "flex flex-col sm:flex-row items-stretch sm:items-center gap-2",
+            div { class: "flex-1",
+              Input {
+                class: "font-mono text-xs sm:text-sm bg-slate-50 dark:bg-slate-950",
+                placeholder: lang.pick(
+                  "搜索字段名、别名或含义（例如 kv_lora_rank、rope、fp8、eos、lora_alpha、patch_size）...",
+                  "Search field key, alias, or meaning (e.g. kv_lora_rank, rope, fp8, eos, lora_alpha)...",
+                ),
+                "aria-label": "Search model config fields",
+                value: search_q(),
+                on_value_change: move |v: String| search_q.set(v),
+              }
+            }
+            if has_active_filter {
+              Button {
+                variant: ButtonVariant::Outline,
+                size: ButtonSize::Sm,
+                onclick: move |_| {
+                  filter_file.set(None);
+                  filter_group.set(None);
+                  search_q.set(String::new());
+                },
+                {lang.pick("重置筛选", "Reset Filters")}
+              }
+            }
+          }
+
+          // 文件筛选行
+          div { class: "flex flex-wrap items-center gap-1.5",
+            span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
+              {lang.pick("按文件：", "File:")}
+            }
+            button {
+              r#type: "button",
+              class: if sel_file.is_none() {
+                "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
+              } else {
+                "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+              },
+              onclick: move |_| filter_file.set(None),
+              {lang.pick("全部文件", "All Files")}
+            }
+            for kind in ConfigFileKind::ALL {
+              {
+                let active = sel_file == Some(kind);
+                let cls = if active {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-indigo-600 text-white cursor-pointer"
+                } else {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-mono bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                };
+                rsx! {
+                  button {
+                    key: "ff-{kind.id()}",
+                    r#type: "button",
+                    class: cls,
+                    onclick: move |_| filter_file.set(Some(kind)),
                     "{kind.short_name()}"
                   }
                 }
@@ -3131,253 +3999,105 @@ pub fn ModelConfigsGuidePage() -> Element {
             }
           }
 
-          if let Some(spec) = cur_spec {
-            div { class: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start",
-              div { class: "lg:col-span-7 space-y-3.5",
-                div { class: "flex flex-wrap items-center gap-2",
-                  h3 { class: "text-base sm:text-lg font-extrabold font-mono text-slate-900 dark:text-white",
-                    "{spec.filenames}"
-                  }
-                  span { class: badge_class(BadgeVariant::Secondary, "text-[11px]"),
-                    "{spec.modalities(lang)}"
-                  }
-                }
-                div { class: "text-sm font-bold text-indigo-600 dark:text-indigo-400",
-                  "{spec.role(lang)}"
-                }
-                p { class: "text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
-                  "{spec.summary(lang)}"
-                }
-                div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3.5 text-xs space-y-1.5",
-                  div { class: "font-bold text-slate-800 dark:text-slate-200",
-                    {lang.pick("⚙ 框架与推理引擎加载方式", "⚙ How Frameworks Consume It")}
-                  }
-                  p { class: "text-slate-600 dark:text-slate-400 leading-relaxed",
-                    "{spec.loader(lang)}"
-                  }
-                }
-                div { class: "rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 p-3.5 text-xs space-y-1.5",
-                  div { class: "font-bold text-amber-800 dark:text-amber-300",
-                    {lang.pick("⚠ 实战最容易踩的坑", "⚠ Common Pitfall")}
-                  }
-                  p { class: "text-amber-900/90 dark:text-amber-200/90 leading-relaxed",
-                    "{spec.pitfall(lang)}"
-                  }
-                }
-                div { class: "pt-1",
-                  Button {
-                    variant: ButtonVariant::Outline,
-                    size: ButtonSize::Sm,
-                    onclick: move |_| {
-                      filter_file.set(Some(spec.kind));
-                      filter_group.set(None);
-                    },
-                    {lang.pick("在下方词典中只看该文件的字段 ↓", "Filter Dictionary to This File ↓")}
-                  }
-                }
-              }
-
-              div { class: "lg:col-span-5",
-                div { class: "rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden",
-                  div { class: "px-3.5 py-2 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-slate-400",
-                    span { "{spec.kind.short_name()}" }
-                    span { "Annotated Example" }
-                  }
-                  pre { class: "p-3.5 text-xs font-mono text-slate-100 overflow-x-auto leading-relaxed",
-                    "{spec.snippet}"
-                  }
-                }
-              }
+          // 语义分组筛选行
+          div { class: "flex flex-wrap items-center gap-1.5",
+            span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
+              {lang.pick("按维度：", "Group:")}
             }
-          }
-        }
-
-        // 4. 交互式高频配置字段速查词典
-        div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
-          div { class: "flex flex-col md:flex-row md:items-end justify-between gap-3",
-            div {
-              h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
-                {lang.pick("3. 交互式配置字段速查词典", "3. Interactive Config Field Dictionary")}
-              }
-              p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
-                {lang.pick(
-                  "按文件、语义分组或关键词（如 kv / rope / fp8 / eos / patch / lora）即时检索，附显存与维度影响公式、代表真实模型及实验室直达。",
-                  "Filter by file, semantic group, or keyword (e.g. kv, rope, fp8, eos, patch, lora) with memory/shape formulas and live model links.",
-                )}
-              }
+            button {
+              r#type: "button",
+              class: if sel_group.is_none() {
+                "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
+              } else {
+                "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+              },
+              onclick: move |_| filter_group.set(None),
+              {lang.pick("全部语义分组", "All Groups")}
             }
-            div { class: "text-xs font-mono text-slate-500 dark:text-slate-400 shrink-0",
-              {lang.pick("当前命中 ", "Showing ")}
-              span { class: "font-bold text-indigo-600 dark:text-indigo-400", "{filtered_docs.len()}" }
-              " / {CONFIG_FIELD_DOCS.len()}"
-            }
-          }
-
-          // 搜索与筛选控件
-          div { class: "space-y-3",
-            div { class: "flex flex-col sm:flex-row items-stretch sm:items-center gap-2",
-              div { class: "flex-1",
-                Input {
-                  class: "font-mono text-xs sm:text-sm bg-slate-50 dark:bg-slate-950",
-                  placeholder: lang.pick(
-                    "搜索字段名、别名或含义（例如 kv_lora_rank、rope、fp8、eos、lora_alpha、patch_size）...",
-                    "Search field key, alias, or meaning (e.g. kv_lora_rank, rope, fp8, eos, lora_alpha)...",
-                  ),
-                  "aria-label": "Search model config fields",
-                  value: search_q(),
-                  on_value_change: move |v: String| search_q.set(v),
-                }
-              }
-              if has_active_filter {
-                Button {
-                  variant: ButtonVariant::Outline,
-                  size: ButtonSize::Sm,
-                  onclick: move |_| {
-                    filter_file.set(None);
-                    filter_group.set(None);
-                    search_q.set(String::new());
-                  },
-                  {lang.pick("重置筛选", "Reset Filters")}
-                }
-              }
-            }
-
-            // 文件筛选行
-            div { class: "flex flex-wrap items-center gap-1.5",
-              span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
-                {lang.pick("按文件：", "File:")}
-              }
-              button {
-                r#type: "button",
-                class: if sel_file.is_none() {
-                  "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
-                } else {
-                  "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
-                },
-                onclick: move |_| filter_file.set(None),
-                {lang.pick("全部文件", "All Files")}
-              }
-              for kind in ConfigFileKind::ALL {
-                {
-                  let active = sel_file == Some(kind);
-                  let cls = if active {
-                    "px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-indigo-600 text-white cursor-pointer"
-                  } else {
-                    "px-2.5 py-1 rounded-lg text-[11px] font-mono bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
-                  };
-                  rsx! {
-                    button {
-                      key: "ff-{kind.id()}",
-                      r#type: "button",
-                      class: cls,
-                      onclick: move |_| filter_file.set(Some(kind)),
-                      "{kind.short_name()}"
-                    }
-                  }
-                }
-              }
-            }
-
-            // 语义分组筛选行
-            div { class: "flex flex-wrap items-center gap-1.5",
-              span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
-                {lang.pick("按维度：", "Group:")}
-              }
-              button {
-                r#type: "button",
-                class: if sel_group.is_none() {
+            for grp in FieldGroup::ALL {
+              {
+                let active = sel_group == Some(grp);
+                let cls = if active {
                   "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
                 } else {
-                  "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
-                },
-                onclick: move |_| filter_group.set(None),
-                {lang.pick("全部语义分组", "All Groups")}
-              }
-              for grp in FieldGroup::ALL {
-                {
-                  let active = sel_group == Some(grp);
-                  let cls = if active {
-                    "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
-                  } else {
-                    "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
-                  };
-                  rsx! {
-                    button {
-                      key: "fg-{grp.id()}",
-                      r#type: "button",
-                      class: cls,
-                      onclick: move |_| filter_group.set(Some(grp)),
-                      "{grp.label(lang)}"
-                    }
+                  "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                };
+                rsx! {
+                  button {
+                    key: "fg-{grp.id()}",
+                    r#type: "button",
+                    class: cls,
+                    onclick: move |_| filter_group.set(Some(grp)),
+                    "{grp.label(lang)}"
                   }
                 }
               }
             }
           }
+        }
 
-          // 字段结果列表
-          if filtered_docs.is_empty() {
-            div { class: "py-10 text-center text-sm text-slate-500 dark:text-slate-400",
-              {lang.pick(
-                "未找到匹配的配置字段，请尝试更简短的关键词或点击「重置筛选」。",
-                "No matching config fields found. Try a shorter keyword or reset filters.",
-              )}
-            }
-          } else {
-            div { class: "grid grid-cols-1 md:grid-cols-2 gap-3.5",
-              for doc in filtered_docs {
-                div {
-                  key: "doc-{doc.key}",
-                  class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 flex flex-col justify-between gap-2.5 hover:border-indigo-300 dark:hover:border-indigo-800 transition-colors",
-                  div { class: "space-y-2",
-                    div { class: "flex flex-wrap items-center justify-between gap-2",
-                      code { class: "text-xs sm:text-sm font-mono font-bold text-indigo-700 dark:text-indigo-300 break-all",
-                        "{doc.key}"
-                      }
-                      div { class: "flex flex-wrap items-center gap-1.5",
-                        span { class: "px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[10px] font-mono text-slate-700 dark:text-slate-300",
-                          "{doc.value_type}"
-                        }
-                        span { class: badge_class(BadgeVariant::Secondary, "text-[10px] font-mono"),
-                          "{doc.file.short_name()}"
-                        }
-                      }
+        // 字段结果列表
+        if filtered_docs.is_empty() {
+          div { class: "py-10 text-center text-sm text-slate-500 dark:text-slate-400",
+            {lang.pick(
+              "未找到匹配的配置字段，请尝试更简短的关键词或点击「重置筛选」。",
+              "No matching config fields found. Try a shorter keyword or reset filters.",
+            )}
+          }
+        } else {
+          div { class: "grid grid-cols-1 md:grid-cols-2 gap-3.5",
+            for doc in filtered_docs {
+              div {
+                key: "doc-{doc.key}",
+                class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 flex flex-col justify-between gap-2.5 hover:border-indigo-300 dark:hover:border-indigo-800 transition-colors",
+                div { class: "space-y-2",
+                  div { class: "flex flex-wrap items-center justify-between gap-2",
+                    code { class: "text-xs sm:text-sm font-mono font-bold text-indigo-700 dark:text-indigo-300 break-all",
+                      "{doc.key}"
                     }
-
-                    if !doc.aliases.is_empty() {
-                      div { class: "text-[11px] font-mono text-slate-400",
-                        {lang.pick("别名：", "Aliases: ")}
-                        "{doc.aliases.join(\", \")}"
+                    div { class: "flex flex-wrap items-center gap-1.5",
+                      span { class: "px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[10px] font-mono text-slate-700 dark:text-slate-300",
+                        "{doc.value_type}"
                       }
-                    }
-
-                    p { class: "text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
-                      "{doc.summary(lang)}"
-                    }
-
-                    if let Some(formula) = doc.formula_impact {
-                      div { class: "rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/70 dark:border-indigo-900/60 px-2.5 py-1.5 text-[11px] font-mono text-indigo-800 dark:text-indigo-300",
-                        "ƒ {formula}"
+                      span { class: badge_class(BadgeVariant::Secondary, "text-[10px] font-mono"),
+                        "{doc.file.short_name()}"
                       }
                     }
                   }
 
-                  div { class: "flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]",
-                    span { class: "text-slate-500 dark:text-slate-400", "{doc.group.label(lang)}" }
-                    div { class: "flex flex-wrap items-center gap-2",
-                      if let Some(slug) = doc.example_model_slug {
-                        Link {
-                          to: format!("/models/{slug}"),
-                          class: "font-mono font-semibold text-indigo-600 dark:text-indigo-400 hover:underline",
-                          "Model: {slug} →"
-                        }
+                  if !doc.aliases.is_empty() {
+                    div { class: "text-[11px] font-mono text-slate-400",
+                      {lang.pick("别名：", "Aliases: ")}
+                      "{doc.aliases.join(\", \")}"
+                    }
+                  }
+
+                  p { class: "text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
+                    "{doc.summary(lang)}"
+                  }
+
+                  if let Some(ref formula) = doc.formula_impact {
+                    div { class: "rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/70 dark:border-indigo-900/60 px-2.5 py-1.5 text-[11px] font-mono text-indigo-800 dark:text-indigo-300",
+                      "ƒ {formula}"
+                    }
+                  }
+                }
+
+                div { class: "flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]",
+                  span { class: "text-slate-500 dark:text-slate-400", "{doc.group.label(lang)}" }
+                  div { class: "flex flex-wrap items-center gap-2",
+                    if let Some(ref slug) = doc.example_model_slug {
+                      Link {
+                        to: format!("/models/{slug}"),
+                        class: "font-mono font-semibold text-indigo-600 dark:text-indigo-400 hover:underline",
+                        "Model: {slug} →"
                       }
-                      if let Some((href, label)) = doc.lab_link {
-                        Link {
-                          to: href,
-                          class: "font-semibold text-emerald-600 dark:text-emerald-400 hover:underline",
-                          "{label} ↗"
-                        }
+                    }
+                    if let Some((ref href, ref label)) = doc.lab_link {
+                      Link {
+                        to: href.clone(),
+                        class: "font-semibold text-emerald-600 dark:text-emerald-400 hover:underline",
+                        "{label} ↗"
                       }
                     }
                   }
@@ -3386,66 +4106,71 @@ pub fn ModelConfigsGuidePage() -> Element {
             }
           }
         }
+      }
 
-        // 5. 常见工程踩坑速查（Gotchas）
-        div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
-          div {
-            h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
-              {lang.pick("4. 真实工程高频踩坑速查（Gotchas）", "4. Production Engineering Gotchas")}
-            }
-            p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
-              {lang.pick(
-                "写推理引擎、算显存预算或对齐微调权重时最容易因为误读配置文件而翻车的 6 类经典陷阱。",
-                "Six classic failure modes when implementing inference engines, sizing VRAM, or merging fine-tuned checkpoints.",
-              )}
-            }
+      // 5. 常见工程踩坑速查（Gotchas）
+      div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
+        div {
+          h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+            {lang.pick("4. 真实工程高频踩坑速查（Gotchas）", "4. Production Engineering Gotchas")}
           }
+          p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+            {lang.pick(
+              "写推理引擎、算显存预算或对齐微调权重时最容易因为误读配置文件而翻车的 6 类经典陷阱。",
+              "Six classic failure modes when implementing inference engines, sizing VRAM, or merging fine-tuned checkpoints.",
+            )}
+          }
+        }
 
-          div { class: "grid grid-cols-1 lg:grid-cols-2 gap-4",
-            for g in CONFIG_GOTCHAS {
-              div {
-                key: "gotcha-{g.id}",
-                class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 space-y-2.5",
-                div { class: "flex items-center gap-2",
-                  span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-bold shrink-0",
-                    "{g.badge}"
-                  }
-                  h3 { class: "text-sm font-extrabold text-slate-900 dark:text-white",
-                    "{g.title(lang)}"
-                  }
+        div { class: "grid grid-cols-1 lg:grid-cols-2 gap-4",
+          for g in payload.gotchas.iter() {
+            div {
+              key: "gotcha-{g.id}",
+              class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 space-y-2.5",
+              div { class: "flex items-center gap-2",
+                span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-bold shrink-0",
+                  "{g.badge}"
                 }
-                div { class: "text-xs space-y-1.5 leading-relaxed",
-                  p { class: "text-slate-600 dark:text-slate-400",
-                    span { class: "font-bold text-rose-600 dark:text-rose-400 mr-1",
-                      {lang.pick("现象：", "Symptom: ")}
-                    }
-                    "{g.symptom(lang)}"
-                  }
-                  p { class: "text-slate-600 dark:text-slate-400",
-                    span { class: "font-bold text-slate-800 dark:text-slate-200 mr-1",
-                      {lang.pick("根因：", "Cause: ")}
-                    }
-                    "{g.root_cause(lang)}"
-                  }
-                  p { class: "text-slate-700 dark:text-slate-300",
-                    span { class: "font-bold text-emerald-600 dark:text-emerald-400 mr-1",
-                      {lang.pick("解法：", "Fix: ")}
-                    }
-                    "{g.fix(lang)}"
-                  }
+                h3 { class: "text-sm font-extrabold text-slate-900 dark:text-white",
+                  "{g.title(lang)}"
                 }
-                div { class: "flex flex-wrap items-center gap-1.5 pt-1",
-                  for rk in g.related_keys {
-                    button {
-                      key: "{g.id}-{rk}",
-                      r#type: "button",
-                      class: "px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[11px] font-mono text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/60 cursor-pointer",
-                      onclick: move |_| {
-                        filter_file.set(None);
-                        filter_group.set(None);
-                        search_q.set((*rk).to_string());
-                      },
-                      "{rk}"
+              }
+              div { class: "text-xs space-y-1.5 leading-relaxed",
+                p { class: "text-slate-600 dark:text-slate-400",
+                  span { class: "font-bold text-rose-600 dark:text-rose-400 mr-1",
+                    {lang.pick("现象：", "Symptom: ")}
+                  }
+                  "{g.symptom(lang)}"
+                }
+                p { class: "text-slate-600 dark:text-slate-400",
+                  span { class: "font-bold text-slate-800 dark:text-slate-200 mr-1",
+                    {lang.pick("根因：", "Cause: ")}
+                  }
+                  "{g.root_cause(lang)}"
+                }
+                p { class: "text-slate-700 dark:text-slate-300",
+                  span { class: "font-bold text-emerald-600 dark:text-emerald-400 mr-1",
+                    {lang.pick("解法：", "Fix: ")}
+                  }
+                  "{g.fix(lang)}"
+                }
+              }
+              div { class: "flex flex-wrap items-center gap-1.5 pt-1",
+                for rk in g.related_keys.iter() {
+                  {
+                    let rk_owned = rk.clone();
+                    rsx! {
+                      button {
+                        key: "{g.id}-{rk}",
+                        r#type: "button",
+                        class: "px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[11px] font-mono text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/60 cursor-pointer",
+                        onclick: move |_| {
+                          filter_file.set(None);
+                          filter_group.set(None);
+                          search_q.set(rk_owned.clone());
+                        },
+                        "{rk}"
+                      }
                     }
                   }
                 }
@@ -3458,7 +4183,7 @@ pub fn ModelConfigsGuidePage() -> Element {
   }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
   use std::collections::HashSet;
 
@@ -3562,6 +4287,12 @@ mod tests {
         );
       }
     }
+
+    // 校验紧凑 JSON 序列化与反序列化严格无损
+    let encoded = build_config_guide_json();
+    let decoded = parse_config_guide_json(&encoded);
+    assert_eq!(decoded, build_config_guide_payload());
+    assert_eq!(get_or_parse_config_guide(&encoded).field_docs, build_config_field_docs());
   }
 
   #[test]

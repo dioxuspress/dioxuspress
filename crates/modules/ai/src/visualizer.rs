@@ -11,22 +11,22 @@ use dioxus_shadcn::{
 use widgets::PageMeta;
 
 use crate::arch::{
-  build_model_blueprint, format_bytes_iec, format_count, load_builtin_preset, recommend_gpu_tier,
-  InspectorFocus, ModelBlueprint, OutputHeadSpec, PrecisionPreset, BUILTIN_PRESETS,
+  format_bytes_iec, format_count, load_builtin_preset, recommend_gpu_tier, InspectorFocus,
+  ModelBlueprint, OutputHeadSpec, PrecisionPreset, BUILTIN_PRESETS,
 };
 #[cfg(feature = "accounts")]
 use crate::atlas::{current_user_is_admin, SaveToAtlasModal};
 #[cfg(feature = "accounts")]
 use crate::atlas_store::{draft_from_blueprint, CuratedModelUpsertInput};
 use crate::config_guide::{
-  extract_annotated_fields, extract_annotated_fields_for_file, group_annotated_fields,
-  AnnotatedConfigField, ConfigFileKind, FieldGroup,
+  extract_annotated_fields_with_docs, get_config_guide_json_cached, get_or_parse_config_guide,
+  group_annotated_fields, AnnotatedConfigField, ConfigFieldDocDto, ConfigFileKind, FieldGroup,
 };
 use crate::diagram::{MacroArchitectureFlow, MicroSubgraphDiagram};
-use crate::safetensors_meta::{
-  parse_safetensors_index_json, summarize_index_and_headers, TensorPatternEntry,
+use crate::safetensors_meta::TensorPatternEntry;
+use crate::server::{
+  fetch_model_blueprint, normalize_repo_request, parse_custom_model_config, ModelHubSource,
 };
-use crate::server::{fetch_model_blueprint, normalize_repo_request, ModelHubSource};
 
 fn current_lang() -> Language {
   try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default()
@@ -189,32 +189,19 @@ pub fn AiVisualizerPage() -> Element {
       return;
     }
     let idx_str = raw_idx_input();
-    let st_opt = if idx_str.trim().is_empty() {
-      None
-    } else {
-      match parse_safetensors_index_json(&idx_str) {
-        Ok((tot, wm)) => Some(summarize_index_and_headers(tot, &wm, &[])),
-        Err(e) => {
-          error_msg.set(Some(e));
-          return;
+    loading.set(true);
+    error_msg.set(None);
+    spawn(async move {
+      match parse_custom_model_config(cfg_str, idx_str).await {
+        Ok(bp) => {
+          error_msg.set(None);
+          blueprint.set(Some(bp));
+          show_json_drawer.set(false);
         }
+        Err(e) => error_msg.set(Some(clean_server_err(&e.to_string()))),
       }
-    };
-    match build_model_blueprint(
-      "custom/pasted-config",
-      "Custom Local JSON",
-      &cfg_str,
-      None,
-      None,
-      st_opt,
-    ) {
-      Ok(bp) => {
-        error_msg.set(None);
-        blueprint.set(Some(bp));
-        show_json_drawer.set(false);
-      }
-      Err(e) => error_msg.set(Some(e)),
-    }
+      loading.set(false);
+    });
   };
 
   rsx! {
@@ -1206,18 +1193,57 @@ fn focus_short_label(f: InspectorFocus) -> &'static str {
   }
 }
 
-/// 「完整超参 & config.json」逐字段交互解剖与拓扑图联动面板。
+/// 「完整超参 & config.json」逐字段交互解剖与拓扑图联动面板（按需加载服务端词典，避免客户端 WASM 膨胀）。
 #[component]
 fn ConfigAnatomyPanel(
   blueprint: ModelBlueprint,
-  mut focus: Signal<InspectorFocus>,
+  focus: Signal<InspectorFocus>,
   lang: Language,
 ) -> Element {
-  let mut view_mode = use_signal(|| ConfigViewMode::Annotated);
-  let mut group_filter: Signal<Option<FieldGroup>> = use_signal(|| None);
-  let mut copied_json = use_signal(|| false);
+  rsx! {
+    SuspenseBoundary {
+      fallback: |_| rsx! {
+        div { class: "flex items-center justify-center py-8",
+          Spinner { size: SpinnerSize::Md, class: "border-t-primary" }
+        }
+      },
+      ConfigAnatomyLoaded { blueprint, focus, lang }
+    }
+  }
+}
 
-  let annotated_fields = extract_annotated_fields(&blueprint.raw_config_pretty);
+#[component]
+fn ConfigAnatomyLoaded(
+  blueprint: ModelBlueprint,
+  focus: Signal<InspectorFocus>,
+  lang: Language,
+) -> Element {
+  let docs_res = use_server_future(get_config_guide_json_cached)?;
+  let view_mode = use_signal(|| ConfigViewMode::Annotated);
+  let group_filter: Signal<Option<FieldGroup>> = use_signal(|| None);
+  let copied_json = use_signal(|| false);
+  let docs: &[ConfigFieldDocDto] = match docs_res() {
+    Some(Ok(raw)) => &get_or_parse_config_guide(&raw).field_docs,
+    _ => &[],
+  };
+
+  render_config_anatomy_body(&blueprint, focus, lang, docs, view_mode, group_filter, copied_json)
+}
+
+fn render_config_anatomy_body(
+  blueprint: &ModelBlueprint,
+  focus: Signal<InspectorFocus>,
+  lang: Language,
+  docs: &[ConfigFieldDocDto],
+  mut view_mode: Signal<ConfigViewMode>,
+  mut group_filter: Signal<Option<FieldGroup>>,
+  mut copied_json: Signal<bool>,
+) -> Element {
+  let annotated_fields = extract_annotated_fields_with_docs(
+    &blueprint.raw_config_pretty,
+    ConfigFileKind::ModelConfig,
+    docs,
+  );
   let grouped_fields = group_annotated_fields(&annotated_fields);
   let known_count = annotated_fields.iter().filter(|f| f.doc.is_some()).count();
   let total_count = annotated_fields.len();
@@ -1227,7 +1253,7 @@ fn ConfigAnatomyPanel(
     .iter()
     .map(|snap| {
       let fk = ConfigFileKind::from_filename(&snap.filename);
-      (snap.filename.clone(), extract_annotated_fields_for_file(&snap.raw_json_pretty, fk))
+      (snap.filename.clone(), extract_annotated_fields_with_docs(&snap.raw_json_pretty, fk, docs))
     })
     .filter(|(_, items)| !items.is_empty())
     .collect();
@@ -1370,12 +1396,16 @@ fn ConfigAnatomyPanel(
                     }
                     div { class: "divide-y divide-slate-200/70 dark:divide-slate-800/70",
                       for field in items.iter() {
-                        AnnotatedFieldRow {
-                          key: "{field.source_slot.as_deref().unwrap_or(\"\")}-{field.path}",
-                          field: field.clone(),
+                        {render_annotated_field_row(
+                          format!(
+                            "{}-{}",
+                            field.source_slot.as_deref().unwrap_or(""),
+                            field.path
+                          ),
+                          field,
                           focus,
                           lang,
-                        }
+                        )}
                       }
                     }
                   }
@@ -1405,12 +1435,12 @@ fn ConfigAnatomyPanel(
                     }
                     div { class: "divide-y divide-slate-200/70 dark:divide-slate-800/70 max-h-56 overflow-auto",
                       for field in items.iter() {
-                        AnnotatedFieldRow {
-                          key: "aux-{fname}-{field.path}",
-                          field: field.clone(),
+                        {render_annotated_field_row(
+                          format!("aux-{fname}-{}", field.path),
+                          field,
                           focus,
                           lang,
-                        }
+                        )}
                       }
                     }
                   }
@@ -1443,16 +1473,18 @@ fn ConfigAnatomyPanel(
   }
 }
 
-#[component]
-fn AnnotatedFieldRow(
-  field: AnnotatedConfigField,
+fn render_annotated_field_row(
+  row_key: String,
+  field: &AnnotatedConfigField,
   mut focus: Signal<InspectorFocus>,
   lang: Language,
 ) -> Element {
   let active_focus = field.focus.is_some_and(|target| focus() == target);
 
   rsx! {
-    div { class: "px-3 py-2.5 text-xs space-y-1.5 hover:bg-white/70 dark:hover:bg-slate-900/50 transition-colors",
+    div {
+      key: "{row_key}",
+      class: "px-3 py-2.5 text-xs space-y-1.5 hover:bg-white/70 dark:hover:bg-slate-900/50 transition-colors",
       div { class: "flex flex-wrap items-center justify-between gap-2",
         div { class: "flex flex-wrap items-center gap-1.5 min-w-0",
           if let Some(ref slot) = field.source_slot {
@@ -1489,20 +1521,20 @@ fn AnnotatedFieldRow(
         }
       }
 
-      if let Some(doc) = field.doc {
+      if let Some(ref doc) = field.doc {
         p { class: "text-slate-600 dark:text-slate-400 leading-relaxed",
           "{doc.summary(lang)}"
         }
         if doc.formula_impact.is_some() || doc.lab_link.is_some() {
           div { class: "flex flex-wrap items-center justify-between gap-2 pt-0.5",
-            if let Some(formula) = doc.formula_impact {
+            if let Some(ref formula) = doc.formula_impact {
               span { class: "font-mono text-[11px] text-indigo-700 dark:text-indigo-300",
                 "ƒ {formula}"
               }
             }
-            if let Some((href, label)) = doc.lab_link {
+            if let Some((ref href, ref label)) = doc.lab_link {
               Link {
-                to: href,
+                to: href.clone(),
                 class: "text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline",
                 "{label} ↗"
               }
@@ -1805,10 +1837,13 @@ mod tests {
     assert!(html.contains("VAE Decoder"));
   }
 
+  #[cfg(feature = "server")]
   #[test]
   fn ssr_renders_annotated_config_anatomy_and_aux_files() {
     use crate::arch::{build_model_blueprint_with_aux, AuxConfigFiles};
-    use crate::config_guide::ModelConfigsGuidePage;
+    use crate::config_guide::{
+      build_config_field_docs, build_config_guide_payload, render_config_guide_content,
+    };
 
     #[derive(Routable, Clone, PartialEq)]
     enum TestRoute {
@@ -1834,15 +1869,37 @@ mod tests {
       )
       .expect("blueprint with aux");
       let focus = use_signal(|| InspectorFocus::Attention);
+      let view_mode = use_signal(|| ConfigViewMode::Annotated);
+      let group_filter: Signal<Option<FieldGroup>> = use_signal(|| None);
+      let copied_json = use_signal(|| false);
+      let active_modality = use_signal(|| "llm".to_string());
+      let active_file_spec = use_signal(|| ConfigFileKind::ModelConfig);
+      let filter_file: Signal<Option<ConfigFileKind>> = use_signal(|| None);
+      let filter_group: Signal<Option<FieldGroup>> = use_signal(|| None);
+      let search_q = use_signal(String::new);
+      let docs = build_config_field_docs();
+      let payload = build_config_guide_payload();
 
       rsx! {
         div {
-          ConfigAnatomyPanel {
-            blueprint: bp,
+          {render_config_anatomy_body(
+            &bp,
             focus,
-            lang: Language::Zh,
-          }
-          ModelConfigsGuidePage {}
+            Language::Zh,
+            &docs,
+            view_mode,
+            group_filter,
+            copied_json,
+          )}
+          {render_config_guide_content(
+            &payload,
+            "test desc",
+            active_modality,
+            active_file_spec,
+            filter_file,
+            filter_group,
+            search_q,
+          )}
         }
       }
     }
