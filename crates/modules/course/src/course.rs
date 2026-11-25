@@ -6,9 +6,9 @@ use crate::server::{
 };
 use dioxus::prelude::*;
 use dioxus_shadcn::{
-  button_class, card_class, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Collapsible,
-  CollapsibleContent, CollapsibleTrigger, Progress, Spinner, SpinnerSize, Tabs, TabsContent,
-  TabsList, TabsTrigger, TreeItem, UiDensity,
+  button_class, card_class, Badge, BadgeSize, BadgeStyle, BadgeVariant, Button, ButtonSize,
+  ButtonVariant, Collapsible, CollapsibleContent, CollapsibleTrigger, Progress, Spinner,
+  SpinnerSize, Tabs, TabsContent, TabsList, TabsTrigger, TabsVariant, TreeItem, UiDensity,
 };
 use widgets::Markdown;
 
@@ -314,7 +314,10 @@ fn CourseDetailBody(
               // 付费课程购买入口
               if course.is_paid() {
                   if owned {
-                      Badge { variant: BadgeVariant::Success, class: "mt-6 w-fit gap-2 rounded-lg px-4 py-2 text-sm font-medium",
+                      Badge {
+                          variant: BadgeVariant::Success,
+                          style: BadgeStyle::Soft,
+                          class: "mt-6 w-fit gap-2 rounded-lg px-4 py-2 text-sm font-medium",
                           "✓ {t(lang, \"course.owned\")}"
                       }
                   } else {
@@ -449,7 +452,7 @@ fn LessonRow(
                   "{lesson.title}"
               }
               if lesson.preview && course_paid {
-                  Badge { variant: BadgeVariant::Success, class: "px-1.5 text-[10px]", "{t(lang, \"course.preview\")}" }
+                  Badge { variant: BadgeVariant::Success, style: BadgeStyle::Soft, size: BadgeSize::Xs, "{t(lang, \"course.preview\")}" }
               }
               if locked {
                   span { class: "text-xs flex-shrink-0 text-slate-400", "🔒" }
@@ -796,7 +799,7 @@ fn CompleteLessonButton(course_slug: String, chapter_slug: String, lesson_slug: 
       div { class: "mt-12 pt-8 border-t border-slate-200 dark:border-slate-800 flex items-center gap-4",
           Button {
               variant: if completed() { ButtonVariant::Secondary } else { ButtonVariant::Primary },
-              disabled: pending(),
+              loading: pending(),
               class: if completed() { "px-5 cursor-default bg-success/15 text-success hover:bg-success/15" } else { "px-5" },
               onclick: move |_| {
                   if completed() || pending() { return; }
@@ -813,8 +816,6 @@ fn CompleteLessonButton(course_slug: String, chapter_slug: String, lesson_slug: 
               },
               if completed() {
                   "✅ 已完成本节"
-              } else if pending() {
-                  "提交中…"
               } else {
                   "标记完成本节"
               }
@@ -1128,12 +1129,13 @@ fn CodeTabs(files: Vec<CodeFile>, #[props(default = false)] large: bool) -> Elem
   // 页签值用下标：同一课节里文件名可能重复。
   rsx! {
       Tabs {
+          variant: TabsVariant::Underline,
           class: "{panel_class}",
           value: active_idx.to_string(),
           on_value_change: move |v: String| active.set(v.parse().unwrap_or(0)),
-          TabsList { class: "h-auto w-full justify-start gap-1 overflow-x-auto rounded-none border-b border-border bg-transparent px-2 pt-2 pb-0",
+          TabsList { class: "w-full gap-2 overflow-x-auto px-3",
               for (i, f) in files.iter().enumerate() {
-                  TabsTrigger { key: "{i}", value: i.to_string(), class: "rounded-b-none px-3 py-2 text-xs", "{f.name}" }
+                  TabsTrigger { key: "{i}", value: i.to_string(), class: "px-2 py-2 text-xs", "{f.name}" }
               }
           }
           if let Some(file) = active_file {

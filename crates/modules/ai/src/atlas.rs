@@ -15,8 +15,8 @@ use dioxus::prelude::*;
 #[cfg(not(feature = "accounts"))]
 use dioxus_shadcn::ButtonVariant;
 use dioxus_shadcn::{
-  badge_class, button_class, card_class, BadgeVariant, Button, ButtonSize, Input, Spinner,
-  SpinnerSize, UiDensity,
+  badge_class, button_class, card_class, Badge, BadgeSize, BadgeStyle, BadgeVariant, Button,
+  ButtonSize, Input, Spinner, SpinnerSize, UiDensity,
 };
 #[cfg(feature = "accounts")]
 use dioxus_shadcn::{ButtonVariant, Textarea};
@@ -916,7 +916,11 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
           }
           div { class: "flex items-center gap-1.5",
             if show_origin && model.origin != RecordOrigin::Builtin {
-              span { class: "px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-mono font-semibold",
+              Badge {
+                variant: BadgeVariant::Warning,
+                style: BadgeStyle::Soft,
+                size: BadgeSize::Xs,
+                class: "font-mono",
                 if model.origin == RecordOrigin::Override { "DB·Override" } else { "DB" }
               }
             }
@@ -1134,7 +1138,11 @@ fn ModelDetailLoaded(slug: String) -> Element {
     rsx! {
       div { class: "rounded-xl border border-amber-200/80 dark:border-amber-900/60 bg-amber-50/60 dark:bg-amber-950/25 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs",
         div { class: "flex flex-wrap items-center gap-2",
-          span { class: "px-2 py-0.5 rounded bg-amber-500/20 text-amber-800 dark:text-amber-300 font-mono font-bold text-[11px]",
+          Badge {
+            variant: BadgeVariant::Warning,
+            style: BadgeStyle::Soft,
+            size: BadgeSize::Sm,
+            class: "font-mono",
             match meta.origin {
               RecordOrigin::Builtin => lang.pick("数据源：静态目录 models/", "Origin: Static FS"),
               RecordOrigin::Database => lang.pick("数据源：PostgreSQL 在线收录", "Origin: PostgreSQL"),
@@ -1158,7 +1166,7 @@ fn ModelDetailLoaded(slug: String) -> Element {
           Button {
             variant: ButtonVariant::Outline,
             size: ButtonSize::Sm,
-            disabled: refreshing_upstream(),
+            loading: refreshing_upstream(),
             onclick: move |_| {
               let r = repo_for_refresh.clone();
               refreshing_upstream.set(true);
@@ -1171,18 +1179,14 @@ fn ModelDetailLoaded(slug: String) -> Element {
                 refreshing_upstream.set(false);
               });
             },
-            if refreshing_upstream() {
-              {lang.pick("正在拉取上游配置...", "Refreshing...")}
-            } else {
-              {lang.pick("从上游刷新蓝图", "Refresh Blueprint")}
-            }
+            {lang.pick("从上游刷新蓝图", "Refresh Blueprint")}
           }
           if meta.origin != RecordOrigin::Builtin {
             if confirm_delete() {
               Button {
                 variant: ButtonVariant::Destructive,
                 size: ButtonSize::Sm,
-                disabled: deleting(),
+                loading: deleting(),
                 onclick: move |_| {
                   let s = slug_for_delete.clone();
                   deleting.set(true);
@@ -1705,14 +1709,9 @@ pub fn SaveToAtlasModal(
             }
             Button {
               size: ButtonSize::Sm,
-              disabled: fetching(),
+              loading: fetching(),
               onclick: move |_| do_fetch_draft(),
-              if fetching() {
-                Spinner { size: SpinnerSize::Sm, class: "mr-1 border-t-current" }
-                {lang.pick("解析中...", "Fetching...")}
-              } else {
-                {lang.pick("拉取并生成草稿", "Fetch Draft")}
-              }
+              {lang.pick("拉取并生成草稿", "Fetch Draft")}
             }
           }
 
@@ -1724,14 +1723,9 @@ pub fn SaveToAtlasModal(
               Button {
                 variant: ButtonVariant::Outline,
                 size: ButtonSize::Sm,
-                disabled: polishing(),
+                loading: polishing(),
                 onclick: do_ai_polish,
-                if polishing() {
-                  Spinner { size: SpinnerSize::Sm, class: "mr-1 border-t-current" }
-                  {lang.pick("AI 润色中...", "Polishing...")}
-                } else {
-                  {lang.pick("✨ AI 润色双语亮点", "✨ AI Polish")}
-                }
+                {lang.pick("✨ AI 润色双语亮点", "✨ AI Polish")}
               }
             }
           }
@@ -1986,14 +1980,10 @@ pub fn SaveToAtlasModal(
           }
           Button {
             size: ButtonSize::Sm,
-            disabled: saving() || draft_bp().is_none(),
+            disabled: draft_bp().is_none(),
+            loading: saving(),
             onclick: do_save,
-            if saving() {
-              Spinner { size: SpinnerSize::Sm, class: "mr-1.5 border-t-current" }
-              {lang.pick("正在写入数据库...", "Saving...")}
-            } else {
-              {lang.pick("保存并发布到图鉴", "Save & Publish")}
-            }
+            {lang.pick("保存并发布到图鉴", "Save & Publish")}
           }
         }
       }

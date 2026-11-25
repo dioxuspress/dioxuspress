@@ -632,9 +632,9 @@ fn ReplyComposer(topic_id: i32, on_replied: EventHandler<TopicDetail>) -> Elemen
               Button {
                   r#type: "button",
                   class: if submitting() { "" } else { "btn-flow" },
-                  disabled: submitting(),
+                  loading: submitting(),
                   onclick: handle_submit,
-                  if submitting() { "{t(lang, \"forum.submitting\")}" } else { "{t(lang, \"forum.post_reply\")}" }
+                  "{t(lang, \"forum.post_reply\")}"
               }
           }
       }
@@ -829,9 +829,9 @@ pub fn NewTopicPage() -> Element {
                   Button {
                       r#type: "button",
                       class: if submitting() { "" } else { "btn-flow" },
-                      disabled: submitting(),
+                      loading: submitting(),
                       onclick: handle_submit,
-                      if submitting() { "{t(lang, \"forum.publishing\")}" } else { "{t(lang, \"forum.publish_topic\")}" }
+                      "{t(lang, \"forum.publish_topic\")}"
                   }
               }
           }
