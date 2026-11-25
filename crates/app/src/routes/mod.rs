@@ -18,10 +18,6 @@ use crate::components::nav::Navbar;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n, Language};
 use crate::server::get_about_page;
-use module_ai::{
-  AiArticlePage, AiComponentDetailPage, AiComponentsAtlasPage, AiIndexPage, AiMathAtlasPage,
-  AiMathDetailPage, AiVisualizerPage, ModelConfigsGuidePage, ModelDetailPage, ModelsAtlasPage,
-};
 use module_blog::server::{get_blog_content, list_blog_page};
 use module_cases::cases::{CaseDetailPage, CasesIndexPage};
 use module_cli::{CliArticlePage, CliIndexPage};
@@ -48,6 +44,10 @@ pub use papers::*;
 mod course;
 #[cfg(feature = "course")]
 pub use course::*;
+#[cfg(feature = "ai")]
+mod ai;
+#[cfg(feature = "ai")]
+pub use ai::*;
 
 /// 某一层没编译进来时（docs/FEATURE_TIERS.md DL1），为它的路由生成同名页面组件，
 /// 渲染 404。`Route` 因此在各层都相同，导航链接照常编译，是否显示由启用列表决定。
@@ -80,6 +80,20 @@ absent_pages! {
   Papers {},
   PaperDetail { arxiv_id: String },
   PaperTopic { slug: String },
+}
+
+#[cfg(not(feature = "ai"))]
+absent_pages! {
+  Ai {},
+  AiVisualizer {},
+  AiComponents {},
+  AiComponentDetail { slug: String },
+  AiMath {},
+  AiMathDetail { slug: String },
+  AiArticle { slug: String },
+  Models {},
+  ModelConfigsGuide {},
+  ModelDetail { slug: String },
 }
 
 #[cfg(not(feature = "accounts"))]
@@ -739,56 +753,6 @@ pub fn Embedded() -> Element {
 #[component]
 pub fn EmbeddedArticle(slug: String) -> Element {
   rsx! { ModuleGate { id: "embedded".to_string(), EmbeddedArticlePage { slug } } }
-}
-
-#[component]
-pub fn Ai() -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), AiIndexPage {} } }
-}
-
-#[component]
-pub fn AiVisualizer() -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), AiVisualizerPage {} } }
-}
-
-#[component]
-pub fn AiComponents() -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), AiComponentsAtlasPage {} } }
-}
-
-#[component]
-pub fn AiComponentDetail(slug: String) -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), AiComponentDetailPage { slug } } }
-}
-
-#[component]
-pub fn AiMath() -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), AiMathAtlasPage {} } }
-}
-
-#[component]
-pub fn AiMathDetail(slug: String) -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), AiMathDetailPage { slug } } }
-}
-
-#[component]
-pub fn AiArticle(slug: String) -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), AiArticlePage { slug } } }
-}
-
-#[component]
-pub fn Models() -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), ModelsAtlasPage {} } }
-}
-
-#[component]
-pub fn ModelConfigsGuide() -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), ModelConfigsGuidePage {} } }
-}
-
-#[component]
-pub fn ModelDetail(slug: String) -> Element {
-  rsx! { ModuleGate { id: "ai".to_string(), ModelDetailPage { slug } } }
 }
 
 #[component]

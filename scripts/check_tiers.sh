@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# 功能分层门禁（docs/FEATURE_TIERS.md L6）：四档 × server / web 两端各 `cargo check -p app`，
+# 功能分层门禁（docs/FEATURE_TIERS.md L6）：五档 × server / web 两端各 `cargo check -p app`，
 # 任一档有 error 或 warning 即失败。warning 也算失败：漏写 cfg 最先表现为 unused import。
 #
-# 用法：scripts/check_tiers.sh            # 全部 8 项
-#       scripts/check_tiers.sh basic      # 只查某一档（basic / accounts / course / full）
+# 用法：scripts/check_tiers.sh            # 全部 10 项
+#       scripts/check_tiers.sh basic      # 只查某一档（basic / ai / accounts / course / full）
 set -u
 
 tier_flags() {
   case "$1" in
     basic) echo "--no-default-features" ;;
+    ai) echo "--no-default-features --features ai" ;;
     accounts) echo "--no-default-features --features accounts" ;;
     course) echo "--no-default-features --features course" ;;
-    full) echo "" ;; # 默认 feature：web + payments
+    full) echo "" ;; # 默认 feature：web + payments + papers + ai
     *) echo "unknown tier: $1" >&2; exit 2 ;;
   esac
 }
 
-tiers=("${@:-basic accounts course full}")
+tiers=("${@:-basic ai accounts course full}")
 # shellcheck disable=SC2206
 tiers=(${tiers[*]})
 

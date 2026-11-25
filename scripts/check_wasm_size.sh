@@ -6,8 +6,8 @@
 # `payments`) tiers, and verifies raw `.wasm` and `gzip -9` byte sizes stay within budget.
 #
 # Override any budget via environment variables (used for CI and red/green gate self-tests):
-#   MAX_BASIC_WASM_RAW_BYTES (default: 7900000)
-#   MAX_BASIC_WASM_GZ_BYTES  (default: 2200000)
+#   MAX_BASIC_WASM_RAW_BYTES (default: 6300000)
+#   MAX_BASIC_WASM_GZ_BYTES  (default: 1800000)
 #   MAX_FULL_WASM_RAW_BYTES  (default: 10500000)
 #   MAX_FULL_WASM_GZ_BYTES   (default: 2900000)
 set -euo pipefail
@@ -15,8 +15,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 
-MAX_BASIC_WASM_RAW_BYTES="${MAX_BASIC_WASM_RAW_BYTES:-7900000}"
-MAX_BASIC_WASM_GZ_BYTES="${MAX_BASIC_WASM_GZ_BYTES:-2200000}"
+MAX_BASIC_WASM_RAW_BYTES="${MAX_BASIC_WASM_RAW_BYTES:-6300000}"
+MAX_BASIC_WASM_GZ_BYTES="${MAX_BASIC_WASM_GZ_BYTES:-1800000}"
 MAX_FULL_WASM_RAW_BYTES="${MAX_FULL_WASM_RAW_BYTES:-10500000}"
 MAX_FULL_WASM_GZ_BYTES="${MAX_FULL_WASM_GZ_BYTES:-2900000}"
 

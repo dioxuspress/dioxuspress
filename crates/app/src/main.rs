@@ -237,7 +237,10 @@ if(d)document.documentElement.classList.add('dark');}catch(e){}})();";
 /// 搜索只认这个集合；site.json 的模块开关只能在其中再关。
 fn compiled_modules() -> Vec<&'static str> {
   let mut ids =
-    vec!["blog", "podcast", "cases", "docs", "embedded", "ai", "web3", "wasm", "cli", "about"];
+    vec!["blog", "podcast", "cases", "docs", "embedded", "web3", "wasm", "cli", "about"];
+  if cfg!(feature = "ai") {
+    ids.push("ai");
+  }
   if cfg!(feature = "accounts") {
     ids.push("forum");
   }
@@ -258,6 +261,7 @@ fn main() {
   widgets::register_default_components();
   // 2) 各业务模块与宿主应用注册自身提供的 MDX 组件 (PodcastCard / ModelArch / ThemeShowcase ...)
   module_podcast::register_components();
+  #[cfg(feature = "ai")]
   module_ai::register_components();
   components::theme_showcase::register_components();
 
@@ -289,11 +293,11 @@ fn main() {
   });
 
   // 3b) 把模型图鉴（`/models/:slug`）、算子图鉴（`/ai/components/:slug`）与数学基石（`/ai/math/:slug`）注册进全文检索索引。
-  #[cfg(feature = "server")]
+  #[cfg(all(feature = "server", feature = "ai"))]
   app_core::engines::doc_source::register_async_doc_source(module_ai::atlas_store::search_docs);
-  #[cfg(feature = "server")]
+  #[cfg(all(feature = "server", feature = "ai"))]
   app_core::engines::doc_source::register_doc_source(module_ai::components_atlas::search_docs);
-  #[cfg(feature = "server")]
+  #[cfg(all(feature = "server", feature = "ai"))]
   app_core::engines::doc_source::register_doc_source(module_ai::math_atlas::search_docs);
 
   // 论文解读在数据库里，异步取。
@@ -787,15 +791,13 @@ fn App() -> Element {
 
 #[cfg(feature = "server")]
 fn find_board(board_id: &str) -> Option<board::Board> {
-  [
-    module_ai::BOARD,
-    module_embedded::BOARD,
-    module_wasm::BOARD,
-    module_cli::BOARD,
-    module_web3::BOARD,
-  ]
-  .into_iter()
-  .find(|b| b.id == board_id)
+  #[cfg(feature = "ai")]
+  if module_ai::BOARD.id == board_id {
+    return Some(module_ai::BOARD);
+  }
+  [module_embedded::BOARD, module_wasm::BOARD, module_cli::BOARD, module_web3::BOARD]
+    .into_iter()
+    .find(|b| b.id == board_id)
 }
 
 #[cfg(feature = "server")]
@@ -919,13 +921,15 @@ fn build_board_hub(board_id: &str, lang: app_core::i18n::Language) -> board::Boa
 
 #[cfg(all(test, feature = "server"))]
 mod startup_tests {
-  use super::{build_board_hub, find_board, resolve_startup_base_url};
+  use super::{build_board_hub, compiled_modules, find_board, resolve_startup_base_url};
 
   #[test]
   fn board_hub_resolves_known_boards_and_ignores_unknown() {
-    for id in ["ai", "embedded", "wasm", "cli", "web3"] {
+    for id in ["embedded", "wasm", "cli", "web3"] {
       assert!(find_board(id).is_some(), "missing board {id}");
     }
+    assert_eq!(find_board("ai").is_some(), cfg!(feature = "ai"));
+    assert_eq!(compiled_modules().contains(&"ai"), cfg!(feature = "ai"));
     assert!(find_board("nonexistent").is_none());
     assert!(build_board_hub("nonexistent", app_core::i18n::Language::Zh).is_empty());
   }

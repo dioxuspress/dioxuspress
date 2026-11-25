@@ -137,7 +137,8 @@ RUN arch=$(case "$(uname -m)" in x86_64) echo x64;; aarch64) echo arm64;; esac) 
 # 2. dx bundle：web 全栈 + release 优化，
 #    产物在 /tmp/target/dx/app/release/web/{public,server}
 #    功能分层（docs/FEATURE_TIERS.md）：默认完整站点；其他档位用 build-arg 传 feature 参数，如
-#      --build-arg APP_FEATURES="--no-default-features"                     # basic（无库）
+#      --build-arg APP_FEATURES="--no-default-features"                     # basic（无库，不含 AI 实验室）
+#      --build-arg APP_FEATURES="--no-default-features --features ai"       # basic + AI 实验室 / 模型图鉴（仍无库）
 #      --build-arg APP_FEATURES="--no-default-features --features accounts" # 博客 + 论坛
 #      --build-arg APP_FEATURES="--no-default-features --features course"   # + 课程（无在线支付）
 #    wasm-opt 失败时 dx 只打一行 ERROR、退出码仍是 0，产物是未优化的 wasm。这里查日志让构建失败，

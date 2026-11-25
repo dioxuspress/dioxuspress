@@ -27,7 +27,7 @@ module-docs = { path = "../modules/docs" }
 module-comments = { path = "../modules/comments", optional = true }
 module-uploads = { path = "../modules/uploads", optional = true }
 module-embedded = { path = "../modules/embedded" }
-module-ai = { path = "../modules/ai" }
+module-ai = { path = "../modules/ai", optional = true }
 module-web3 = { path = "../modules/web3" }
 module-wasm = { path = "../modules/wasm" }
 module-cli = { path = "../modules/cli" }
@@ -45,14 +45,14 @@ tracing-subscriber = { workspace = true, optional = true }
 migration = { path = "../migration", default-features = false, optional = true }
 
 [features]
-default = ["web", "payments", "papers"]
+default = ["web", "payments", "papers", "ai"]
 web = ["dioxus/web"]
 desktop = ["dioxus/desktop"]
 mobile = ["dioxus/mobile"]
 # 功能分层（docs/FEATURE_TIERS.md）：默认 = 完整站点。
 # 账号层：登录、论坛、博客评论、图片上传、管理后台；需要 Postgres 与 JWT_SECRET。
 # 关闭时（basic）不连库、不要求 JWT_SECRET，相关路由 404。
-accounts = ["dep:module-forum", "dep:module-comments", "dep:module-admin", "dep:module-uploads", "dep:migration", "module-ai/accounts"]
+accounts = ["dep:module-forum", "dep:module-comments", "dep:module-admin", "dep:module-uploads", "dep:migration", "module-ai?/accounts"]
 # 课程层：课程 / 课时 / 标注 / 权益后台 / Pro 会员。关闭时课程路由 404。
 course = ["accounts", "dep:module-course"]
 # 在线支付（PM4，默认开）：级联 module-course/payments。关闭时 /api/pay/* 不注册、
@@ -60,6 +60,9 @@ course = ["accounts", "dep:module-course"]
 payments = ["course", "module-course/payments"]
 # 论文资讯（阶段 N）：数据在 Postgres 里，所以依赖 accounts。关闭时 /papers 404。
 papers = ["accounts", "dep:module-papers"]
+# AI 板块与大模型架构图鉴（/ai、/models、/models/configs、算子/数学实验室与 <ModelArch /> MDX 组件）。
+# 与 accounts 正交：单独启用可零数据库运行，配合 accounts 自动激活图鉴数据库持久化与后台管理。
+ai = ["dep:module-ai"]
 # 仅在 server 特性开启时，激活后端依赖和 core 的 server 特性
 server = [
     "dioxus/server",
@@ -77,7 +80,7 @@ server = [
     "module-comments?/server",
     "module-uploads?/server",
     "module-embedded/server",
-    "module-ai/server",
+    "module-ai?/server",
     "module-web3/server",
     "module-wasm/server",
     "module-cli/server",
