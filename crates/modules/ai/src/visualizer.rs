@@ -20,7 +20,8 @@ use crate::atlas::{current_user_is_admin, SaveToAtlasModal};
 use crate::atlas_store::{draft_from_blueprint, CuratedModelUpsertInput};
 use crate::config_guide::{
   extract_annotated_fields_with_docs, get_config_guide_json_cached, get_or_parse_config_guide,
-  group_annotated_fields, AnnotatedConfigField, ConfigFieldDocDto, ConfigFileKind, FieldGroup,
+  group_annotated_fields, render_highlighted_json, render_inline_markup, AnnotatedConfigField,
+  ConfigFieldDocDto, ConfigFileKind, FieldGroup,
 };
 use crate::diagram::{MacroArchitectureFlow, MicroSubgraphDiagram};
 use crate::safetensors_meta::TensorPatternEntry;
@@ -1449,7 +1450,7 @@ fn render_config_anatomy_body(
         ConfigViewMode::RawJson => rsx! {
           div { class: "space-y-3",
             pre { class: "max-h-96 overflow-auto rounded-xl bg-slate-950 text-slate-100 p-3.5 text-xs font-mono leading-relaxed border border-slate-800",
-              "{blueprint.raw_config_pretty}"
+              {render_highlighted_json(&blueprint.raw_config_pretty)}
             }
             for snap in blueprint.aux_configs.iter() {
               div {
@@ -1459,7 +1460,7 @@ fn render_config_anatomy_body(
                   "{snap.filename}"
                 }
                 pre { class: "max-h-52 overflow-auto p-3 text-xs font-mono text-slate-200 leading-relaxed",
-                  "{snap.raw_json_pretty}"
+                  {render_highlighted_json(&snap.raw_json_pretty)}
                 }
               }
             }
@@ -1520,7 +1521,7 @@ fn render_annotated_field_row(
 
       if let Some(ref doc) = field.doc {
         p { class: "text-slate-600 dark:text-slate-400 leading-relaxed",
-          "{doc.summary(lang)}"
+          {render_inline_markup(doc.summary(lang))}
         }
         if doc.formula_impact.is_some() || doc.lab_link.is_some() {
           div { class: "flex flex-wrap items-center justify-between gap-2 pt-0.5",
@@ -1871,6 +1872,7 @@ mod tests {
       let copied_json = use_signal(|| false);
       let active_modality = use_signal(|| "llm".to_string());
       let active_file_spec = use_signal(|| ConfigFileKind::ModelConfig);
+      let copied_snippet = use_signal(|| None);
       let filter_category = use_signal(|| None);
       let filter_file: Signal<Option<ConfigFileKind>> = use_signal(|| None);
       let filter_group: Signal<Option<FieldGroup>> = use_signal(|| None);
@@ -1894,6 +1896,7 @@ mod tests {
             "test desc",
             active_modality,
             active_file_spec,
+            copied_snippet,
             filter_category,
             filter_file,
             filter_group,
@@ -1924,5 +1927,12 @@ mod tests {
     assert!(html.contains("权重存储与分片"));
     assert!(html.contains("微调与适配器"));
     assert!(html.contains("adapter_config.json"));
+    // 行内反引号代码已渲染为 <code>，不再泄漏原始反引号
+    assert!(html.contains("AutoConfig.from_pretrained</code>"));
+    assert!(!html.contains("`AutoConfig.from_pretrained`"));
+    // JSON 词法高亮生效（键名、字符串值与注释均带独立语义色）
+    assert!(html.contains("text-sky-300 font-medium"));
+    assert!(html.contains("text-emerald-300"));
+    assert!(html.contains("text-slate-500 italic"));
   }
 }
