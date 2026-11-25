@@ -17,6 +17,106 @@ use widgets::PageMeta;
 
 use crate::arch::InspectorFocus;
 
+/// 配置文件按推理引擎职责划分的 4 大类别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ConfigFileCategory {
+  /// 模型架构与管线结构（网络拓扑、层数维度、多组件装配与池化链）
+  Architecture,
+  /// 输入前处理与推理控制（分词、对话模板、视觉/音频前处理、采样解码）
+  InferenceControl,
+  /// 权重存储与分片索引（Safetensors 分片映射与零拷贝头）
+  WeightStorage,
+  /// 微调与适配器增量（PEFT LoRA / DoRA / QLoRA 挂载与缩放）
+  FineTuningAdapter,
+}
+
+impl ConfigFileCategory {
+  pub const ALL: [Self; 4] =
+    [Self::Architecture, Self::InferenceControl, Self::WeightStorage, Self::FineTuningAdapter];
+
+  pub fn id(self) -> &'static str {
+    match self {
+      Self::Architecture => "architecture",
+      Self::InferenceControl => "inference-control",
+      Self::WeightStorage => "weight-storage",
+      Self::FineTuningAdapter => "fine-tuning-adapter",
+    }
+  }
+
+  pub fn label(self, lang: Language) -> &'static str {
+    match self {
+      Self::Architecture => lang.pick("模型架构与管线", "Model Architecture & Pipeline"),
+      Self::InferenceControl => lang.pick("输入与推理控制", "Input & Inference Control"),
+      Self::WeightStorage => lang.pick("权重存储与分片", "Weights & Sharding"),
+      Self::FineTuningAdapter => lang.pick("微调与适配器", "Fine-Tuning & Adapters"),
+    }
+  }
+
+  pub fn short_label(self, lang: Language) -> &'static str {
+    match self {
+      Self::Architecture => lang.pick("模型架构", "Architecture"),
+      Self::InferenceControl => lang.pick("推理控制", "Inference I/O"),
+      Self::WeightStorage => lang.pick("权重存储", "Weights"),
+      Self::FineTuningAdapter => lang.pick("微调增量", "Adapters"),
+    }
+  }
+
+  pub fn summary(self, lang: Language) -> &'static str {
+    match self {
+      Self::Architecture => lang.pick(
+        "决定网络拓扑、层数维度、组件装配与池化链路",
+        "Defines network topology, dimensions, pipeline slots & pooling",
+      ),
+      Self::InferenceControl => lang.pick(
+        "控制文本分词与模板、视听前处理、采样与停止符",
+        "Controls tokenization, chat templates, vision/audio prep & decoding",
+      ),
+      Self::WeightStorage => lang.pick(
+        "声明张量磁盘分片映射、精度格式与零拷贝加载",
+        "Maps parameter tensors across shards for zero-copy loading",
+      ),
+      Self::FineTuningAdapter => lang.pick(
+        "不改基座权重，声明 LoRA / DoRA 挂载层与缩放",
+        "Attaches low-rank LoRA/DoRA deltas without editing base weights",
+      ),
+    }
+  }
+
+  pub fn files(self) -> &'static [ConfigFileKind] {
+    match self {
+      Self::Architecture => &[
+        ConfigFileKind::ModelConfig,
+        ConfigFileKind::DiffusionPipeline,
+        ConfigFileKind::EmbeddingModules,
+      ],
+      Self::InferenceControl => &[
+        ConfigFileKind::TokenizerConfig,
+        ConfigFileKind::PreprocessorConfig,
+        ConfigFileKind::GenerationConfig,
+      ],
+      Self::WeightStorage => &[ConfigFileKind::SafetensorsIndex],
+      Self::FineTuningAdapter => &[ConfigFileKind::AdapterConfig],
+    }
+  }
+
+  pub fn badge_classes(self) -> &'static str {
+    match self {
+      Self::Architecture => {
+        "bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/70"
+      }
+      Self::InferenceControl => {
+        "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/70"
+      }
+      Self::WeightStorage => {
+        "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/70"
+      }
+      Self::FineTuningAdapter => {
+        "bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 border border-violet-200 dark:border-violet-800/70"
+      }
+    }
+  }
+}
+
 /// 大模型权重仓库中的 8 类核心配置文件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigFileKind {
@@ -73,6 +173,19 @@ impl ConfigFileKind {
       Self::DiffusionPipeline => "model_index.json",
       Self::EmbeddingModules => "modules.json / 1_Pooling",
       Self::AdapterConfig => "adapter_config.json",
+    }
+  }
+
+  pub fn category(self) -> ConfigFileCategory {
+    match self {
+      Self::ModelConfig | Self::DiffusionPipeline | Self::EmbeddingModules => {
+        ConfigFileCategory::Architecture
+      }
+      Self::TokenizerConfig | Self::GenerationConfig | Self::PreprocessorConfig => {
+        ConfigFileCategory::InferenceControl
+      }
+      Self::SafetensorsIndex => ConfigFileCategory::WeightStorage,
+      Self::AdapterConfig => ConfigFileCategory::FineTuningAdapter,
     }
   }
 
@@ -253,6 +366,39 @@ impl FieldGroup {
       Self::TokenizerGeneration => {
         lang.pick("词表、采样与适配器", "Tokenizer, Sampling & Adapters")
       }
+    }
+  }
+
+  pub fn description(self, lang: Language) -> &'static str {
+    match self {
+      Self::Backbone => lang.pick(
+        "决定模型家族、层数、隐藏维度、词表大小与归一化方式（模型架构）",
+        "Model family, depth, hidden width, vocab size & normalization (Architecture)",
+      ),
+      Self::AttentionKv => lang.pick(
+        "控制 GQA / MLA / 滑动窗口 / 线性 SSM 状态缓存与显存瓶颈（模型架构）",
+        "GQA, MLA, sliding window & linear SSM state cache sizing (Architecture)",
+      ),
+      Self::FfnMoe => lang.pick(
+        "控制前馈网络宽度、激活函数与稀疏专家路由拓扑（模型架构）",
+        "MLP intermediate width, activations & sparse MoE routing (Architecture)",
+      ),
+      Self::PositionContext => lang.pick(
+        "控制 RoPE / YaRN / MRoPE 上下文外推与最大序列长度（模型架构）",
+        "RoPE, YaRN, MRoPE extrapolation & context window bounds (Architecture)",
+      ),
+      Self::QuantPrecision => lang.pick(
+        "控制权重精度、FP8/AWQ/GPTQ 量化方案与 Safetensors 分片索引（权重与存储）",
+        "Weight dtype, FP8/AWQ/GPTQ quantization & Safetensors shards (Weights)",
+      ),
+      Self::MultimodalPipeline => lang.pick(
+        "控制视觉/音频前处理、DiT/VAE 扩散管线调度与向量池化链路（多模态与管线）",
+        "Vision/audio preprocessing, diffusion pipelines & embedding pooling",
+      ),
+      Self::TokenizerGeneration => lang.pick(
+        "控制分词器特殊 Token、采样解码停止条件与 LoRA 适配器增量（推理控制与微调）",
+        "Special tokens, decoding stop criteria & LoRA adapter deltas",
+      ),
     }
   }
 }
@@ -3555,6 +3701,7 @@ fn ModelConfigsGuideLoaded(desc: String) -> Element {
   let res = use_server_future(get_config_guide_json_cached)?;
   let active_modality = use_signal(|| "llm".to_string());
   let active_file_spec = use_signal(|| ConfigFileKind::ModelConfig);
+  let filter_category: Signal<Option<ConfigFileCategory>> = use_signal(|| None);
   let filter_file: Signal<Option<ConfigFileKind>> = use_signal(|| None);
   let filter_group: Signal<Option<FieldGroup>> = use_signal(|| None);
   let search_q = use_signal(String::new);
@@ -3579,6 +3726,7 @@ fn ModelConfigsGuideLoaded(desc: String) -> Element {
         &desc,
         active_modality,
         active_file_spec,
+        filter_category,
         filter_file,
         filter_group,
         search_q,
@@ -3587,11 +3735,13 @@ fn ModelConfigsGuideLoaded(desc: String) -> Element {
   }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_config_guide_content(
   payload: &ConfigGuidePayload,
   desc: &str,
   mut active_modality: Signal<String>,
   mut active_file_spec: Signal<ConfigFileKind>,
+  mut filter_category: Signal<Option<ConfigFileCategory>>,
   mut filter_file: Signal<Option<ConfigFileKind>>,
   mut filter_group: Signal<Option<FieldGroup>>,
   mut search_q: Signal<String>,
@@ -3610,12 +3760,14 @@ pub(crate) fn render_config_guide_content(
     .or_else(|| payload.file_specs.first());
 
   let q_norm = search_q().trim().to_ascii_lowercase();
+  let sel_category = filter_category();
   let sel_file = filter_file();
   let sel_group = filter_group();
 
   let filtered_docs: Vec<&ConfigFieldDocDto> = payload
     .field_docs
     .iter()
+    .filter(|d| sel_category.is_none_or(|c| d.file.category() == c))
     .filter(|d| sel_file.is_none_or(|f| d.file == f))
     .filter(|d| sel_group.is_none_or(|g| d.group == g))
     .filter(|d| {
@@ -3631,7 +3783,25 @@ pub(crate) fn render_config_guide_content(
     })
     .collect();
 
-  let has_active_filter = sel_file.is_some() || sel_group.is_some() || !q_norm.is_empty();
+  let has_active_filter =
+    sel_category.is_some() || sel_file.is_some() || sel_group.is_some() || !q_norm.is_empty();
+
+  // 按 7 大工程语义分组归类命中字段，确保无论全量浏览还是检索都条理清晰
+  let grouped_docs: Vec<(FieldGroup, Vec<&ConfigFieldDocDto>)> = FieldGroup::ALL
+    .into_iter()
+    .filter_map(|grp| {
+      let items: Vec<&ConfigFieldDocDto> =
+        filtered_docs.iter().copied().filter(|d| d.group == grp).collect();
+      if items.is_empty() {
+        None
+      } else {
+        Some((grp, items))
+      }
+    })
+    .collect();
+
+  let visible_file_kinds: &[ConfigFileKind] =
+    sel_category.map_or(&ConfigFileKind::ALL, ConfigFileCategory::files);
 
   rsx! {
     div { class: "space-y-10",
@@ -3769,6 +3939,7 @@ pub(crate) fn render_config_guide_content(
             for item in tree.items.iter() {
               {
                 let fk = item.file_kind;
+                let cat = fk.category();
                 rsx! {
                   div {
                     key: "{tree.id}-{item.path}",
@@ -3777,13 +3948,18 @@ pub(crate) fn render_config_guide_content(
                       code { class: "text-xs sm:text-sm font-mono font-bold text-slate-900 dark:text-white break-all",
                         "{item.path}"
                       }
-                      if item.required {
-                        span { class: badge_class(BadgeVariant::Default, "text-[10px] shrink-0"),
-                          {lang.pick("必需", "Required")}
+                      div { class: "flex items-center gap-1.5 shrink-0",
+                        span { class: format!("px-2 py-0.5 rounded-md text-[10px] font-bold whitespace-nowrap {}", cat.badge_classes()),
+                          "{cat.short_label(lang)}"
                         }
-                      } else {
-                        span { class: badge_class(BadgeVariant::Secondary, "text-[10px] shrink-0"),
-                          {lang.pick("可选", "Optional")}
+                        if item.required {
+                          span { class: badge_class(BadgeVariant::Default, "text-[10px] shrink-0"),
+                            {lang.pick("必需", "Required")}
+                          }
+                        } else {
+                          span { class: badge_class(BadgeVariant::Secondary, "text-[10px] shrink-0"),
+                            {lang.pick("可选", "Optional")}
+                          }
                         }
                       }
                     }
@@ -3797,6 +3973,7 @@ pub(crate) fn render_config_guide_content(
                         class: "text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer",
                         onclick: move |_| {
                           active_file_spec.set(fk);
+                          filter_category.set(Some(cat));
                           filter_file.set(Some(fk));
                         },
                         {lang.pick("聚焦此文件蓝图与字段 ↓", "Inspect File & Fields ↓")}
@@ -3810,37 +3987,60 @@ pub(crate) fn render_config_guide_content(
         }
       }
 
-      // 3. 8 类主流配置文件深度蓝图
+      // 3. 按 4 大职责归类的 8 类主流配置文件深度蓝图
       div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
         div {
           h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
-            {lang.pick("2. 八大主流配置文件深度拆解", "2. Deep Dive: The 8 Standard Config Files")}
+            {lang.pick(
+              "2. 按职责归类的八大配置文件拆解",
+              "2. The 8 Standard Config Files by Responsibility",
+            )}
           }
           p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
             {lang.pick(
-              "点击任意配置文件类型，查看它的核心职责、推理框架消费机制、典型避坑点与真实精简 JSON 示例。",
-              "Select any config file type to view its responsibilities, engine loading mechanics, pitfalls, and real JSON anatomy.",
+              "按「模型架构」「输入与推理控制」「权重存储」「微调增量」四大职责归类，先看清每个文件管什么，再点击展开框架加载机制与 JSON 示例。",
+              "Grouped into Architecture, Inference Control, Weight Storage, and Fine-Tuning Adapters so you immediately see what each file controls.",
             )}
           }
         }
 
-        div { class: "flex flex-wrap gap-1.5",
-          for spec in payload.file_specs.iter() {
-            {
-              let kind = spec.kind;
-              let active = active_file_spec() == kind;
-              let cls = if active {
-                "px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer transition-all"
-              } else {
-                "px-3 py-1.5 rounded-xl text-xs font-mono font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer transition-all"
-              };
-              rsx! {
-                button {
-                  key: "spec-{kind.id()}",
-                  r#type: "button",
-                  class: cls,
-                  onclick: move |_| active_file_spec.set(kind),
-                  "{kind.short_name()}"
+        div { class: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3",
+          for cat in ConfigFileCategory::ALL {
+            div {
+              key: "cat-{cat.id()}",
+              class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 p-3.5 space-y-2.5 flex flex-col justify-between",
+              div { class: "space-y-1.5",
+                div { class: "flex items-center justify-between gap-2",
+                  span { class: format!("px-2 py-0.5 rounded-md text-[11px] font-bold whitespace-nowrap {}", cat.badge_classes()),
+                    "{cat.label(lang)}"
+                  }
+                  span { class: "text-[11px] font-mono text-slate-400 shrink-0",
+                    "{cat.files().len()}"
+                  }
+                }
+                p { class: "text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed",
+                  "{cat.summary(lang)}"
+                }
+              }
+              div { class: "flex flex-wrap gap-1.5 pt-1",
+                for &kind in cat.files() {
+                  {
+                    let active = active_file_spec() == kind;
+                    let cls = if active {
+                      "px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer transition-all"
+                    } else {
+                      "px-2.5 py-1 rounded-lg text-[11px] font-mono font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-indigo-400 dark:hover:border-indigo-600 cursor-pointer transition-all"
+                    };
+                    rsx! {
+                      button {
+                        key: "spec-{kind.id()}",
+                        r#type: "button",
+                        class: cls,
+                        onclick: move |_| active_file_spec.set(kind),
+                        "{kind.short_name()}"
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -3850,12 +4050,16 @@ pub(crate) fn render_config_guide_content(
         if let Some(spec) = cur_spec {
           {
             let spec_kind = spec.kind;
+            let spec_cat = spec_kind.category();
             rsx! {
-              div { class: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start",
+              div { class: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start pt-1",
                 div { class: "lg:col-span-7 space-y-3.5",
                   div { class: "flex flex-wrap items-center gap-2",
                     h3 { class: "text-base sm:text-lg font-extrabold font-mono text-slate-900 dark:text-white",
                       "{spec.filenames}"
+                    }
+                    span { class: format!("px-2 py-0.5 rounded-md text-[11px] font-bold whitespace-nowrap {}", spec_cat.badge_classes()),
+                      "{spec_cat.label(lang)}"
                     }
                     span { class: badge_class(BadgeVariant::Secondary, "text-[11px]"),
                       "{spec.modalities(lang)}"
@@ -3887,7 +4091,9 @@ pub(crate) fn render_config_guide_content(
                     Button {
                       variant: ButtonVariant::Outline,
                       size: ButtonSize::Sm,
+                      class: "shrink-0 whitespace-nowrap",
                       onclick: move |_| {
+                        filter_category.set(Some(spec_cat));
                         filter_file.set(Some(spec_kind));
                         filter_group.set(None);
                       },
@@ -3955,6 +4161,7 @@ pub(crate) fn render_config_guide_content(
                 size: ButtonSize::Sm,
                 class: "shrink-0 whitespace-nowrap",
                 onclick: move |_| {
+                  filter_category.set(None);
                   filter_file.set(None);
                   filter_group.set(None);
                   search_q.set(String::new());
@@ -3964,7 +4171,48 @@ pub(crate) fn render_config_guide_content(
             }
           }
 
-          // 文件筛选行
+          // 职责大类筛选行
+          div { class: "flex flex-wrap items-center gap-1.5",
+            span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
+              {lang.pick("按职责：", "Role:")}
+            }
+            button {
+              r#type: "button",
+              class: if sel_category.is_none() {
+                "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
+              } else {
+                "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+              },
+              onclick: move |_| filter_category.set(None),
+              {lang.pick("全部职责", "All Roles")}
+            }
+            for cat in ConfigFileCategory::ALL {
+              {
+                let active = sel_category == Some(cat);
+                let cls = if active {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
+                } else {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                };
+                rsx! {
+                  button {
+                    key: "fc-{cat.id()}",
+                    r#type: "button",
+                    class: cls,
+                    onclick: move |_| {
+                      filter_category.set(Some(cat));
+                      if filter_file().is_some_and(|f| f.category() != cat) {
+                        filter_file.set(None);
+                      }
+                    },
+                    "{cat.label(lang)}"
+                  }
+                }
+              }
+            }
+          }
+
+          // 文件筛选行（随所选职责大类自动收窄）
           div { class: "flex flex-wrap items-center gap-1.5",
             span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
               {lang.pick("按文件：", "File:")}
@@ -3979,7 +4227,7 @@ pub(crate) fn render_config_guide_content(
               onclick: move |_| filter_file.set(None),
               {lang.pick("全部文件", "All Files")}
             }
-            for kind in ConfigFileKind::ALL {
+            for &kind in visible_file_kinds {
               {
                 let active = sel_file == Some(kind);
                 let cls = if active {
@@ -4037,8 +4285,8 @@ pub(crate) fn render_config_guide_content(
           }
         }
 
-        // 字段结果列表
-        if filtered_docs.is_empty() {
+        // 字段结果列表（按工程语义维度分节归类）
+        if grouped_docs.is_empty() {
           div { class: "py-10 text-center text-sm text-slate-500 dark:text-slate-400",
             {lang.pick(
               "未找到匹配的配置字段，请尝试更简短的关键词或点击「重置筛选」。",
@@ -4046,59 +4294,88 @@ pub(crate) fn render_config_guide_content(
             )}
           }
         } else {
-          div { class: "grid grid-cols-1 md:grid-cols-2 gap-3.5",
-            for doc in filtered_docs {
-              div {
-                key: "doc-{doc.key}",
-                class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 flex flex-col justify-between gap-2.5 hover:border-indigo-300 dark:hover:border-indigo-800 transition-colors",
-                div { class: "space-y-2",
-                  div { class: "flex flex-wrap items-center justify-between gap-2",
-                    code { class: "text-xs sm:text-sm font-mono font-bold text-indigo-700 dark:text-indigo-300 break-all",
-                      "{doc.key}"
+          div { class: "space-y-6",
+            for (grp, items) in grouped_docs {
+              div { key: "grp-sec-{grp.id()}", class: "space-y-3",
+                div { class: "flex flex-wrap items-baseline justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800",
+                  div { class: "space-y-0.5",
+                    h3 { class: "text-sm sm:text-base font-extrabold text-slate-900 dark:text-white",
+                      "{grp.label(lang)}"
                     }
-                    div { class: "flex flex-wrap items-center gap-1.5",
-                      span { class: "px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[10px] font-mono text-slate-700 dark:text-slate-300",
-                        "{doc.value_type}"
-                      }
-                      span { class: badge_class(BadgeVariant::Secondary, "text-[10px] font-mono"),
-                        "{doc.file.short_name()}"
-                      }
+                    p { class: "text-xs text-slate-500 dark:text-slate-400",
+                      "{grp.description(lang)}"
                     }
                   }
-
-                  if !doc.aliases.is_empty() {
-                    div { class: "text-[11px] font-mono text-slate-400",
-                      {lang.pick("别名：", "Aliases: ")}
-                      "{doc.aliases.join(\", \")}"
-                    }
-                  }
-
-                  p { class: "text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
-                    "{doc.summary(lang)}"
-                  }
-
-                  if let Some(ref formula) = doc.formula_impact {
-                    div { class: "rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/70 dark:border-indigo-900/60 px-2.5 py-1.5 text-[11px] font-mono text-indigo-800 dark:text-indigo-300",
-                      "ƒ {formula}"
-                    }
+                  span { class: "px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 shrink-0",
+                    "{items.len()} "
+                    {lang.pick("项", "fields")}
                   }
                 }
 
-                div { class: "flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]",
-                  span { class: "text-slate-500 dark:text-slate-400", "{doc.group.label(lang)}" }
-                  div { class: "flex flex-wrap items-center gap-2",
-                    if let Some(ref slug) = doc.example_model_slug {
-                      Link {
-                        to: format!("/models/{slug}"),
-                        class: "font-mono font-semibold text-indigo-600 dark:text-indigo-400 hover:underline",
-                        "Model: {slug} →"
-                      }
-                    }
-                    if let Some((ref href, ref label)) = doc.lab_link {
-                      Link {
-                        to: href.clone(),
-                        class: "font-semibold text-emerald-600 dark:text-emerald-400 hover:underline",
-                        "{label} ↗"
+                div { class: "grid grid-cols-1 md:grid-cols-2 gap-3.5",
+                  for doc in items {
+                    {
+                      let doc_cat = doc.file.category();
+                      rsx! {
+                        div {
+                          key: "doc-{doc.key}",
+                          class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 flex flex-col justify-between gap-2.5 hover:border-indigo-300 dark:hover:border-indigo-800 transition-colors",
+                          div { class: "space-y-2",
+                            div { class: "flex flex-wrap items-center justify-between gap-2",
+                              code { class: "text-xs sm:text-sm font-mono font-bold text-indigo-700 dark:text-indigo-300 break-all",
+                                "{doc.key}"
+                              }
+                              div { class: "flex flex-wrap items-center gap-1.5",
+                                span { class: "px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[10px] font-mono text-slate-700 dark:text-slate-300",
+                                  "{doc.value_type}"
+                                }
+                                span { class: format!("px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap {}", doc_cat.badge_classes()),
+                                  "{doc_cat.short_label(lang)}"
+                                }
+                                span { class: badge_class(BadgeVariant::Secondary, "text-[10px] font-mono"),
+                                  "{doc.file.short_name()}"
+                                }
+                              }
+                            }
+
+                            if !doc.aliases.is_empty() {
+                              div { class: "text-[11px] font-mono text-slate-400",
+                                {lang.pick("别名：", "Aliases: ")}
+                                "{doc.aliases.join(\", \")}"
+                              }
+                            }
+
+                            p { class: "text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
+                              "{doc.summary(lang)}"
+                            }
+
+                            if let Some(ref formula) = doc.formula_impact {
+                              div { class: "rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/70 dark:border-indigo-900/60 px-2.5 py-1.5 text-[11px] font-mono text-indigo-800 dark:text-indigo-300",
+                                "ƒ {formula}"
+                              }
+                            }
+                          }
+
+                          div { class: "flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]",
+                            span { class: "text-slate-500 dark:text-slate-400", "{doc.group.label(lang)}" }
+                            div { class: "flex flex-wrap items-center gap-2",
+                              if let Some(ref slug) = doc.example_model_slug {
+                                Link {
+                                  to: format!("/models/{slug}"),
+                                  class: "font-mono font-semibold text-indigo-600 dark:text-indigo-400 hover:underline",
+                                  "Model: {slug} →"
+                                }
+                              }
+                              if let Some((ref href, ref label)) = doc.lab_link {
+                                Link {
+                                  to: href.clone(),
+                                  class: "font-semibold text-emerald-600 dark:text-emerald-400 hover:underline",
+                                  "{label} ↗"
+                                }
+                              }
+                            }
+                          }
+                        }
                       }
                     }
                   }
@@ -4166,6 +4443,7 @@ pub(crate) fn render_config_guide_content(
                         r#type: "button",
                         class: "px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[11px] font-mono text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/60 cursor-pointer",
                         onclick: move |_| {
+                          filter_category.set(None);
                           filter_file.set(None);
                           filter_group.set(None);
                           search_q.set(rk_owned.clone());
@@ -4242,7 +4520,22 @@ mod tests {
         CONFIG_FILE_SPECS.iter().any(|s| s.kind == kind),
         "missing ConfigFileSpec for {kind:?}"
       );
+      assert!(
+        kind.category().files().contains(&kind),
+        "category {:?} missing file {:?}",
+        kind.category(),
+        kind
+      );
     }
+    let mut categorized_files = HashSet::new();
+    for cat in ConfigFileCategory::ALL {
+      assert!(!cat.files().is_empty(), "empty category {cat:?}");
+      for &kind in cat.files() {
+        assert_eq!(kind.category(), cat);
+        assert!(categorized_files.insert(kind), "duplicate file {kind:?} across categories");
+      }
+    }
+    assert_eq!(categorized_files.len(), ConfigFileKind::ALL.len());
 
     assert!(
       CONFIG_FIELD_DOCS.len() >= 80,

@@ -1871,6 +1871,7 @@ mod tests {
       let copied_json = use_signal(|| false);
       let active_modality = use_signal(|| "llm".to_string());
       let active_file_spec = use_signal(|| ConfigFileKind::ModelConfig);
+      let filter_category = use_signal(|| None);
       let filter_file: Signal<Option<ConfigFileKind>> = use_signal(|| None);
       let filter_group: Signal<Option<FieldGroup>> = use_signal(|| None);
       let search_q = use_signal(String::new);
@@ -1893,6 +1894,7 @@ mod tests {
             "test desc",
             active_modality,
             active_file_spec,
+            filter_category,
             filter_file,
             filter_group,
             search_q,
@@ -1917,6 +1919,10 @@ mod tests {
     assert!(html.contains("generation_config.json"));
     assert!(html.contains("tokenizer_config.json"));
     assert!(html.contains("大模型配置文件全景解剖指南"));
+    assert!(html.contains("模型架构与管线"));
+    assert!(html.contains("输入与推理控制"));
+    assert!(html.contains("权重存储与分片"));
+    assert!(html.contains("微调与适配器"));
     assert!(html.contains("adapter_config.json"));
   }
 }
