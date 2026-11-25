@@ -267,24 +267,32 @@ fn probe_source_stamp(path: &str) -> u128 {
       dir_stamp
     }
   } else if path == "/models" || path.starts_with("/models/") {
-    let models_root = module_ai::atlas::resolve_models_root();
-    let dir_stamp = mtime_nanos(&models_root)
-      ^ u128::from(module_ai::atlas_store::atlas_db_stamp()).wrapping_mul(2_654_435_761);
-    if let Some(slug) = path.strip_prefix("/models/").filter(|s| !s.is_empty() && !s.contains(".."))
+    #[cfg(feature = "ai")]
     {
-      let mdir = models_root.join(slug);
-      let leaf_stamp = max_mtime_in([
-        mdir.join("model.yaml"),
-        mdir.join("model.yml"),
-        mdir.join("config.json"),
-        mdir.join("model_index.json"),
-        mdir.join("preprocessor_config.json"),
-        mdir.join("pooling_config.json"),
-        mdir.join("README.md"),
-      ]);
-      dir_stamp.wrapping_mul(1_000_003) ^ leaf_stamp
-    } else {
-      dir_stamp
+      let models_root = module_ai::atlas::resolve_models_root();
+      let dir_stamp = mtime_nanos(&models_root)
+        ^ u128::from(module_ai::atlas_store::atlas_db_stamp()).wrapping_mul(2_654_435_761);
+      if let Some(slug) =
+        path.strip_prefix("/models/").filter(|s| !s.is_empty() && !s.contains(".."))
+      {
+        let mdir = models_root.join(slug);
+        let leaf_stamp = max_mtime_in([
+          mdir.join("model.yaml"),
+          mdir.join("model.yml"),
+          mdir.join("config.json"),
+          mdir.join("model_index.json"),
+          mdir.join("preprocessor_config.json"),
+          mdir.join("pooling_config.json"),
+          mdir.join("README.md"),
+        ]);
+        dir_stamp.wrapping_mul(1_000_003) ^ leaf_stamp
+      } else {
+        dir_stamp
+      }
+    }
+    #[cfg(not(feature = "ai"))]
+    {
+      0
     }
   } else if path == "/about" {
     let pages_dir = crate::server::active_about_pages_dir();

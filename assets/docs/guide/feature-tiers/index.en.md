@@ -14,10 +14,11 @@ DioxusPress organizes each domain into an isolated workspace crate and wires the
 
 | Tier | Build Flags (`crates/app`) | Included Capabilities | Required Env Vars |
 | :--- | :--- | :--- | :--- |
-| **`basic`** (Docs / Blog) | `--no-default-features` | Docs, Blog, Cases, Podcast, Topic Boards, Tantivy Search, About, Themes/Dark Mode/i18n, Sitemap/Atom Feed | Optional `BASE_URL` (**No Database**) |
+| **`basic`** (Docs / Blog) | `--no-default-features` | Docs, Blog, Cases, Podcast, Core Topic Boards, Tantivy Search, About, Themes/Dark Mode/i18n, Sitemap/Atom Feed (omits `module-ai` for a leaner WASM bundle) | Optional `BASE_URL` (**No Database**) |
+| **`ai`** (Orthogonal Feature) | `--no-default-features --features ai` | `basic` + AI Board, Model Architecture Atlas (`/models`), Config Anatomy Guide (`/models/configs`), Component/Math Labs & `<ModelArch />` MDX embeds; automatically enables DB persistence/admin when paired with `accounts` | Still **No Database** standalone |
 | **`accounts`** (Community) | `--no-default-features --features accounts` | `basic` + OAuth2 PKCE Sign-In, Forum Topics, Post Comments, Image Uploads, LLM Moderation, `/admin` Console | + `DATABASE_URL`, `JWT_SECRET` |
 | **`course`** (Courses & Pro) | `--no-default-features --features course` | `accounts` + Structured Courses, Free Previews / Server Paywall, Paragraph Annotations, Manual Entitlements | Same as `accounts` |
-| **`full`** (Default) | *(default — no extra flags)* | `course` + WeChat Pay / Alipay / Stripe Checkout, Signed Webhook Fulfillment, Orders & TipJar | Same + Payment Merchant Keys |
+| **`full`** (Default) | *(default — no extra flags)* | `course` + `papers` + `ai` + WeChat Pay / Alipay / Stripe Checkout, Signed Webhook Fulfillment, Orders & TipJar | Same + Payment Merchant Keys |
 
 ## Two-Layer Control: Compile-Time Pruning × Runtime Switches
 

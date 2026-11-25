@@ -30,6 +30,7 @@ async fn collect_content_entries(is_on: impl Fn(&str) -> bool) -> Vec<ContentEnt
   // 内容板块条目，按开关收录。
   for b in [
     module_embedded::BOARD,
+    #[cfg(feature = "ai")]
     module_ai::BOARD,
     module_web3::BOARD,
     module_wasm::BOARD,
@@ -75,6 +76,7 @@ async fn collect_detail_paths(is_on: impl Fn(&str) -> bool) -> Vec<(String, Opti
     let cases = module_cases::server::list_cases(None, None, None).await.unwrap_or_default();
     paths.extend(cases.into_iter().map(|c| (format!("/case/{}", c.slug), None)));
   }
+  #[cfg(feature = "ai")]
   if is_on("ai") {
     let models = module_ai::atlas_store::list_curated_models_merged().await;
     paths.extend(models.into_iter().map(|m| (format!("/models/{}", m.slug), None)));
@@ -154,6 +156,7 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
   if is_on("about") && crate::server::about_page_is_bilingual() {
     static_paths.push("/about?lang=en".to_string());
   }
+  #[cfg(feature = "ai")]
   if is_on("ai") {
     static_paths.push("/ai/visualizer".to_string());
     static_paths.push("/ai/components".to_string());
@@ -574,6 +577,11 @@ mod tests {
     assert_eq!(docs, index_files, "文档树漏掉了磁盘上的文档（深度上限 / _meta.json 过滤？）");
 
     let paths = collect_detail_paths(|_| true).await;
+    let ai_items = if cfg!(feature = "ai") {
+      count_dirs("models") + count_dirs("ai-components") + count_dirs("ai-math")
+    } else {
+      0
+    };
     let courses = if cfg!(feature = "course") { count_dirs("courses") } else { 0 };
     let open_lessons = paths
       .iter()
@@ -583,19 +591,13 @@ mod tests {
     assert!(paths.iter().filter(|(p, _)| p.starts_with("/docs/")).all(|(_, m)| m.is_some()));
     assert_eq!(
       paths.len(),
-      docs
-        + en_docs
-        + en_index_entry
-        + count_dirs("cases")
-        + count_dirs("models")
-        + count_dirs("ai-components")
-        + count_dirs("ai-math")
-        + courses
-        + open_lessons
+      docs + en_docs + en_index_entry + count_dirs("cases") + ai_items + courses + open_lessons
     );
-    assert!(paths.iter().any(|(x, _)| x == "/models/deepseek-v3"));
-    assert!(paths.iter().any(|(x, _)| x == "/ai/components/rope-and-yarn-extrapolation"));
-    assert!(paths.iter().any(|(x, _)| x == "/ai/math/svd-eckart-young-pseudoinverse"));
+    if cfg!(feature = "ai") {
+      assert!(paths.iter().any(|(x, _)| x == "/models/deepseek-v3"));
+      assert!(paths.iter().any(|(x, _)| x == "/ai/components/rope-and-yarn-extrapolation"));
+      assert!(paths.iter().any(|(x, _)| x == "/ai/math/svd-eckart-young-pseudoinverse"));
+    }
     // G6：示例付费课程只有第一课是试看。
     if cfg!(feature = "course") {
       let has = |p: &str| paths.iter().any(|(x, _)| x == p);
