@@ -37,9 +37,23 @@ pub enum ModelModality {
   Audio,
   Diffusion,
   Embedding,
+  Detection,
+  Segmentation,
+  Classic,
 }
 
 impl ModelModality {
+  pub const ALL: &'static [Self] = &[
+    Self::Llm,
+    Self::Vlm,
+    Self::Audio,
+    Self::Diffusion,
+    Self::Embedding,
+    Self::Detection,
+    Self::Segmentation,
+    Self::Classic,
+  ];
+
   pub fn as_str(self) -> &'static str {
     match self {
       Self::Llm => "llm",
@@ -47,6 +61,9 @@ impl ModelModality {
       Self::Audio => "audio",
       Self::Diffusion => "diffusion",
       Self::Embedding => "embedding",
+      Self::Detection => "detection",
+      Self::Segmentation => "segmentation",
+      Self::Classic => "classic",
     }
   }
 
@@ -57,6 +74,9 @@ impl ModelModality {
       "audio" | "asr" | "tts" | "speech" | "omni" => Some(Self::Audio),
       "diffusion" | "image" | "video" | "dit" | "mmdit" => Some(Self::Diffusion),
       "embedding" | "reranker" | "encoder" => Some(Self::Embedding),
+      "detection" | "det" | "yolo" | "object-detection" => Some(Self::Detection),
+      "segmentation" | "seg" | "unet" | "sam" | "medical" => Some(Self::Segmentation),
+      "classic" | "base" | "foundation" | "cnn" | "rnn" | "nlp" => Some(Self::Classic),
       _ => None,
     }
   }
@@ -68,6 +88,9 @@ impl ModelModality {
       Self::Audio => lang.pick("Audio 语音 (ASR/TTS)", "Audio (ASR/TTS)"),
       Self::Diffusion => lang.pick("Diffusion 图像/视频", "Diffusion"),
       Self::Embedding => lang.pick("Embedding 向量/重排", "Embedding"),
+      Self::Detection => lang.pick("目标检测 (YOLO/DETR)", "Detection"),
+      Self::Segmentation => lang.pick("图像分割 / 医学 (SAM/U-Net)", "Segmentation"),
+      Self::Classic => lang.pick("经典网络与基石", "Classic & Base"),
     }
   }
 
@@ -78,6 +101,9 @@ impl ModelModality {
       Self::Audio => "Audio",
       Self::Diffusion => "Diffusion",
       Self::Embedding => "Embedding",
+      Self::Detection => "Detection",
+      Self::Segmentation => "Segmentation",
+      Self::Classic => "Classic",
     }
   }
 
@@ -87,6 +113,7 @@ impl ModelModality {
       ArchFamily::AudioAsr | ArchFamily::SpeechTtsOmni => return Self::Audio,
       ArchFamily::EncoderEmbedding => return Self::Embedding,
       ArchFamily::DiffusionPipeline => return Self::Diffusion,
+      ArchFamily::DeclarativeGraph => return Self::Classic,
       _ => {}
     }
     if bp.diffusion.is_some() {
@@ -245,11 +272,14 @@ pub fn infer_vendor_from_repo(repo_id: &str) -> String {
   }
 }
 
-/// 标准化系列分类标识（兼容已有 4 大系列页签）。
+/// 标准化系列分类标识（保留显式声明的合法演进系列如 `yolo`/`unet`/`sam`/`classic`，缺省按仓库自动推断）。
 #[cfg(any(feature = "server", feature = "accounts", test))]
 pub fn normalize_series_id(raw: &str, repo_id: &str) -> String {
   let s = raw.trim().to_ascii_lowercase();
-  if matches!(s.as_str(), "deepseek" | "qwen" | "llama" | "other") {
+  if !s.is_empty()
+    && s.len() <= 32
+    && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+  {
     return s;
   }
   let r = repo_id.to_ascii_lowercase();
@@ -259,6 +289,12 @@ pub fn normalize_series_id(raw: &str, repo_id: &str) -> String {
     "qwen".to_string()
   } else if r.contains("llama") {
     "llama".to_string()
+  } else if r.contains("yolo") {
+    "yolo".to_string()
+  } else if r.contains("unet") {
+    "unet".to_string()
+  } else if r.contains("sam") {
+    "sam".to_string()
   } else {
     "other".to_string()
   }
@@ -329,6 +365,10 @@ pub fn build_curated_summary(
     has_mla,
     has_hybrid_attn,
     fp8_vram_bytes,
+    is_declarative: blueprint.is_declarative_graph(),
+    series_order: 0,
+    version_label: String::new(),
+    delta_from_prev: String::new(),
   }
 }
 

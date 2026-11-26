@@ -678,7 +678,11 @@ fn model_matches_component(model: &CuratedModelSummary, comp: &StoredComponentEn
       model.has_vision
         || matches!(
           model.modality,
-          crate::atlas_store::ModelModality::Audio | crate::atlas_store::ModelModality::Diffusion
+          crate::atlas_store::ModelModality::Audio
+            | crate::atlas_store::ModelModality::Diffusion
+            | crate::atlas_store::ModelModality::Detection
+            | crate::atlas_store::ModelModality::Segmentation
+            | crate::atlas_store::ModelModality::Classic
         )
     }
     ComponentFamily::NormConditioning => true,

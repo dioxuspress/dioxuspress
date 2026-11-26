@@ -9,6 +9,8 @@
 
 use dioxus::prelude::*;
 use dioxus_shadcn::card_class;
+#[cfg(any(feature = "server", test))]
+use serde::{Deserialize, Serialize};
 
 use crate::arch::{
   format_count, AttentionSpec, FfnSpec, InspectorFocus, LayerSegment, ModelBlueprint,
@@ -44,11 +46,14 @@ fn push_i32(out: &mut String, n: i32) {
 }
 
 /// 算子着色类别（与右上角图例一一对应）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(any(feature = "server", test), derive(Serialize, Deserialize))]
+#[cfg_attr(any(feature = "server", test), serde(rename_all = "snake_case"))]
 #[repr(u8)]
 pub enum OpKind {
   Input = 0,
   Embedding = 1,
+  #[default]
   ConvOrLinear = 2,
   AvgPool = 3,
   MaxPool = 4,
@@ -60,10 +65,42 @@ pub enum OpKind {
   Dropout = 10,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl OpKind {
+  fn from_u8(v: u8) -> Self {
+    match v {
+      0 => Self::Input,
+      1 => Self::Embedding,
+      3 => Self::AvgPool,
+      4 => Self::MaxPool,
+      5 => Self::Attention,
+      6 => Self::MoeRouter,
+      7 => Self::Merge,
+      8 => Self::Softmax,
+      9 => Self::FcHead,
+      10 => Self::Dropout,
+      _ => Self::ConvOrLinear,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(any(feature = "server", test), derive(Serialize, Deserialize))]
+#[cfg_attr(any(feature = "server", test), serde(rename_all = "snake_case"))]
+#[repr(u8)]
 pub enum LegendStyle {
-  LlmOrMultimodal,
-  ClassicCnn,
+  LlmOrMultimodal = 0,
+  #[default]
+  ClassicCnn = 1,
+}
+
+impl LegendStyle {
+  fn from_u8(v: u8) -> Self {
+    if v == 0 {
+      Self::LlmOrMultimodal
+    } else {
+      Self::ClassicCnn
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,10 +269,13 @@ impl OpKind {
 }
 
 /// 连线语义类别（用于区分主数据流、层内残差、跨块长跳连与旁路/控制流）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(any(feature = "server", test), derive(Serialize, Deserialize))]
+#[cfg_attr(any(feature = "server", test), serde(rename_all = "snake_case"))]
 #[repr(u8)]
 pub enum EdgeKind {
   /// 主张量数据流（深灰实线）
+  #[default]
   Main = 0,
   /// 单层子块内部残差跳连（画在 RepeatGroup 大框内部左轨，靛蓝虚线）
   InnerSkip = 1,
@@ -245,12 +285,23 @@ pub enum EdgeKind {
   AuxBypass = 3,
 }
 
+impl EdgeKind {
+  fn from_u8(v: u8) -> Self {
+    match v {
+      1 => Self::InnerSkip,
+      2 => Self::MacroSkip,
+      3 => Self::AuxBypass,
+      _ => Self::Main,
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TensorNode {
   pub kind: OpKind,
   pub shape: String,
   pub side_note: String,
-  pub op_title: &'static str,
+  pub op_title: String,
   pub formula: String,
   pub params_hint: String,
   pub col_q: i32,
@@ -261,14 +312,16 @@ pub struct TensorNode {
   pub toggle_seg: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TensorEdge {
   pub from: usize,
   pub to: usize,
-  pub label: &'static str,
+  pub label: String,
   pub kind: EdgeKind,
   /// 所属 `RepeatGroup` 索引（`u8::MAX` 表示顶层非分组边）。
   pub group_idx: u8,
+  /// 多泳道轨道编号（`0` 为默认紧贴轨道，`1..=7` 逐级向外错开 20px，支撑 U-Net / YOLO 多尺度跨层跳连）。
+  pub lane: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,7 +421,7 @@ impl GraphBuilder {
       kind,
       shape: shape.to_string(),
       side_note: side_note.to_string(),
-      op_title,
+      op_title: op_title.to_string(),
       formula: formula.to_string(),
       params_hint: params_hint.to_string(),
       col_q,
@@ -445,9 +498,10 @@ impl GraphBuilder {
     self.edges.push(TensorEdge {
       from,
       to,
-      label: "",
+      label: String::new(),
       kind: EdgeKind::Main,
       group_idx: self.cur_group,
+      lane: 0,
     });
   }
 
@@ -455,9 +509,10 @@ impl GraphBuilder {
     self.edges.push(TensorEdge {
       from,
       to,
-      label,
+      label: label.to_string(),
       kind: EdgeKind::InnerSkip,
       group_idx: self.cur_group,
+      lane: 0,
     });
   }
 
@@ -465,9 +520,10 @@ impl GraphBuilder {
     self.edges.push(TensorEdge {
       from,
       to,
-      label,
+      label: label.to_string(),
       kind: EdgeKind::AuxBypass,
       group_idx: self.cur_group,
+      lane: 0,
     });
   }
 
@@ -1690,6 +1746,7 @@ fn append_segment_subgraph(
 // 经典 CV 教学对照（静态只读数据表驱动）
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 struct StaticCvNode {
   kind: OpKind,
   h: u64,
@@ -1703,6 +1760,7 @@ struct StaticCvNode {
   row: usize,
 }
 
+#[cfg(test)]
 const INCEPTION_NODES: &[StaticCvNode] = &[
   StaticCvNode {
     kind: OpKind::Input,
@@ -1982,6 +2040,7 @@ const INCEPTION_NODES: &[StaticCvNode] = &[
   },
 ];
 
+#[cfg(test)]
 const INCEPTION_EDGES: &[(usize, usize, &str, bool)] = &[
   (0, 1, "", false),
   (1, 2, "", false),
@@ -2010,6 +2069,7 @@ const INCEPTION_EDGES: &[(usize, usize, &str, bool)] = &[
   (21, 22, "", false),
 ];
 
+#[cfg(test)]
 const RESNET_NODES: &[StaticCvNode] = &[
   StaticCvNode {
     kind: OpKind::Input,
@@ -2181,6 +2241,7 @@ const RESNET_NODES: &[StaticCvNode] = &[
   },
 ];
 
+#[cfg(test)]
 const RESNET_EDGES: &[(usize, usize, &str, bool)] = &[
   (0, 1, "", false),
   (1, 2, "", false),
@@ -2198,6 +2259,7 @@ const RESNET_EDGES: &[(usize, usize, &str, bool)] = &[
   (12, 13, "", false),
 ];
 
+#[cfg(test)]
 #[inline(never)]
 fn build_static_cv_graph(
   slug: &str,
@@ -2217,9 +2279,10 @@ fn build_static_cv_graph(
     g.edges.push(TensorEdge {
       from,
       to,
-      label,
+      label: label.to_string(),
       kind: if dashed { EdgeKind::MacroSkip } else { EdgeKind::Main },
       group_idx: u8::MAX,
+      lane: 0,
     });
   }
   g.group(
@@ -2239,6 +2302,7 @@ fn build_static_cv_graph(
   g.finish(slug.to_string(), title.to_string(), sub, LegendStyle::ClassicCnn)
 }
 
+#[cfg(test)]
 pub fn build_inception_v3_graph(preset: ShapePreset) -> TensorGraph {
   build_static_cv_graph(
     "inception-v3",
@@ -2251,6 +2315,7 @@ pub fn build_inception_v3_graph(preset: ShapePreset) -> TensorGraph {
   )
 }
 
+#[cfg(test)]
 pub fn build_resnet50_graph(preset: ShapePreset) -> TensorGraph {
   build_static_cv_graph(
     "resnet-50",
@@ -2261,6 +2326,714 @@ pub fn build_resnet50_graph(preset: ShapePreset) -> TensorGraph {
     (3, 6, -3, 3, "Bottleneck Residual Block · Conv2_x (×3)"),
     preset,
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 声明式外置图谱（`models/<slug>/graph.json` 驱动 YOLO / U-Net / SAM / 经典网络）
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(any(feature = "server", test))]
+fn default_scale_one() -> u32 {
+  1
+}
+
+#[cfg(any(feature = "server", test))]
+fn default_shape_mode() -> String {
+  "image_2d".to_string()
+}
+
+/// 声明式图谱分辨率 / 批次预设（仅服务端解析 `graph.json` 使用，零 WASM 体积开销）。
+#[cfg(any(feature = "server", test))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclarativeShapePreset {
+  pub label: String,
+  #[serde(default)]
+  pub batch: String,
+  #[serde(default = "default_scale_one")]
+  pub scale_num: u32,
+  #[serde(default = "default_scale_one")]
+  pub scale_den: u32,
+}
+
+/// 声明式图谱可折叠阶段组块（仅服务端解析 `graph.json` 使用）。
+#[cfg(any(feature = "server", test))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclarativeGroup {
+  pub badge: String,
+  #[serde(default)]
+  pub collapsed_shape: String,
+  #[serde(default)]
+  pub collapsed_note: String,
+  #[serde(default)]
+  pub collapsed_title: String,
+  #[serde(default)]
+  pub collapsed_formula: String,
+  #[serde(default)]
+  pub collapsed_hint: String,
+  pub row_start: usize,
+  pub row_end: usize,
+  #[serde(default)]
+  pub split_after_row: Option<usize>,
+  pub min_col_q: i32,
+  pub max_col_q: i32,
+  #[serde(default)]
+  pub default_collapsed: bool,
+}
+
+/// 声明式图谱节点定义（仅服务端解析 `graph.json` 使用）。
+#[cfg(any(feature = "server", test))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclarativeNode {
+  pub id: String,
+  #[serde(default)]
+  pub kind: OpKind,
+  #[serde(default)]
+  pub shape: String,
+  /// 可选结构化维度：
+  /// - `image_2d`: `[h, w, c]`（`h == 0 && w == 0` 表示展平向量 `[c]`）
+  /// - `volume_3d`: `[d, h, w, c]`
+  /// - `seq`: `[s, d]`
+  /// - `vector`: `[d]` 或 `[a, b]`
+  #[serde(default)]
+  pub dims: Vec<u64>,
+  #[serde(default)]
+  pub side_note: String,
+  pub op_title: String,
+  #[serde(default)]
+  pub formula: String,
+  #[serde(default)]
+  pub params_hint: String,
+  #[serde(default)]
+  pub col_q: i32,
+  pub row: usize,
+}
+
+/// 声明式图谱语义连线定义（仅服务端解析 `graph.json` 使用）。
+#[cfg(any(feature = "server", test))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclarativeEdge {
+  pub from: String,
+  pub to: String,
+  #[serde(default)]
+  pub label: String,
+  #[serde(default)]
+  pub kind: EdgeKind,
+  /// 多泳道轨道号（`0..=7`，用于在 U-Net / YOLO 中平行错开多条跨尺度长跳连）。
+  #[serde(default)]
+  pub lane: u8,
+  #[serde(default)]
+  pub group_idx: Option<usize>,
+}
+
+/// 外置 `models/<slug>/graph.json` 完整声明式图谱规格（服务端校验并编码为紧凑线协议下发）。
+#[cfg(any(feature = "server", test))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclarativeGraphSpec {
+  pub title: String,
+  #[serde(default)]
+  pub subtitle: String,
+  #[serde(default)]
+  pub legend_style: LegendStyle,
+  /// 形状域：`"image_2d"` | `"volume_3d"` | `"vector"` | `"seq"`
+  #[serde(default = "default_shape_mode")]
+  pub shape_mode: String,
+  #[serde(default)]
+  pub presets: Vec<DeclarativeShapePreset>,
+  #[serde(default)]
+  pub groups: Vec<DeclarativeGroup>,
+  pub nodes: Vec<DeclarativeNode>,
+  pub edges: Vec<DeclarativeEdge>,
+}
+
+#[cfg(any(feature = "server", test))]
+fn push_wire_field(out: &mut String, s: &str) {
+  out.push('\t');
+  for ch in s.chars() {
+    if matches!(ch, '\t' | '\n' | '\r') {
+      out.push(' ');
+    } else {
+      out.push(ch);
+    }
+  }
+}
+
+#[inline(never)]
+fn parse_i64_ascii(s: &str, fallback: i64) -> i64 {
+  let bytes = s.as_bytes();
+  if bytes.is_empty() {
+    return fallback;
+  }
+  let (neg, start) = if bytes[0] == b'-' { (true, 1) } else { (false, 0) };
+  if start >= bytes.len() {
+    return fallback;
+  }
+  let mut acc = 0i64;
+  for &b in &bytes[start..] {
+    if !b.is_ascii_digit() {
+      return fallback;
+    }
+    acc = acc.saturating_mul(10).saturating_add((b - b'0') as i64);
+  }
+  if neg {
+    -acc
+  } else {
+    acc
+  }
+}
+
+#[cfg(any(feature = "server", test))]
+const DEFAULT_PRESETS_IMG: &[(&str, &str, u32, u32)] =
+  &[("标准 (B×1×)", "B", 1, 1), ("单图推理 (1×)", "1", 1, 1), ("高分 (1×2×)", "1", 2, 1)];
+#[cfg(any(feature = "server", test))]
+const DEFAULT_PRESETS_VOL: &[(&str, &str, u32, u32)] =
+  &[("符号 (B×1×)", "B", 1, 1), ("单体积 (1×1×)", "1", 1, 1), ("低分 (1×0.5×)", "1", 1, 2)];
+#[cfg(any(feature = "server", test))]
+const DEFAULT_PRESETS_VEC: &[(&str, &str, u32, u32)] =
+  &[("符号 (B×D)", "B", 1, 1), ("单样本 (1×D)", "1", 1, 1), ("小批 (32×D)", "32", 1, 1)];
+#[cfg(any(feature = "server", test))]
+const DEFAULT_PRESETS_SEQ: &[(&str, &str, u32, u32)] =
+  &[("符号 (B×S)", "B", 1, 1), ("单句 (1×1×)", "1", 1, 1), ("长文 (1×2×)", "1", 2, 1)];
+
+#[cfg(any(feature = "server", test))]
+impl DeclarativeGraphSpec {
+  /// 校验声明式图谱的结构合法性（零 `unwrap`，供服务端加载与离线校验复用）。
+  pub fn validate(&self) -> Result<(), String> {
+    if self.title.trim().is_empty() {
+      return Err("graph.json 缺少 title".to_string());
+    }
+    if self.nodes.is_empty() {
+      return Err("graph.json 至少需要 1 个节点".to_string());
+    }
+    for (i, n) in self.nodes.iter().enumerate() {
+      if n.id.trim().is_empty() {
+        return Err(format!("nodes[{i}] 缺少 id"));
+      }
+      if self.nodes[..i].iter().any(|prev| prev.id == n.id) {
+        return Err(format!("nodes[{i}] 存在重复 id: {}", n.id));
+      }
+    }
+    for (i, g) in self.groups.iter().enumerate() {
+      if g.row_start > g.row_end {
+        return Err(format!("groups[{i}] row_start({}) > row_end({})", g.row_start, g.row_end));
+      }
+      if g.min_col_q > g.max_col_q {
+        return Err(format!("groups[{i}] min_col_q({}) > max_col_q({})", g.min_col_q, g.max_col_q));
+      }
+    }
+    for (i, e) in self.edges.iter().enumerate() {
+      if !self.nodes.iter().any(|n| n.id == e.from) {
+        return Err(format!("edges[{i}] 引用了不存在的起点 id: {}", e.from));
+      }
+      if !self.nodes.iter().any(|n| n.id == e.to) {
+        return Err(format!("edges[{i}] 引用了不存在的终点 id: {}", e.to));
+      }
+      if e.lane > 7 {
+        return Err(format!("edges[{i}] lane({}) 超出允许范围 0..=7", e.lane));
+      }
+      if let Some(gi) = e.group_idx {
+        if gi >= self.groups.len() {
+          return Err(format!("edges[{i}] group_idx({gi}) 超出 groups 长度"));
+        }
+      }
+    }
+    Ok(())
+  }
+
+  /// 返回生效的分辨率/批次预设列表（未声明时按 `shape_mode` 提供合理默认值）。
+  pub fn effective_presets(&self) -> Vec<DeclarativeShapePreset> {
+    if !self.presets.is_empty() {
+      return self.presets.clone();
+    }
+    let table = match self.shape_mode.as_str() {
+      "volume_3d" => DEFAULT_PRESETS_VOL,
+      "vector" => DEFAULT_PRESETS_VEC,
+      "seq" => DEFAULT_PRESETS_SEQ,
+      _ => DEFAULT_PRESETS_IMG,
+    };
+    table
+      .iter()
+      .map(|&(label, batch, scale_num, scale_den)| DeclarativeShapePreset {
+        label: label.to_string(),
+        batch: batch.to_string(),
+        scale_num,
+        scale_den,
+      })
+      .collect()
+  }
+
+  /// 计算默认折叠掩码（支持最多 30 个组）。
+  pub fn default_collapsed_mask(&self) -> usize {
+    let mut mask = 0usize;
+    for (gi, g) in self.groups.iter().take(30).enumerate() {
+      if g.default_collapsed {
+        mask |= 1usize << gi;
+      }
+    }
+    mask
+  }
+
+  /// 服务端将声明式图谱编码为预解析索引的 TAB 分隔行协议（客户端零 `serde` / 零中间结构体直出 `TensorGraph`）。
+  pub fn encode_wire(&self) -> String {
+    let mut out = String::with_capacity(2048);
+    out.push('H');
+    push_wire_field(&mut out, &self.title);
+    push_wire_field(&mut out, &self.subtitle);
+    out.push('\t');
+    push_u64(&mut out, self.legend_style as u64);
+    push_wire_field(&mut out, &self.shape_mode);
+    out.push('\t');
+    push_u64(&mut out, self.default_collapsed_mask() as u64);
+    out.push('\n');
+
+    for p in self.effective_presets() {
+      out.push('P');
+      push_wire_field(&mut out, &p.label);
+      push_wire_field(&mut out, &p.batch);
+      out.push('\t');
+      push_u64(&mut out, p.scale_num as u64);
+      out.push('\t');
+      push_u64(&mut out, p.scale_den as u64);
+      out.push('\n');
+    }
+
+    for g in &self.groups {
+      out.push('G');
+      push_wire_field(&mut out, &g.badge);
+      push_wire_field(&mut out, &g.collapsed_shape);
+      push_wire_field(&mut out, &g.collapsed_note);
+      push_wire_field(&mut out, &g.collapsed_title);
+      push_wire_field(&mut out, &g.collapsed_formula);
+      push_wire_field(&mut out, &g.collapsed_hint);
+      out.push('\t');
+      push_u64(&mut out, g.row_start as u64);
+      out.push('\t');
+      push_u64(&mut out, g.row_end as u64);
+      out.push('\t');
+      if let Some(sr) = g.split_after_row {
+        push_u64(&mut out, sr as u64);
+      }
+      out.push('\t');
+      push_i32(&mut out, g.min_col_q);
+      out.push('\t');
+      push_i32(&mut out, g.max_col_q);
+      out.push('\n');
+    }
+
+    for n in &self.nodes {
+      out.push('N');
+      out.push('\t');
+      push_u64(&mut out, n.kind as u64);
+      push_wire_field(&mut out, &n.shape);
+      out.push('\t');
+      for (i, &d) in n.dims.iter().enumerate() {
+        if i > 0 {
+          out.push(',');
+        }
+        push_u64(&mut out, d);
+      }
+      push_wire_field(&mut out, &n.side_note);
+      push_wire_field(&mut out, &n.op_title);
+      push_wire_field(&mut out, &n.formula);
+      push_wire_field(&mut out, &n.params_hint);
+      out.push('\t');
+      push_i32(&mut out, n.col_q);
+      out.push('\t');
+      push_u64(&mut out, n.row as u64);
+      out.push('\n');
+    }
+
+    for e in &self.edges {
+      let (Some(of), Some(ot)) = (
+        self.nodes.iter().position(|n| n.id == e.from),
+        self.nodes.iter().position(|n| n.id == e.to),
+      ) else {
+        continue;
+      };
+      out.push('E');
+      out.push('\t');
+      push_u64(&mut out, of as u64);
+      out.push('\t');
+      push_u64(&mut out, ot as u64);
+      push_wire_field(&mut out, &e.label);
+      out.push('\t');
+      push_u64(&mut out, e.kind as u64);
+      out.push('\t');
+      push_u64(&mut out, e.lane.min(7) as u64);
+      out.push('\t');
+      if let Some(gi) = e.group_idx {
+        push_u64(&mut out, gi as u64);
+      }
+      out.push('\n');
+    }
+    out
+  }
+}
+
+#[inline(never)]
+fn scale_u64_ratio(val: u64, num: u32, den: u32) -> u64 {
+  if val == 0 {
+    return 0;
+  }
+  ((val.saturating_mul(num.max(1) as u64)) / (den.max(1) as u64)).max(1)
+}
+
+#[inline(never)]
+fn push_batch_prefix(out: &mut String, batch: &str) {
+  if !batch.is_empty() {
+    out.push_str(batch);
+    out.push('×');
+  }
+}
+
+#[inline(never)]
+fn format_wire_shape(
+  shape: &str,
+  dims_csv: &str,
+  shape_mode: &str,
+  batch: &str,
+  snum: u32,
+  sden: u32,
+) -> String {
+  if dims_csv.is_empty() {
+    if shape.contains("{B}") {
+      return shape.replace("{B}", if batch.is_empty() { "B" } else { batch });
+    }
+    return shape.to_string();
+  }
+  let mut dims = [0u64; 6];
+  let mut dlen = 0usize;
+  for part in dims_csv.split(',') {
+    if dlen < dims.len() {
+      let v = parse_i64_ascii(part, -1);
+      if v >= 0 {
+        dims[dlen] = v as u64;
+        dlen += 1;
+      }
+    }
+  }
+  let mut out = String::with_capacity(24);
+  push_batch_prefix(&mut out, batch);
+  if shape_mode == "image_2d" && dlen == 3 {
+    if dims[0] == 0 && dims[1] == 0 {
+      push_u64(&mut out, dims[2]);
+    } else {
+      push_u64(&mut out, scale_u64_ratio(dims[0], snum, sden));
+      out.push('×');
+      push_u64(&mut out, scale_u64_ratio(dims[1], snum, sden));
+      out.push('×');
+      push_u64(&mut out, dims[2]);
+    }
+  } else if shape_mode == "volume_3d" && dlen == 4 {
+    for (i, &d) in dims[..4].iter().enumerate() {
+      if i > 0 {
+        out.push('×');
+      }
+      push_u64(&mut out, if i < 3 { scale_u64_ratio(d, snum, sden) } else { d });
+    }
+  } else if shape_mode == "seq" && dlen == 2 {
+    push_u64(&mut out, scale_u64_ratio(dims[0], snum, sden));
+    out.push('×');
+    push_u64(&mut out, dims[1]);
+  } else {
+    for (i, &d) in dims[..dlen].iter().enumerate() {
+      if i > 0 {
+        out.push('×');
+      }
+      push_u64(&mut out, d);
+    }
+  }
+  out
+}
+
+#[inline(never)]
+fn next_s<'a>(it: &mut std::str::Split<'a, char>) -> &'a str {
+  it.next().unwrap_or("")
+}
+
+#[inline(never)]
+fn next_i(it: &mut std::str::Split<'_, char>, fallback: i64) -> i64 {
+  parse_i64_ascii(it.next().unwrap_or(""), fallback)
+}
+
+/// 全端零中间结构体：直接从服务端编码的紧凑线协议构建 [`TensorGraph`]、预设标签列表与默认折叠掩码。
+#[inline(never)]
+pub fn build_declarative_graph_from_wire(
+  wire: &str,
+  slug: &str,
+  preset_idx: usize,
+  toggle_mask: usize,
+) -> Option<(TensorGraph, Vec<String>, usize)> {
+  let mut hdr_line: Option<&str> = None;
+  let mut p_lines: Vec<&str> = Vec::new();
+  let mut g_lines: Vec<&str> = Vec::new();
+  let mut n_lines: Vec<&str> = Vec::new();
+  let mut e_lines: Vec<&str> = Vec::new();
+
+  for line in wire.lines() {
+    match line.as_bytes().first().copied() {
+      Some(b'H') => hdr_line = Some(line),
+      Some(b'P') => p_lines.push(line),
+      Some(b'G') => g_lines.push(line),
+      Some(b'N') => n_lines.push(line),
+      Some(b'E') => e_lines.push(line),
+      _ => {}
+    }
+  }
+  let hdr = hdr_line?;
+  if n_lines.is_empty() {
+    return None;
+  }
+
+  let mut hit = hdr.split('\t');
+  let _ = hit.next();
+  let title = next_s(&mut hit);
+  let sub_base = next_s(&mut hit);
+  let legend_style = LegendStyle::from_u8(next_i(&mut hit, 1) as u8);
+  let shape_mode = next_s(&mut hit);
+  let default_mask = next_i(&mut hit, 0).max(0) as usize;
+  let eff_mask = toggle_mask ^ default_mask;
+
+  let mut preset_labels: Vec<String> = Vec::with_capacity(p_lines.len());
+  let (mut p_label, mut p_batch, mut p_num, mut p_den) = ("", "B", 1u32, 1u32);
+  for (pi, &pl) in p_lines.iter().enumerate() {
+    let mut pit = pl.split('\t');
+    let _ = pit.next();
+    let lbl = next_s(&mut pit);
+    let bat = next_s(&mut pit);
+    let sn = next_i(&mut pit, 1).max(1) as u32;
+    let sd = next_i(&mut pit, 1).max(1) as u32;
+    preset_labels.push(lbl.to_string());
+    if pi == preset_idx || (pi == 0 && preset_idx >= p_lines.len()) {
+      p_label = lbl;
+      p_batch = bat;
+      p_num = sn;
+      p_den = sd;
+    }
+  }
+
+  let is_col = |gi: usize| gi < 30 && (eff_mask & (1usize << gi)) != 0;
+
+  let g_cnt = g_lines.len();
+  let mut g_bounds: Vec<usize> = Vec::with_capacity(g_cnt * 2);
+  for &gl in &g_lines {
+    let mut git = gl.split('\t');
+    for _ in 0..7 {
+      let _ = git.next();
+    }
+    let rs = next_i(&mut git, 0).max(0) as usize;
+    let re = next_i(&mut git, rs as i64).max(0) as usize;
+    g_bounds.push(rs);
+    g_bounds.push(re);
+  }
+
+  let mut node_owner: Vec<usize> = Vec::with_capacity(n_lines.len());
+  let mut used_rows: Vec<usize> = Vec::with_capacity(n_lines.len());
+  for &nl in &n_lines {
+    let row = parse_i64_ascii(nl.split('\t').nth(9).unwrap_or("0"), 0).max(0) as usize;
+    let mut owner = usize::MAX;
+    for gi in 0..g_cnt {
+      if row >= g_bounds[gi * 2] && row <= g_bounds[gi * 2 + 1] {
+        owner = gi;
+        break;
+      }
+    }
+    node_owner.push(owner);
+    let eff_row = if owner < g_cnt && is_col(owner) { g_bounds[owner * 2] } else { row };
+    if !used_rows.contains(&eff_row) {
+      let pos = used_rows.iter().position(|&r| r > eff_row).unwrap_or(used_rows.len());
+      used_rows.insert(pos, eff_row);
+    }
+  }
+  let map_row = |raw: usize| -> usize {
+    used_rows.iter().position(|&r| r == raw).unwrap_or(used_rows.len().saturating_sub(1))
+  };
+
+  let mut nodes: Vec<TensorNode> = Vec::with_capacity(n_lines.len());
+  let mut old_to_new: Vec<usize> = vec![usize::MAX; n_lines.len()];
+  let mut col_node: Vec<usize> = vec![usize::MAX; g_cnt];
+  let mut groups: Vec<RepeatGroup> = Vec::with_capacity(g_cnt);
+
+  for (gi, &gl) in g_lines.iter().enumerate() {
+    let mut git = gl.split('\t');
+    let _ = git.next();
+    let badge = next_s(&mut git);
+    let c_shape_raw = next_s(&mut git);
+    let c_note = next_s(&mut git);
+    let c_title = next_s(&mut git);
+    let c_formula = next_s(&mut git);
+    let c_hint = next_s(&mut git);
+    let _ = git.next();
+    let _ = git.next();
+    let sr_raw = next_s(&mut git);
+    let min_q = next_i(&mut git, 0) as i32;
+    let max_q = next_i(&mut git, 0) as i32;
+
+    let collapsed = is_col(gi);
+    let r_start = map_row(g_bounds[gi * 2]);
+    let r_end = if collapsed { r_start } else { map_row(g_bounds[gi * 2 + 1]) };
+    let split = if collapsed || sr_raw.is_empty() {
+      None
+    } else {
+      let v = parse_i64_ascii(sr_raw, -1);
+      if v >= 0 {
+        Some(map_row(v as usize))
+      } else {
+        None
+      }
+    };
+    groups.push(RepeatGroup {
+      seg_idx: Some(gi),
+      collapsed,
+      row_start: r_start,
+      row_end: r_end,
+      split_after_row: split,
+      min_col_q: min_q,
+      max_col_q: max_q,
+      badge: badge.to_string(),
+    });
+
+    if collapsed {
+      let new_idx = nodes.len();
+      let c_shape = if c_shape_raw.is_empty() {
+        "已收起阶段".to_string()
+      } else if c_shape_raw.contains("{B}") {
+        c_shape_raw.replace("{B}", if p_batch.is_empty() { "B" } else { p_batch })
+      } else {
+        c_shape_raw.to_string()
+      };
+      nodes.push(TensorNode {
+        kind: OpKind::Attention,
+        shape: c_shape,
+        side_note: if c_note.is_empty() { "点击展开" } else { c_note }.to_string(),
+        op_title: if c_title.is_empty() { badge } else { c_title }.to_string(),
+        formula: if c_formula.is_empty() {
+          "点击该汇总卡或右上角「展开 ▾」按钮，展开该阶段内部全部张量算子。"
+        } else {
+          c_formula
+        }
+        .to_string(),
+        params_hint: c_hint.to_string(),
+        col_q: (min_q + max_q) / 2,
+        row: r_start,
+        focus_target: None,
+        layer_target: None,
+        toggle_seg: Some(gi),
+      });
+      col_node[gi] = new_idx;
+    }
+  }
+
+  for (i, &nl) in n_lines.iter().enumerate() {
+    let owner = node_owner[i];
+    if owner < g_cnt && col_node[owner] != usize::MAX {
+      old_to_new[i] = col_node[owner];
+      continue;
+    }
+    let mut nit = nl.split('\t');
+    let _ = nit.next();
+    let kind = OpKind::from_u8(next_i(&mut nit, 2) as u8);
+    let shape_raw = next_s(&mut nit);
+    let dims_csv = next_s(&mut nit);
+    let side_note = next_s(&mut nit);
+    let op_title = next_s(&mut nit);
+    let formula = next_s(&mut nit);
+    let params_hint = next_s(&mut nit);
+    let col_q = next_i(&mut nit, 0) as i32;
+    let row = next_i(&mut nit, 0).max(0) as usize;
+
+    old_to_new[i] = nodes.len();
+    nodes.push(TensorNode {
+      kind,
+      shape: format_wire_shape(shape_raw, dims_csv, shape_mode, p_batch, p_num, p_den),
+      side_note: side_note.to_string(),
+      op_title: op_title.to_string(),
+      formula: formula.to_string(),
+      params_hint: params_hint.to_string(),
+      col_q,
+      row: map_row(row),
+      focus_target: None,
+      layer_target: None,
+      toggle_seg: None,
+    });
+  }
+
+  let mut edges: Vec<TensorEdge> = Vec::with_capacity(e_lines.len());
+  for &el in &e_lines {
+    let mut eit = el.split('\t');
+    let _ = eit.next();
+    let of = next_i(&mut eit, -1);
+    let ot = next_i(&mut eit, -1);
+    let lbl = next_s(&mut eit);
+    let kind = EdgeKind::from_u8(next_i(&mut eit, 0) as u8);
+    let lane = next_i(&mut eit, 0).clamp(0, 7) as u8;
+    let grp_raw = next_s(&mut eit);
+    if of < 0 || ot < 0 {
+      continue;
+    }
+    let (of, ot) = (of as usize, ot as usize);
+    if of >= old_to_new.len() || ot >= old_to_new.len() {
+      continue;
+    }
+    let (nf, nt) = (old_to_new[of], old_to_new[ot]);
+    if nf == usize::MAX || nt == usize::MAX || nf == nt {
+      continue;
+    }
+    if edges
+      .iter()
+      .any(|prev| prev.from == nf && prev.to == nt && prev.kind == kind && prev.lane == lane)
+    {
+      continue;
+    }
+    let resolved_grp = if !grp_raw.is_empty() {
+      let gi = parse_i64_ascii(grp_raw, -1);
+      if gi >= 0 && (gi as usize) < g_cnt && !groups[gi as usize].collapsed {
+        gi as u8
+      } else {
+        u8::MAX
+      }
+    } else if node_owner[of] == node_owner[ot]
+      && node_owner[of] < g_cnt
+      && !is_col(node_owner[of])
+      && kind == EdgeKind::InnerSkip
+    {
+      node_owner[of] as u8
+    } else {
+      u8::MAX
+    };
+    edges.push(TensorEdge {
+      from: nf,
+      to: nt,
+      label: lbl.to_string(),
+      kind,
+      group_idx: resolved_grp,
+      lane,
+    });
+  }
+
+  let total_rows = nodes.iter().map(|n| n.row + 1).max().unwrap_or(1);
+  let mut subtitle = String::with_capacity(sub_base.len() + p_label.len() + 6);
+  subtitle.push_str(sub_base);
+  if !p_label.is_empty() {
+    if !subtitle.is_empty() {
+      subtitle.push_str(" · ");
+    }
+    subtitle.push_str(p_label);
+  }
+
+  Some((
+    TensorGraph {
+      file_slug: slug.to_string(),
+      title: title.to_string(),
+      subtitle,
+      legend_style,
+      nodes,
+      edges,
+      groups,
+      total_rows,
+    },
+    preset_labels,
+    default_mask,
+  ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2297,6 +3070,8 @@ struct LayoutMetrics {
   canvas_h: i32,
   graph_origin_x: i32,
   macro_rail_x: i32,
+  max_macro_lane: u8,
+  max_aux_lane: u8,
   legend_x: i32,
   legend_y: i32,
   coords: Vec<(i32, i32)>,
@@ -2320,13 +3095,26 @@ fn compute_layout(graph: &TensorGraph, legend_len: usize, edge_mask: u8) -> Layo
   let eff_min_q = min_q.min(grp_min_q);
   let eff_max_q = max_q.max(grp_max_q);
 
-  let graph_origin_x = LEFT_OUTER_PAD + GRP_LEFT_PAD - eff_min_q * COL_Q_STEP + NODE_W / 2;
+  let mut max_macro_lane = 0u8;
+  let mut max_aux_lane = 0u8;
+  for e in &graph.edges {
+    match e.kind {
+      EdgeKind::MacroSkip => max_macro_lane = max_macro_lane.max(e.lane.min(7)),
+      EdgeKind::AuxBypass => max_aux_lane = max_aux_lane.max(e.lane.min(7)),
+      _ => {}
+    }
+  }
+  let macro_extra_left = (max_macro_lane as i32) * 20;
+  let aux_extra_right = (max_aux_lane as i32) * 20;
+
+  let graph_origin_x =
+    LEFT_OUTER_PAD + macro_extra_left + GRP_LEFT_PAD - eff_min_q * COL_Q_STEP + NODE_W / 2;
   let grp_x = graph_origin_x + grp_min_q * COL_Q_STEP - NODE_W / 2 - GRP_LEFT_PAD;
   let grp_right = graph_origin_x + grp_max_q * COL_Q_STEP + NODE_W / 2 + GRP_RIGHT_PAD;
   let grp_w = (grp_right - grp_x).max(NODE_W + 140);
-  let macro_rail_x = (grp_x - 22).max(16);
+  let macro_rail_x = (grp_x - 22).max(16 + macro_extra_left);
   let right_edge = grp_right.max(graph_origin_x + eff_max_q * COL_Q_STEP + NODE_W / 2 + 86);
-  let legend_x = right_edge + LEGEND_GAP;
+  let legend_x = right_edge + aux_extra_right + LEGEND_GAP;
   let canvas_w = legend_x + LEGEND_W + RIGHT_PAD;
 
   // 逐行累积 Y 坐标：为每个大框顶部/底部与 Attention-FFN 分隔区预留呼吸间距，杜绝连线压标题。
@@ -2386,6 +3174,8 @@ fn compute_layout(graph: &TensorGraph, legend_len: usize, edge_mask: u8) -> Layo
     canvas_h,
     graph_origin_x,
     macro_rail_x,
+    max_macro_lane,
+    max_aux_lane,
     legend_x,
     legend_y: TOP_PAD,
     coords,
@@ -2717,7 +3507,7 @@ fn push_rail_skip(
   out.push_str("/>");
   if !label.is_empty() {
     let tx = rail_x + 5;
-    push_text(out, tx, (sy + ey) / 2 + 3, "9", "", text_attr, label, false);
+    push_text(out, tx, (sy + ey) / 2 + 3, "9", "", text_attr, label, true);
   }
 }
 
@@ -2877,62 +3667,67 @@ fn write_static_svg_layers(
   out.push_str("</g>");
 
   // 1. 绘制大框容器与 Attention/FFN 轻量内部子块分隔线
-  for (gi, grp) in graph.groups.iter().enumerate() {
-    if let Some(&gr) = layout.group_rects.get(gi) {
-      push_rect(
+  for &gr in &layout.group_rects {
+    push_rect(
+      out,
+      gr.x,
+      gr.y,
+      gr.w,
+      gr.h,
+      10,
+      th.grp_rect,
+      "stroke-width=\"1.2\" stroke-dasharray=\"5 4\"",
+    );
+
+    if gr.split_y > 0 {
+      let sy = gr.split_y;
+      push_line(
         out,
-        gr.x,
-        gr.y,
-        gr.w,
-        gr.h,
-        10,
-        th.grp_rect,
-        "stroke-width=\"1.2\" stroke-dasharray=\"5 4\"",
+        gr.inner_rail_x + 42,
+        sy,
+        gr.x + gr.w - 10,
+        sy,
+        th.grp_split_line,
+        "stroke-width=\"1\" stroke-dasharray=\"3 3\"",
       );
-
-      if gr.split_y > 0 {
-        let sy = gr.split_y;
-        push_line(
-          out,
-          gr.inner_rail_x + 42,
-          sy,
-          gr.x + gr.w - 10,
-          sy,
-          th.grp_split_line,
-          "stroke-width=\"1\" stroke-dasharray=\"3 3\"",
-        );
-        let rx = gr.x + gr.w - 12;
-        push_text(
-          out,
-          rx,
-          sy - 5,
-          "9",
-          "text-anchor=\"end\"",
-          th.grp_split_txt,
-          "① Attention / Mixer",
-          false,
-        );
-        push_text(
-          out,
-          rx,
-          sy + 12,
-          "9",
-          "text-anchor=\"end\"",
-          th.grp_split_txt,
-          "② FFN / MoE",
-          false,
-        );
-      }
-
-      if draw_group_headers || grp.seg_idx.is_none() {
-        write_group_header_svg(out, grp, gr, layout.graph_origin_x, false, th);
-      }
+      let rx = gr.x + gr.w - 12;
+      push_text(
+        out,
+        rx,
+        sy - 5,
+        "9",
+        "text-anchor=\"end\"",
+        th.grp_split_txt,
+        "① Attention / Mixer",
+        false,
+      );
+      push_text(
+        out,
+        rx,
+        sy + 12,
+        "9",
+        "text-anchor=\"end\"",
+        th.grp_split_txt,
+        "② FFN / MoE",
+        false,
+      );
     }
   }
 
-  // 2. 绘制全部语义连线（含展开大框内部入口锚点 h_in、框内左轨残差、跨块绿轨、旁路橙线）
+  // 2. 绘制全部语义连线（含展开大框内部入口锚点 h_in、框内左轨残差、多泳道跨块绿轨、旁路橙线）
+  let mut groups_with_entry_skip = 0u64;
+  for edge in &graph.edges {
+    if edge.kind == EdgeKind::InnerSkip && edge.group_idx != u8::MAX {
+      let gi = edge.group_idx as usize;
+      if let (Some(grp), Some(fn_n)) = (graph.groups.get(gi), graph.nodes.get(edge.from)) {
+        if !grp.collapsed && fn_n.row < grp.row_start {
+          groups_with_entry_skip |= 1u64 << (gi & 63);
+        }
+      }
+    }
+  }
   let mut entry_drawn_mask = 0u64;
-  for &edge in &graph.edges {
+  for edge in &graph.edges {
     if let (Some(&(x1, y1_c)), Some(&(x2, y2_c)), Some(fn_n), Some(tn_n)) = (
       layout.coords.get(edge.from),
       layout.coords.get(edge.to),
@@ -2970,7 +3765,7 @@ fn write_static_svg_layers(
                 ex,
                 y2_c - 4,
                 false,
-                edge.label,
+                &edge.label,
                 s_attr,
                 f_attr,
                 t_attr,
@@ -2986,7 +3781,7 @@ fn write_static_svg_layers(
                 ex,
                 y2_c,
                 true,
-                edge.label,
+                &edge.label,
                 s_attr,
                 f_attr,
                 t_attr,
@@ -3001,7 +3796,7 @@ fn write_static_svg_layers(
               x2 - NODE_W / 2,
               y2_c,
               true,
-              edge.label,
+              &edge.label,
               s_attr,
               f_attr,
               t_attr,
@@ -3010,19 +3805,49 @@ fn write_static_svg_layers(
         }
         EdgeKind::MacroSkip => {
           if tn_n.row > fn_n.row + 1 {
-            push_rail_skip(
-              out,
-              x1 - NODE_W / 2,
-              y1_c,
-              layout.macro_rail_x,
-              x2 - NODE_W / 2,
-              y2_c,
-              true,
-              edge.label,
-              s_attr,
-              f_attr,
-              t_attr,
-            );
+            let rail_x = layout.macro_rail_x - (edge.lane.min(7) as i32) * 20;
+            if layout.max_macro_lane == 0 {
+              push_rail_skip(
+                out,
+                x1 - NODE_W / 2,
+                y1_c,
+                rail_x,
+                x2 - NODE_W / 2,
+                y2_c,
+                true,
+                &edge.label,
+                s_attr,
+                f_attr,
+                t_attr,
+              );
+            } else {
+              // 多泳道并行长跳连（如 U-Net 4 级嵌套 / YOLO P3-P5）：轨道按 lane×20px 平行错开，标签置于起点水平出线上方防撞。
+              push_rail_skip(
+                out,
+                x1 - NODE_W / 2,
+                y1_c,
+                rail_x,
+                x2 - NODE_W / 2,
+                y2_c,
+                true,
+                "",
+                s_attr,
+                f_attr,
+                t_attr,
+              );
+              if !edge.label.is_empty() {
+                push_text(
+                  out,
+                  x1 - NODE_W / 2 - 8,
+                  y1_c - 5,
+                  "9",
+                  "text-anchor=\"end\"",
+                  t_attr,
+                  &edge.label,
+                  true,
+                );
+              }
+            }
           } else {
             let y1 = y1_c + NODE_H / 2;
             let y2 = y2_c - NODE_H / 2;
@@ -3035,31 +3860,50 @@ fn write_static_svg_layers(
                 "9.5",
                 "",
                 t_attr,
-                edge.label,
-                false,
+                &edge.label,
+                true,
               );
             }
           }
         }
         EdgeKind::AuxBypass => {
           if tn_n.row > fn_n.row + 1 {
-            // 右侧旁路绕行（如 MLA 的 k_pe 64d 绕过 kv_b_proj 直通 MLA；两端均上偏 13px 避开右侧文字）
+            // 右侧旁路绕行（如 MLA 的 k_pe 64d 或多泳道右侧特征传递；两端均上偏 13px 避开右侧文字）
             let sx = x1 + NODE_W / 2;
             let ex = x2 + NODE_W / 2;
-            let rail_x = sx.max(ex) + 98;
-            push_rail_skip(
-              out,
-              sx,
-              y1_c - 13,
-              rail_x,
-              ex,
-              y2_c - 13,
-              true,
-              edge.label,
-              s_attr,
-              f_attr,
-              t_attr,
-            );
+            let rail_x = sx.max(ex) + 98 + (edge.lane.min(7) as i32) * 20;
+            if layout.max_aux_lane == 0 {
+              push_rail_skip(
+                out,
+                sx,
+                y1_c - 13,
+                rail_x,
+                ex,
+                y2_c - 13,
+                true,
+                &edge.label,
+                s_attr,
+                f_attr,
+                t_attr,
+              );
+            } else {
+              push_rail_skip(
+                out,
+                sx,
+                y1_c - 13,
+                rail_x,
+                ex,
+                y2_c - 13,
+                true,
+                "",
+                s_attr,
+                f_attr,
+                t_attr,
+              );
+              if !edge.label.is_empty() {
+                push_text(out, sx + 6, y1_c - 18, "9", "", t_attr, &edge.label, true);
+              }
+            }
           } else if tn_n.row <= fn_n.row {
             // 同行水平路由/加权控制边（如 Router -> Experts dispatch、Top-K -> exp_down × g_i；上偏 12px 避开侧注）
             let sx = x1 + NODE_W / 2;
@@ -3075,8 +3919,8 @@ fn write_static_svg_layers(
                 "9",
                 "text-anchor=\"middle\"",
                 t_attr,
-                edge.label,
-                false,
+                &edge.label,
+                true,
               );
             }
           } else {
@@ -3092,17 +3936,20 @@ fn write_static_svg_layers(
               } else {
                 (x1 + 8, (y1 + y2) / 2 + 3, "")
               };
-              push_text(out, lx, ly, "9.5", anchor, t_attr, edge.label, false);
+              push_text(out, lx, ly, "9.5", anchor, t_attr, &edge.label, true);
             }
           }
         }
         EdgeKind::Main => {
           if let Some((gi, grp, gr)) = owned_grp {
-            if fn_n.row < grp.row_start && tn_n.row == grp.row_start {
+            let bit = 1u64 << (gi & 63);
+            if (groups_with_entry_skip & bit) != 0
+              && fn_n.row < grp.row_start
+              && tn_n.row == grp.row_start
+            {
               // 主干先垂直进入大框顶部内侧的 h_in 入口锚点，再从 h_in 分叉，杜绝跨框斜线压标题！
               let jx = layout.graph_origin_x;
               let jy = gr.entry_y;
-              let bit = 1u64 << (gi & 63);
               if (entry_drawn_mask & bit) == 0 {
                 entry_drawn_mask |= bit;
                 push_line(out, x1, y1_c + NODE_H / 2, jx, jy, s_attr, "stroke-width=\"1.5\"");
@@ -3124,11 +3971,20 @@ fn write_static_svg_layers(
               "9.5",
               "",
               t_attr,
-              edge.label,
-              false,
+              &edge.label,
+              true,
             );
           }
         }
+      }
+    }
+  }
+
+  // 2.5 将大框标题胶囊置于连线之上（与交互模式层叠一致），防止多路斜线穿过标题文字
+  for (gi, grp) in graph.groups.iter().enumerate() {
+    if let Some(&gr) = layout.group_rects.get(gi) {
+      if draw_group_headers || grp.seg_idx.is_none() {
+        write_group_header_svg(out, grp, gr, layout.graph_origin_x, false, th);
       }
     }
   }
@@ -3246,9 +4102,6 @@ pub fn export_standalone_svg(graph: &TensorGraph) -> String {
   out
 }
 
-const SOURCES: &[(u8, &str)] =
-  &[(0, "当前模型"), (1, "Inception-v3 (经典 CNN)"), (2, "ResNet-50 (残差 CNN)")];
-
 const SHAPE_PRESETS: &[ShapePreset] =
   &[ShapePreset::Symbolic, ShapePreset::Decode1, ShapePreset::Prefill512, ShapePreset::Batch4K];
 
@@ -3259,24 +4112,32 @@ pub fn TensorFlowGraphView(
   on_drill_to_workbench: EventHandler<(Option<u64>, InspectorFocus)>,
 ) -> Element {
   // 复用全局已单态化的基础类型 Signal（u8 / bool / usize），避免为私有枚举额外膨胀 WASM 体积。
-  let mut source_id: Signal<u8> = use_signal(|| 0u8);
   let mut preset_id: Signal<u8> = use_signal(|| 0u8);
   let mut compact = use_signal(|| false);
   let mut selected_idx: Signal<usize> = use_signal(|| usize::MAX);
   let mut collapsed_mask: Signal<usize> = use_signal(|| 0usize);
 
+  let cur_mask = collapsed_mask();
   let cur_preset =
     SHAPE_PRESETS.get(preset_id() as usize).copied().unwrap_or(ShapePreset::Symbolic);
-  let cur_mask = collapsed_mask();
-  let graph = match source_id() {
-    1 => build_inception_v3_graph(cur_preset),
-    2 => build_resnet50_graph(cur_preset),
-    _ => build_blueprint_tensor_graph_with_collapse(&blueprint, cur_preset, compact(), cur_mask),
+  let (graph, preset_labels, is_declarative, decl_default_mask) = if let Some((g, p_lbls, d_mask)) =
+    blueprint.declarative_graph_wire.as_deref().and_then(|w| {
+      build_declarative_graph_from_wire(w, &blueprint.repo_id, preset_id() as usize, cur_mask)
+    }) {
+    (g, p_lbls, true, d_mask)
+  } else {
+    (
+      build_blueprint_tensor_graph_with_collapse(&blueprint, cur_preset, compact(), cur_mask),
+      SHAPE_PRESETS.iter().map(|p| p.label().to_string()).collect(),
+      false,
+      0,
+    )
   };
 
-  let seg_count = blueprint.segments.len().min(30);
+  let seg_count = graph.groups.len().min(30);
   let all_collapsed_mask = if seg_count == 0 { 0 } else { (1usize << seg_count) - 1 };
-  let all_collapsed = seg_count > 0 && (cur_mask & all_collapsed_mask) == all_collapsed_mask;
+  let effective_mask = if is_declarative { cur_mask ^ decl_default_mask } else { cur_mask };
+  let all_collapsed = seg_count > 0 && (effective_mask & all_collapsed_mask) == all_collapsed_mask;
 
   let legend = graph.active_legend();
   let edge_mask = graph.active_edge_mask();
@@ -3340,31 +4201,13 @@ pub fn TensorFlowGraphView(
     div { class: card_class("p-4 sm:p-5 bg-white dark:bg-slate-900/70 space-y-4"),
       div { class: "flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-slate-200 dark:border-slate-800",
         div { class: "flex flex-wrap items-center gap-2",
-          span { class: "text-xs font-bold text-slate-500 dark:text-slate-400", "网络拓扑:" }
-          for &(src_opt, src_lbl) in SOURCES {
-            button {
-              key: "{src_lbl}",
-              r#type: "button",
-              class: if source_id() == src_opt {
-                "px-2.5 py-1 rounded-md text-xs font-bold bg-indigo-600 text-white shadow-2xs cursor-pointer"
-              } else {
-                "px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
-              },
-              onclick: move |_| {
-                source_id.set(src_opt);
-                selected_idx.set(usize::MAX);
-                collapsed_mask.set(0);
-              },
-              "{src_lbl}"
-            }
+          span { class: "text-xs font-bold text-indigo-600 dark:text-indigo-400",
+            if is_declarative { "全谱系张量维流图" } else { "全网张量维流图" }
           }
-        }
-
-        div { class: "flex flex-wrap items-center gap-2",
           div { class: "inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 p-0.5",
-            for (p_idx, &preset_opt) in SHAPE_PRESETS.iter().enumerate() {
+            for (p_idx, p_lbl) in preset_labels.iter().enumerate() {
               button {
-                key: "{preset_opt.label()}",
+                key: "{p_lbl}",
                 r#type: "button",
                 class: if preset_id() == p_idx as u8 {
                   "px-2 py-1 rounded-md text-[11px] font-mono font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
@@ -3372,12 +4215,14 @@ pub fn TensorFlowGraphView(
                   "px-2 py-1 rounded-md text-[11px] font-mono font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
                 },
                 onclick: move |_| preset_id.set(p_idx as u8),
-                "{preset_opt.label()}"
+                "{p_lbl}"
               }
             }
           }
+        }
 
-          if source_id() == 0 {
+        div { class: "flex flex-wrap items-center gap-2",
+          if !is_declarative {
             button {
               r#type: "button",
               class: "px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:border-indigo-400 cursor-pointer",
@@ -3386,12 +4231,17 @@ pub fn TensorFlowGraphView(
             }
           }
 
-          if source_id() == 0 && seg_count > 0 {
+          if seg_count > 0 {
             button {
               r#type: "button",
               class: "px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/80 cursor-pointer",
               onclick: move |_| {
-                collapsed_mask.set(if all_collapsed { 0 } else { all_collapsed_mask });
+                let target_eff = if all_collapsed { 0 } else { all_collapsed_mask };
+                collapsed_mask.set(if is_declarative {
+                  target_eff ^ decl_default_mask
+                } else {
+                  target_eff
+                });
                 selected_idx.set(usize::MAX);
               },
               if all_collapsed { "展开全部大块" } else { "收起全部大块" }
@@ -3565,5 +4415,104 @@ mod tests {
     assert!(res.nodes.iter().any(|n| n.shape == "224*224*3"));
     assert!(res.nodes.iter().any(|n| n.shape == "56*56*256"));
     assert!(res.edges.iter().any(|e| e.kind == EdgeKind::MacroSkip));
+  }
+
+  #[test]
+  fn declarative_graph_supports_multi_lane_skips_multi_input_and_group_collapse() {
+    let raw_json = r#"{
+      "title": "U-Net · Multi-Lane Skip Demo",
+      "subtitle": "31.0M Params · 4-Level Symmetric Encoder-Decoder",
+      "legend_style": "classic_cnn",
+      "shape_mode": "image_2d",
+      "presets": [
+        { "label": "标准 (B×512²)", "batch": "B", "scale_num": 1, "scale_den": 1 },
+        { "label": "高分 (1×1024²)", "batch": "1", "scale_num": 2, "scale_den": 1 }
+      ],
+      "groups": [
+        {
+          "badge": "Encoder · Contracting Path (4 Stages)",
+          "collapsed_shape": "{B}×32×32×512",
+          "collapsed_note": "点击展开 Encoder",
+          "row_start": 1,
+          "row_end": 4,
+          "min_col_q": -2,
+          "max_col_q": 2
+        }
+      ],
+      "nodes": [
+        { "id": "img", "kind": "input", "dims": [512, 512, 1], "side_note": "Image", "op_title": "Input Image", "col_q": -2, "row": 0 },
+        { "id": "prompt", "kind": "embedding", "shape": "{B}×N×256", "side_note": "Prompt", "op_title": "Prompt Tokens", "col_q": 2, "row": 0 },
+        { "id": "e1", "kind": "conv_or_linear", "dims": [512, 512, 64], "op_title": "Enc Stage 1", "col_q": 0, "row": 1 },
+        { "id": "e2", "kind": "conv_or_linear", "dims": [256, 256, 128], "op_title": "Enc Stage 2", "col_q": 0, "row": 2 },
+        { "id": "e3", "kind": "conv_or_linear", "dims": [128, 128, 256], "op_title": "Enc Stage 3", "col_q": 0, "row": 3 },
+        { "id": "e4", "kind": "conv_or_linear", "dims": [64, 64, 512], "op_title": "Enc Stage 4", "col_q": 0, "row": 4 },
+        { "id": "bot", "kind": "attention", "dims": [32, 32, 1024], "op_title": "Bottleneck", "col_q": 0, "row": 5 },
+        { "id": "d4", "kind": "merge", "dims": [64, 64, 512], "op_title": "Dec Stage 4", "col_q": 0, "row": 6 },
+        { "id": "d3", "kind": "merge", "dims": [128, 128, 256], "op_title": "Dec Stage 3", "col_q": 0, "row": 7 },
+        { "id": "d2", "kind": "merge", "dims": [256, 256, 128], "op_title": "Dec Stage 2", "col_q": 0, "row": 8 },
+        { "id": "d1", "kind": "merge", "dims": [512, 512, 64], "op_title": "Dec Stage 1", "col_q": 0, "row": 9 }
+      ],
+      "edges": [
+        { "from": "img", "to": "e1" },
+        { "from": "prompt", "to": "e1", "kind": "aux_bypass", "label": "Cond" },
+        { "from": "e1", "to": "e2" },
+        { "from": "e2", "to": "e3" },
+        { "from": "e3", "to": "e4" },
+        { "from": "e4", "to": "bot" },
+        { "from": "bot", "to": "d4" },
+        { "from": "d4", "to": "d3" },
+        { "from": "d3", "to": "d2" },
+        { "from": "d2", "to": "d1" },
+        { "from": "e4", "to": "d4", "kind": "macro_skip", "label": "Skip 1/8", "lane": 0 },
+        { "from": "e3", "to": "d3", "kind": "macro_skip", "label": "Skip 1/4", "lane": 1 },
+        { "from": "e2", "to": "d2", "kind": "macro_skip", "label": "Skip 1/2", "lane": 2 },
+        { "from": "e1", "to": "d1", "kind": "macro_skip", "label": "Skip 1/1", "lane": 3 }
+      ]
+    }"#;
+
+    let spec: DeclarativeGraphSpec = serde_json::from_str(raw_json).expect("parse graph.json");
+    spec.validate().expect("valid declarative spec");
+    let wire = spec.encode_wire();
+
+    let (g_std, p_lbls, d_mask) =
+      build_declarative_graph_from_wire(&wire, "unet-demo", 0, 0).expect("build standard");
+    assert_eq!(d_mask, 0);
+    assert_eq!(p_lbls.len(), 2);
+    assert_eq!(g_std.nodes.len(), 11);
+    assert!(g_std.nodes.iter().any(|n| n.shape == "B×512×512×64"));
+    assert!(g_std.nodes.iter().any(|n| n.shape == "B×N×256"));
+    let layout = compute_layout(&g_std, g_std.active_legend().len(), g_std.active_edge_mask());
+    assert_eq!(layout.max_macro_lane, 3);
+    assert!(layout.macro_rail_x - 3 * 20 >= 16, "outermost lane must stay inside canvas");
+
+    let svg = export_standalone_svg(&g_std);
+    for lbl in ["Skip 1/8", "Skip 1/4", "Skip 1/2", "Skip 1/1"] {
+      assert!(svg.contains(lbl), "SVG should contain multi-lane label {lbl}");
+    }
+
+    // 验证 2× 高分辨率预设动态缩放
+    let (g_hd, _, _) =
+      build_declarative_graph_from_wire(&wire, "unet-demo", 1, 0).expect("build hd");
+    assert!(g_hd.nodes.iter().any(|n| n.shape == "1×1024×1024×64"));
+
+    // 验证组块收起：4 个 Encoder 节点收敛为 1 张汇总卡且总行数紧凑收缩
+    let (g_col, _, _) =
+      build_declarative_graph_from_wire(&wire, "unet-demo", 0, 0b1).expect("build collapsed");
+    assert_eq!(g_col.nodes.len(), 8);
+    assert!(g_col.total_rows < g_std.total_rows);
+    assert!(g_col.groups[0].collapsed);
+    assert!(g_col.nodes.iter().any(|n| n.toggle_seg == Some(0) && n.shape == "B×32×32×512"));
+
+    // 验证非法边拦截
+    let mut bad = spec.clone();
+    bad.edges.push(DeclarativeEdge {
+      from: "ghost".to_string(),
+      to: "e1".to_string(),
+      label: String::new(),
+      kind: EdgeKind::Main,
+      lane: 0,
+      group_idx: None,
+    });
+    assert!(bad.validate().is_err());
   }
 }
