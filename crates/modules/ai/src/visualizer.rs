@@ -526,12 +526,6 @@ enum DetailTab {
   HyperparamsAndJson,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkbenchViewMode {
-  LayeredWorkbench,
-  TensorFlowDag,
-}
-
 #[component]
 pub fn ModelVisualizerWorkbench(
   blueprint: ModelBlueprint,
@@ -542,7 +536,7 @@ pub fn ModelVisualizerWorkbench(
   let default_layer = blueprint.segments.last().map(|s| s.start_layer).unwrap_or(0);
   let mut selected_layer = use_signal(|| default_layer);
   let mut focus = use_signal(|| initial_focus.unwrap_or_else(|| blueprint.default_focus()));
-  let mut view_mode = use_signal(|| WorkbenchViewMode::LayeredWorkbench);
+  let mut dag_mode = use_signal(|| false);
   let mut detail_tab = use_signal(|| DetailTab::VramSimulator);
   let initial_compact = initial_focus.is_none();
 
@@ -749,24 +743,24 @@ pub fn ModelVisualizerWorkbench(
         div { class: "inline-flex items-center gap-1.5",
           button {
             r#type: "button",
-            class: if view_mode() == WorkbenchViewMode::LayeredWorkbench {
+            class: if !dag_mode() {
               "px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-2xs cursor-pointer"
             } else {
               "px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 cursor-pointer"
             },
-            onclick: move |_| view_mode.set(WorkbenchViewMode::LayeredWorkbench),
+            onclick: move |_| dag_mode.set(false),
             "分层联动工作台"
           }
           button {
             r#type: "button",
-            class: if view_mode() == WorkbenchViewMode::TensorFlowDag {
+            class: if dag_mode() {
               "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 text-white shadow-2xs cursor-pointer"
             } else {
               "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-800 cursor-pointer"
             },
-            onclick: move |_| view_mode.set(WorkbenchViewMode::TensorFlowDag),
+            onclick: move |_| dag_mode.set(true),
             span { "全网张量维流图 (DAG)" }
-            span { class: if view_mode() == WorkbenchViewMode::TensorFlowDag {
+            span { class: if dag_mode() {
               "px-1.5 py-0.5 rounded bg-white/20 text-[10px] font-mono"
             } else {
               "px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 text-[10px] font-mono"
@@ -776,7 +770,7 @@ pub fn ModelVisualizerWorkbench(
           }
         }
         span { class: "text-xs text-slate-500 dark:text-slate-400",
-          if view_mode() == WorkbenchViewMode::LayeredWorkbench {
+          if !dag_mode() {
             "默认展示端到端总体架构，点左侧层段/模块在右侧钻取算子子图、Safetensors 权重与显存精算。"
           } else {
             "网格蓝图 + 算子实色块 + 框内张量维度 + 右上角图例；支持切换 B×S 实数维度、对照 Inception-v3 / ResNet-50 及导出高清 SVG。"
@@ -784,7 +778,7 @@ pub fn ModelVisualizerWorkbench(
         }
       }
 
-      if view_mode() == WorkbenchViewMode::TensorFlowDag {
+      if dag_mode() {
         TensorFlowGraphView {
           blueprint: blueprint.clone(),
           on_drill_to_workbench: move |(layer_opt, target_focus)| {
@@ -792,7 +786,7 @@ pub fn ModelVisualizerWorkbench(
               selected_layer.set(l);
             }
             focus.set(target_focus);
-            view_mode.set(WorkbenchViewMode::LayeredWorkbench);
+            dag_mode.set(false);
           },
         }
       } else {

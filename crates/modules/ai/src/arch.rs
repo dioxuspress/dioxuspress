@@ -9,6 +9,7 @@
 //!    的每一层 Tensor Shape、总参数量 vs 单 Token 激活参数量、以及推理显存与 KV Cache 压缩比。
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "server")]
 use serde_json::Value;
 
 use crate::safetensors_meta::{SafetensorsSummary, TensorPatternEntry};
@@ -989,7 +990,8 @@ pub mod blueprint_wire {
 // 核心配置解析逻辑
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 可选附属配置文件集合（与主 `config.json` 协同建模）。
+/// 可选附属配置文件集合（与主 `config.json` 协同建模，仅服务端解析）。
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AuxConfigFiles<'a> {
   pub generation_json: Option<&'a str>,
@@ -1001,6 +1003,7 @@ pub struct AuxConfigFiles<'a> {
 }
 
 /// 从原始 `config.json`（及可选附属配置、Safetensors 摘要）构建完整的 [`ModelBlueprint`]。
+#[cfg(feature = "server")]
 pub fn build_model_blueprint(
   repo_id: &str,
   source_label: &str,
@@ -1019,6 +1022,7 @@ pub fn build_model_blueprint(
 }
 
 /// 支持完整附属配置（含 `preprocessor_config.json` 与 `1_Pooling/config.json`）的架构推导入口。
+#[cfg(feature = "server")]
 pub fn build_model_blueprint_with_aux(
   repo_id: &str,
   source_label: &str,
@@ -1703,13 +1707,8 @@ fn collect_aux_config_snapshots(aux: AuxConfigFiles<'_>) -> Vec<AuxConfigSnapsho
   out
 }
 
-#[cfg(not(feature = "server"))]
-fn collect_aux_config_snapshots(_aux: AuxConfigFiles<'_>) -> Vec<AuxConfigSnapshot> {
-  Vec::new()
-}
-
+#[cfg(feature = "server")]
 #[derive(Default)]
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
 struct PreprocessorHints {
   mel_bins: Option<u64>,
   sampling_rate: Option<u64>,
@@ -2120,72 +2119,7 @@ use multimodal_parsers::{
   parse_speech_synthesizer, parse_vision_spec,
 };
 
-#[cfg(not(feature = "server"))]
-mod multimodal_parsers_wasm_stub {
-  use super::*;
-
-  pub(super) struct LinearSsmPlan {
-    pub(super) kind_short: &'static str,
-    pub(super) spec: AttentionSpec,
-    pub(super) full_attn_layers: u64,
-    pub(super) has_separate_ffn: bool,
-  }
-
-  pub(super) fn parse_preprocessor_meta(_raw: Option<&str>) -> PreprocessorHints {
-    PreprocessorHints::default()
-  }
-
-  pub(super) fn parse_pooling_meta(_raw: Option<&str>) -> Option<(String, u64)> {
-    None
-  }
-
-  pub(super) fn parse_vision_spec(
-    _vc: &serde_json::Map<String, Value>,
-    _llm_hidden: u64,
-    _preproc: &PreprocessorHints,
-  ) -> Option<VisionSpec> {
-    None
-  }
-
-  pub(super) fn parse_audio_spec(
-    _audio_obj: Option<&serde_json::Map<String, Value>>,
-    _cfg_obj: &serde_json::Map<String, Value>,
-    _llm_hidden: u64,
-    _is_whisper_like: bool,
-    _is_ctc_asr: bool,
-    _is_nested_omni: bool,
-    _preproc: &PreprocessorHints,
-  ) -> Option<AudioSpec> {
-    None
-  }
-
-  pub(super) fn parse_speech_synthesizer(
-    _root_obj: &serde_json::Map<String, Value>,
-    _cfg_obj: &serde_json::Map<String, Value>,
-    _arch_joined: &str,
-    _preproc: &PreprocessorHints,
-  ) -> Option<OutputHeadSpec> {
-    None
-  }
-
-  pub(super) fn detect_linear_ssm(
-    _cfg: &serde_json::Map<String, Value>,
-    _model_type: &str,
-    _arch_joined: &str,
-    _hidden_size: u64,
-    _num_layers: u64,
-    _num_q_heads: u64,
-  ) -> Option<LinearSsmPlan> {
-    None
-  }
-}
-
-#[cfg(not(feature = "server"))]
-use multimodal_parsers_wasm_stub::{
-  detect_linear_ssm, parse_audio_spec, parse_pooling_meta, parse_preprocessor_meta,
-  parse_speech_synthesizer, parse_vision_spec,
-};
-
+#[cfg(feature = "server")]
 fn detect_nope_interval(cfg: &serde_json::Map<String, Value>) -> Option<u64> {
   let arr = cfg.get("no_rope_layers")?.as_array()?;
   if arr.len() < 4 {
@@ -2199,6 +2133,7 @@ fn detect_nope_interval(cfg: &serde_json::Map<String, Value>) -> Option<u64> {
   Some((arr.len() / zeros).max(2) as u64)
 }
 
+#[cfg(feature = "server")]
 fn build_schedule_note(
   attn: &AttentionSpec,
   cfg: &serde_json::Map<String, Value>,
@@ -2353,6 +2288,7 @@ fn compute_param_breakdown(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "server")]
 fn build_safetensors_fallback_blueprint(
   repo_id: &str,
   source_label: &str,
@@ -2405,14 +2341,17 @@ fn build_safetensors_fallback_blueprint(
   }
 }
 
+#[cfg(feature = "server")]
 fn u64_any(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u64> {
   keys.iter().find_map(|k| obj.get(*k).and_then(Value::as_u64))
 }
 
+#[cfg(feature = "server")]
 fn f64_any(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f64> {
   keys.iter().find_map(|k| obj.get(*k).and_then(Value::as_f64))
 }
 
+#[cfg(feature = "server")]
 fn extract_rope_summary(cfg: &serde_json::Map<String, Value>) -> String {
   let theta = f64_any(cfg, &["rope_theta"]).unwrap_or(10_000.0);
   let theta_str = if theta >= 1_000_000.0 && (theta % 1_000_000.0).abs() < 1.0 {
@@ -2444,6 +2383,7 @@ fn extract_rope_summary(cfg: &serde_json::Map<String, Value>) -> String {
   }
 }
 
+#[cfg(feature = "server")]
 fn extract_quantization_summary(cfg: &serde_json::Map<String, Value>) -> Option<String> {
   let q = cfg.get("quantization_config")?.as_object()?;
   let method = q.get("quant_method").and_then(Value::as_str).unwrap_or("quantized");
@@ -2470,6 +2410,7 @@ fn extract_quantization_summary(cfg: &serde_json::Map<String, Value>) -> Option<
   Some(parts.join(" · "))
 }
 
+#[cfg(feature = "server")]
 fn parse_tokenizer_meta(raw: Option<&str>) -> (Option<String>, Option<u64>) {
   let Some(s) = raw else {
     return (None, None);
@@ -2482,6 +2423,7 @@ fn parse_tokenizer_meta(raw: Option<&str>) -> (Option<String>, Option<u64>) {
   (cls, vocab)
 }
 
+#[cfg(feature = "server")]
 fn parse_generation_meta(raw: Option<&str>) -> (Option<f64>, Option<f64>) {
   let Some(s) = raw else {
     return (None, None);
@@ -2534,48 +2476,293 @@ pub const BUILTIN_PRESETS: &[BuiltinPresetMeta] = &[
   },
 ];
 
+/// 构造内置静态预设蓝图（零 `serde_json` 运行时解析，使 `build_model_blueprint*` 得以完全收拢在服务端）。
+#[allow(clippy::too_many_arguments)]
+fn direct_preset_blueprint(
+  repo_id: &str,
+  family: ArchFamily,
+  architecture: &str,
+  model_type: &str,
+  quantization_summary: Option<&str>,
+  vocab_size: u64,
+  hidden_size: u64,
+  num_hidden_layers: u64,
+  max_position_embeddings: u64,
+  rms_norm_eps: f64,
+  rope_summary: &str,
+  num_nextn_predict_layers: u64,
+  tokenizer_class: &str,
+  default_temperature: f64,
+  default_top_p: f64,
+  segments: Vec<LayerSegment>,
+  safetensors: SafetensorsSummary,
+  raw_config_pretty: &str,
+) -> ModelBlueprint {
+  let output_head = OutputHeadSpec::CausalLmHead;
+  let params = compute_param_breakdown(
+    0,
+    0,
+    vocab_size,
+    hidden_size,
+    false,
+    &output_head,
+    num_nextn_predict_layers,
+    &segments,
+  );
+  ModelBlueprint {
+    repo_id: repo_id.to_string(),
+    source_label: "Built-in Snapshot (HF/ModelScope Verified)".to_string(),
+    family,
+    architectures: vec![architecture.to_string()],
+    model_type: model_type.to_string(),
+    torch_dtype: "bfloat16".to_string(),
+    quantization_summary: quantization_summary.map(str::to_string),
+    multimodal_note: None,
+    vision: None,
+    audio: None,
+    diffusion: None,
+    output_head,
+    vocab_size,
+    hidden_size,
+    num_hidden_layers,
+    max_position_embeddings,
+    rms_norm_eps: Some(rms_norm_eps),
+    tie_word_embeddings: false,
+    rope_summary: rope_summary.to_string(),
+    hidden_act: "silu".to_string(),
+    num_nextn_predict_layers,
+    tokenizer_class: Some(tokenizer_class.to_string()),
+    default_temperature: Some(default_temperature),
+    default_top_p: Some(default_top_p),
+    segments,
+    params,
+    safetensors: Some(safetensors),
+    raw_config_pretty: raw_config_pretty.to_string(),
+    aux_configs: Vec::new(),
+  }
+}
+
 /// 按预设 slug（如 `"deepseek-v3"`）或仓库名（如 `"Qwen/Qwen3-8B"`）加载内置真实架构快照。
 pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
   let norm = key.trim().to_ascii_lowercase();
   match norm.as_str() {
     "deepseek-v3" | "deepseek-ai/deepseek-v3" | "deepseek-r1" | "deepseek-ai/deepseek-r1" => {
-      build_model_blueprint(
+      let mla = AttentionSpec::DeepSeekMla {
+        num_heads: 128,
+        q_lora_rank: Some(1536),
+        kv_lora_rank: 512,
+        qk_nope_head_dim: 128,
+        qk_rope_head_dim: 64,
+        v_head_dim: 128,
+      };
+      let segs = vec![
+        LayerSegment {
+          start_layer: 0,
+          end_layer: 2,
+          title: "前置稠密预热层 (Dense SwiGLU)".to_string(),
+          attention: mla.clone(),
+          ffn: FfnSpec::DenseGated {
+            intermediate_size: 18432,
+            act_fn: "silu".to_string(),
+            bias: false,
+            fused_gate_up: false,
+            is_gated: true,
+          },
+          norms_per_layer: 2,
+          schedule_note: None,
+        },
+        LayerSegment {
+          start_layer: 3,
+          end_layer: 60,
+          title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
+          attention: mla,
+          ffn: FfnSpec::SparseMoe {
+            num_routed_experts: 256,
+            top_k: 8,
+            moe_intermediate_size: 2048,
+            num_shared_experts: 1,
+            shared_intermediate_size: 2048,
+            has_shared_gate: false,
+            router_groups: Some((8, 4)),
+            scoring_func: "sigmoid".to_string(),
+            act_fn: "silu".to_string(),
+          },
+          norms_per_layer: 2,
+          schedule_note: None,
+        },
+      ];
+      Some(direct_preset_blueprint(
         "deepseek-ai/DeepSeek-V3",
-        "Built-in Snapshot (HF/ModelScope Verified)",
+        ArchFamily::DeepSeekMla,
+        "DeepseekV3ForCausalLM",
+        "deepseek_v3",
+        Some("FP8 · e4m3 · block 128×128"),
+        129280,
+        7168,
+        61,
+        163840,
+        1e-6,
+        "RoPE θ=10K (yarn ×40.0)",
+        1,
+        "LlamaTokenizerFast",
+        0.6,
+        0.95,
+        segs,
+        deepseek_v3_safetensors_snapshot(),
         DEEPSEEK_V3_CONFIG,
-        Some(r#"{"temperature": 0.6, "top_p": 0.95}"#),
-        Some(r#"{"tokenizer_class": "LlamaTokenizerFast"}"#),
-        Some(deepseek_v3_safetensors_snapshot()),
-      )
-      .ok()
+      ))
     }
-    "qwen3-30b-a3b" | "qwen/qwen3-30b-a3b" => build_model_blueprint(
-      "Qwen/Qwen3-30B-A3B",
-      "Built-in Snapshot (HF/ModelScope Verified)",
-      QWEN3_30B_A3B_CONFIG,
-      Some(r#"{"temperature": 0.6, "top_p": 0.95}"#),
-      Some(r#"{"tokenizer_class": "Qwen2Tokenizer"}"#),
-      Some(qwen3_30b_safetensors_snapshot()),
-    )
-    .ok(),
-    "qwen3-8b" | "qwen/qwen3-8b" => build_model_blueprint(
-      "Qwen/Qwen3-8B",
-      "Built-in Snapshot (HF/ModelScope Verified)",
-      QWEN3_8B_CONFIG,
-      Some(r#"{"temperature": 0.6, "top_p": 0.95}"#),
-      Some(r#"{"tokenizer_class": "Qwen2Tokenizer"}"#),
-      Some(qwen3_8b_safetensors_snapshot()),
-    )
-    .ok(),
-    "llama-3.1-8b" | "llama3-8b" | "meta-llama/llama-3.1-8b-instruct" => build_model_blueprint(
-      "meta-llama/Llama-3.1-8B-Instruct",
-      "Built-in Snapshot (HF/ModelScope Verified)",
-      LLAMA_3_1_8B_CONFIG,
-      Some(r#"{"temperature": 0.6, "top_p": 0.9}"#),
-      Some(r#"{"tokenizer_class": "PreTrainedTokenizerFast"}"#),
-      Some(llama3_8b_safetensors_snapshot()),
-    )
-    .ok(),
+    "qwen3-30b-a3b" | "qwen/qwen3-30b-a3b" => {
+      let segs = vec![LayerSegment {
+        start_layer: 0,
+        end_layer: 47,
+        title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
+        attention: AttentionSpec::StandardGqa {
+          num_q_heads: 32,
+          num_kv_heads: 4,
+          head_dim: 128,
+          qkv_bias: false,
+          o_bias: false,
+          qk_norm: true,
+          sliding_window: None,
+          sliding_window_pattern: None,
+          nope_layer_interval: None,
+          is_causal: true,
+          has_cross_attn: false,
+        },
+        ffn: FfnSpec::SparseMoe {
+          num_routed_experts: 128,
+          top_k: 8,
+          moe_intermediate_size: 768,
+          num_shared_experts: 0,
+          shared_intermediate_size: 0,
+          has_shared_gate: false,
+          router_groups: None,
+          scoring_func: "softmax".to_string(),
+          act_fn: "silu".to_string(),
+        },
+        norms_per_layer: 2,
+        schedule_note: None,
+      }];
+      Some(direct_preset_blueprint(
+        "Qwen/Qwen3-30B-A3B",
+        ArchFamily::QwenMoe,
+        "Qwen3MoeForCausalLM",
+        "qwen3_moe",
+        None,
+        151936,
+        2048,
+        48,
+        40960,
+        1e-6,
+        "RoPE θ=1M",
+        0,
+        "Qwen2Tokenizer",
+        0.6,
+        0.95,
+        segs,
+        qwen3_30b_safetensors_snapshot(),
+        QWEN3_30B_A3B_CONFIG,
+      ))
+    }
+    "qwen3-8b" | "qwen/qwen3-8b" => {
+      let segs = vec![LayerSegment {
+        start_layer: 0,
+        end_layer: 35,
+        title: "Transformer 解码器层栈 (Decoder Stack)".to_string(),
+        attention: AttentionSpec::StandardGqa {
+          num_q_heads: 32,
+          num_kv_heads: 8,
+          head_dim: 128,
+          qkv_bias: false,
+          o_bias: false,
+          qk_norm: true,
+          sliding_window: None,
+          sliding_window_pattern: None,
+          nope_layer_interval: None,
+          is_causal: true,
+          has_cross_attn: false,
+        },
+        ffn: FfnSpec::DenseGated {
+          intermediate_size: 12288,
+          act_fn: "silu".to_string(),
+          bias: false,
+          fused_gate_up: false,
+          is_gated: true,
+        },
+        norms_per_layer: 2,
+        schedule_note: None,
+      }];
+      Some(direct_preset_blueprint(
+        "Qwen/Qwen3-8B",
+        ArchFamily::QwenDense,
+        "Qwen3ForCausalLM",
+        "qwen3",
+        None,
+        151936,
+        4096,
+        36,
+        40960,
+        1e-6,
+        "RoPE θ=1M",
+        0,
+        "Qwen2Tokenizer",
+        0.6,
+        0.95,
+        segs,
+        qwen3_8b_safetensors_snapshot(),
+        QWEN3_8B_CONFIG,
+      ))
+    }
+    "llama-3.1-8b" | "llama3-8b" | "meta-llama/llama-3.1-8b-instruct" => {
+      let segs = vec![LayerSegment {
+        start_layer: 0,
+        end_layer: 31,
+        title: "Transformer 解码器层栈 (Decoder Stack)".to_string(),
+        attention: AttentionSpec::StandardGqa {
+          num_q_heads: 32,
+          num_kv_heads: 8,
+          head_dim: 128,
+          qkv_bias: false,
+          o_bias: false,
+          qk_norm: false,
+          sliding_window: None,
+          sliding_window_pattern: None,
+          nope_layer_interval: None,
+          is_causal: true,
+          has_cross_attn: false,
+        },
+        ffn: FfnSpec::DenseGated {
+          intermediate_size: 14336,
+          act_fn: "silu".to_string(),
+          bias: false,
+          fused_gate_up: false,
+          is_gated: true,
+        },
+        norms_per_layer: 2,
+        schedule_note: None,
+      }];
+      Some(direct_preset_blueprint(
+        "meta-llama/Llama-3.1-8B-Instruct",
+        ArchFamily::LlamaDense,
+        "LlamaForCausalLM",
+        "llama",
+        None,
+        128256,
+        4096,
+        32,
+        131072,
+        1e-5,
+        "RoPE θ=500K (llama3 ×8.0)",
+        0,
+        "PreTrainedTokenizerFast",
+        0.6,
+        0.9,
+        segs,
+        llama3_8b_safetensors_snapshot(),
+        LLAMA_3_1_8B_CONFIG,
+      ))
+    }
     _ => None,
   }
 }
@@ -2681,31 +2868,51 @@ const LLAMA_3_1_8B_CONFIG: &str = r#"{
   "torch_dtype": "bfloat16"
 }"#;
 
-type SnapRow = (
-  &'static str,
-  &'static str,
-  &'static str,
-  usize,
-  &'static [u64],
-  &'static str,
-  u64,
-  &'static str,
-);
+/// `(pattern, stage, repeat_count, dim0, dim1_or_0, is_fp8, shard_idx)`
+type SnapRow = (&'static str, &'static str, u16, u32, u32, bool, u8);
 
-fn rows_to_patterns(rows: &[SnapRow]) -> Vec<TensorPatternEntry> {
+fn pattern_to_example(pattern: &str) -> String {
+  let mut out = String::with_capacity(pattern.len());
+  let mut rest = pattern;
+  while let Some(open) = rest.find('[') {
+    out.push_str(&rest[..open]);
+    let after = &rest[open + 1..];
+    if let Some(close) = after.find(']') {
+      let inner = &after[..close];
+      if let Some((start, _)) = inner.split_once("..") {
+        out.push_str(start);
+      } else {
+        out.push('[');
+        out.push_str(inner);
+        out.push(']');
+      }
+      rest = &after[close + 1..];
+    } else {
+      out.push('[');
+      rest = after;
+      break;
+    }
+  }
+  out.push_str(rest);
+  out
+}
+
+fn rows_to_patterns(total_shards: u16, rows: &[SnapRow]) -> Vec<TensorPatternEntry> {
   rows
     .iter()
-    .map(|&(pattern, example_name, stage, repeat_count, shape, dtype, bytes_per_elem, shard)| {
-      let elems: u64 = shape.iter().product();
+    .map(|&(pattern, stage, repeat_count, d0, d1, is_fp8, shard_idx)| {
+      let shape = if d1 == 0 { vec![d0 as u64] } else { vec![d0 as u64, d1 as u64] };
+      let elems: u64 = if d1 == 0 { d0 as u64 } else { (d0 as u64) * (d1 as u64) };
+      let (dtype, bpe) = if is_fp8 { ("F8_E4M3", 1u64) } else { ("BF16", 2u64) };
       TensorPatternEntry {
         pattern: pattern.to_string(),
-        example_name: example_name.to_string(),
+        example_name: pattern_to_example(pattern),
         stage: stage.to_string(),
-        repeat_count,
-        shape: Some(shape.to_vec()),
+        repeat_count: repeat_count as usize,
+        shape: Some(shape),
         dtype: Some(dtype.to_string()),
-        single_byte_len: Some(elems * bytes_per_elem),
-        example_shard: Some(shard.to_string()),
+        single_byte_len: Some(elems * bpe),
+        example_shard: Some(format!("model-{shard_idx:05}-of-{total_shards:05}.safetensors")),
       }
     })
     .collect()
@@ -2728,248 +2935,83 @@ fn deepseek_v3_safetensors_snapshot() -> SafetensorsSummary {
       ("F32".to_string(), 45_280),
       ("BF16".to_string(), 385),
     ],
-    patterns: rows_to_patterns(&[
-      (
-        "model.embed_tokens.weight",
-        "model.embed_tokens.weight",
-        "embedding",
-        1,
-        &[129280, 7168],
-        "BF16",
-        2,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..60].self_attn.q_a_proj.weight",
-        "model.layers.0.self_attn.q_a_proj.weight",
-        "attention",
-        61,
-        &[1536, 7168],
-        "F8_E4M3",
-        1,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..60].self_attn.q_a_layernorm.weight",
-        "model.layers.0.self_attn.q_a_layernorm.weight",
-        "attention",
-        61,
-        &[1536],
-        "BF16",
-        2,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..60].self_attn.q_b_proj.weight",
-        "model.layers.0.self_attn.q_b_proj.weight",
-        "attention",
-        61,
-        &[24576, 1536],
-        "F8_E4M3",
-        1,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..60].self_attn.kv_a_proj_with_mqa.weight",
-        "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
-        "attention",
-        61,
-        &[576, 7168],
-        "F8_E4M3",
-        1,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..60].self_attn.kv_a_layernorm.weight",
-        "model.layers.0.self_attn.kv_a_layernorm.weight",
-        "attention",
-        61,
-        &[512],
-        "BF16",
-        2,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..60].self_attn.kv_b_proj.weight",
-        "model.layers.0.self_attn.kv_b_proj.weight",
-        "attention",
-        61,
-        &[32768, 512],
-        "F8_E4M3",
-        1,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..60].self_attn.o_proj.weight",
-        "model.layers.0.self_attn.o_proj.weight",
-        "attention",
-        61,
-        &[7168, 16384],
-        "F8_E4M3",
-        1,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..60].input_layernorm.weight",
-        "model.layers.0.input_layernorm.weight",
-        "norm",
-        61,
-        &[7168],
-        "BF16",
-        2,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..60].post_attention_layernorm.weight",
-        "model.layers.0.post_attention_layernorm.weight",
-        "norm",
-        61,
-        &[7168],
-        "BF16",
-        2,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..2].mlp.gate_proj.weight",
-        "model.layers.0.mlp.gate_proj.weight",
-        "ffn",
-        3,
-        &[18432, 7168],
-        "F8_E4M3",
-        1,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..2].mlp.up_proj.weight",
-        "model.layers.0.mlp.up_proj.weight",
-        "ffn",
-        3,
-        &[18432, 7168],
-        "F8_E4M3",
-        1,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[0..2].mlp.down_proj.weight",
-        "model.layers.0.mlp.down_proj.weight",
-        "ffn",
-        3,
-        &[7168, 18432],
-        "F8_E4M3",
-        1,
-        "model-00001-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[3..60].mlp.gate.weight",
-        "model.layers.3.mlp.gate.weight",
-        "moe",
-        58,
-        &[256, 7168],
-        "BF16",
-        2,
-        "model-00002-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[3..60].mlp.gate.e_score_correction_bias",
-        "model.layers.3.mlp.gate.e_score_correction_bias",
-        "moe",
-        58,
-        &[256],
-        "BF16",
-        2,
-        "model-00002-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[3..60].mlp.shared_experts.gate_proj.weight",
-        "model.layers.3.mlp.shared_experts.gate_proj.weight",
-        "moe",
-        58,
-        &[2048, 7168],
-        "F8_E4M3",
-        1,
-        "model-00002-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[3..60].mlp.shared_experts.up_proj.weight",
-        "model.layers.3.mlp.shared_experts.up_proj.weight",
-        "moe",
-        58,
-        &[2048, 7168],
-        "F8_E4M3",
-        1,
-        "model-00002-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[3..60].mlp.shared_experts.down_proj.weight",
-        "model.layers.3.mlp.shared_experts.down_proj.weight",
-        "moe",
-        58,
-        &[7168, 2048],
-        "F8_E4M3",
-        1,
-        "model-00002-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[3..60].mlp.experts.[0..255].gate_proj.weight",
-        "model.layers.3.mlp.experts.0.gate_proj.weight",
-        "moe",
-        14_848,
-        &[2048, 7168],
-        "F8_E4M3",
-        1,
-        "model-00002-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[3..60].mlp.experts.[0..255].up_proj.weight",
-        "model.layers.3.mlp.experts.0.up_proj.weight",
-        "moe",
-        14_848,
-        &[2048, 7168],
-        "F8_E4M3",
-        1,
-        "model-00002-of-00163.safetensors",
-      ),
-      (
-        "model.layers.[3..60].mlp.experts.[0..255].down_proj.weight",
-        "model.layers.3.mlp.experts.0.down_proj.weight",
-        "moe",
-        14_848,
-        &[7168, 2048],
-        "F8_E4M3",
-        1,
-        "model-00002-of-00163.safetensors",
-      ),
-      (
-        "model.layers.61.eh_proj.weight",
-        "model.layers.61.eh_proj.weight",
-        "mtp",
-        1,
-        &[7168, 14336],
-        "BF16",
-        2,
-        "model-00163-of-00163.safetensors",
-      ),
-      (
-        "model.norm.weight",
-        "model.norm.weight",
-        "norm",
-        1,
-        &[7168],
-        "BF16",
-        2,
-        "model-00162-of-00163.safetensors",
-      ),
-      (
-        "lm_head.weight",
-        "lm_head.weight",
-        "lm_head",
-        1,
-        &[129280, 7168],
-        "BF16",
-        2,
-        "model-00162-of-00163.safetensors",
-      ),
-    ]),
+    patterns: rows_to_patterns(
+      163,
+      &[
+        ("model.embed_tokens.weight", "embedding", 1, 129280, 7168, false, 1),
+        ("model.layers.[0..60].self_attn.q_a_proj.weight", "attention", 61, 1536, 7168, true, 1),
+        ("model.layers.[0..60].self_attn.q_a_layernorm.weight", "attention", 61, 1536, 0, false, 1),
+        ("model.layers.[0..60].self_attn.q_b_proj.weight", "attention", 61, 24576, 1536, true, 1),
+        (
+          "model.layers.[0..60].self_attn.kv_a_proj_with_mqa.weight",
+          "attention",
+          61,
+          576,
+          7168,
+          true,
+          1,
+        ),
+        ("model.layers.[0..60].self_attn.kv_a_layernorm.weight", "attention", 61, 512, 0, false, 1),
+        ("model.layers.[0..60].self_attn.kv_b_proj.weight", "attention", 61, 32768, 512, true, 1),
+        ("model.layers.[0..60].self_attn.o_proj.weight", "attention", 61, 7168, 16384, true, 1),
+        ("model.layers.[0..60].input_layernorm.weight", "norm", 61, 7168, 0, false, 1),
+        ("model.layers.[0..60].post_attention_layernorm.weight", "norm", 61, 7168, 0, false, 1),
+        ("model.layers.[0..2].mlp.gate_proj.weight", "ffn", 3, 18432, 7168, true, 1),
+        ("model.layers.[0..2].mlp.up_proj.weight", "ffn", 3, 18432, 7168, true, 1),
+        ("model.layers.[0..2].mlp.down_proj.weight", "ffn", 3, 7168, 18432, true, 1),
+        ("model.layers.[3..60].mlp.gate.weight", "moe", 58, 256, 7168, false, 2),
+        ("model.layers.[3..60].mlp.gate.e_score_correction_bias", "moe", 58, 256, 0, false, 2),
+        (
+          "model.layers.[3..60].mlp.shared_experts.gate_proj.weight",
+          "moe",
+          58,
+          2048,
+          7168,
+          true,
+          2,
+        ),
+        ("model.layers.[3..60].mlp.shared_experts.up_proj.weight", "moe", 58, 2048, 7168, true, 2),
+        (
+          "model.layers.[3..60].mlp.shared_experts.down_proj.weight",
+          "moe",
+          58,
+          7168,
+          2048,
+          true,
+          2,
+        ),
+        (
+          "model.layers.[3..60].mlp.experts.[0..255].gate_proj.weight",
+          "moe",
+          14_848,
+          2048,
+          7168,
+          true,
+          2,
+        ),
+        (
+          "model.layers.[3..60].mlp.experts.[0..255].up_proj.weight",
+          "moe",
+          14_848,
+          2048,
+          7168,
+          true,
+          2,
+        ),
+        (
+          "model.layers.[3..60].mlp.experts.[0..255].down_proj.weight",
+          "moe",
+          14_848,
+          7168,
+          2048,
+          true,
+          2,
+        ),
+        ("model.layers.61.eh_proj.weight", "mtp", 1, 7168, 14336, false, 163),
+        ("model.norm.weight", "norm", 1, 7168, 0, false, 162),
+        ("lm_head.weight", "lm_head", 1, 129280, 7168, false, 162),
+      ],
+    ),
   }
 }
 
@@ -2986,158 +3028,50 @@ fn qwen3_30b_safetensors_snapshot() -> SafetensorsSummary {
     has_attn_bias: false,
     has_qk_norm: true,
     dtype_histogram: vec![("BF16".to_string(), 18_866)],
-    patterns: rows_to_patterns(&[
-      (
-        "model.embed_tokens.weight",
-        "model.embed_tokens.weight",
-        "embedding",
-        1,
-        &[151936, 2048],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].self_attn.q_proj.weight",
-        "model.layers.0.self_attn.q_proj.weight",
-        "attention",
-        48,
-        &[4096, 2048],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].self_attn.k_proj.weight",
-        "model.layers.0.self_attn.k_proj.weight",
-        "attention",
-        48,
-        &[512, 2048],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].self_attn.v_proj.weight",
-        "model.layers.0.self_attn.v_proj.weight",
-        "attention",
-        48,
-        &[512, 2048],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].self_attn.o_proj.weight",
-        "model.layers.0.self_attn.o_proj.weight",
-        "attention",
-        48,
-        &[2048, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].self_attn.q_norm.weight",
-        "model.layers.0.self_attn.q_norm.weight",
-        "attention",
-        48,
-        &[128],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].self_attn.k_norm.weight",
-        "model.layers.0.self_attn.k_norm.weight",
-        "attention",
-        48,
-        &[128],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].input_layernorm.weight",
-        "model.layers.0.input_layernorm.weight",
-        "norm",
-        48,
-        &[2048],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].post_attention_layernorm.weight",
-        "model.layers.0.post_attention_layernorm.weight",
-        "norm",
-        48,
-        &[2048],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].mlp.gate.weight",
-        "model.layers.0.mlp.gate.weight",
-        "moe",
-        48,
-        &[128, 2048],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].mlp.experts.[0..127].gate_proj.weight",
-        "model.layers.0.mlp.experts.0.gate_proj.weight",
-        "moe",
-        6144,
-        &[768, 2048],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].mlp.experts.[0..127].up_proj.weight",
-        "model.layers.0.mlp.experts.0.up_proj.weight",
-        "moe",
-        6144,
-        &[768, 2048],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.layers.[0..47].mlp.experts.[0..127].down_proj.weight",
-        "model.layers.0.mlp.experts.0.down_proj.weight",
-        "moe",
-        6144,
-        &[2048, 768],
-        "BF16",
-        2,
-        "model-00001-of-00016.safetensors",
-      ),
-      (
-        "model.norm.weight",
-        "model.norm.weight",
-        "norm",
-        1,
-        &[2048],
-        "BF16",
-        2,
-        "model-00016-of-00016.safetensors",
-      ),
-      (
-        "lm_head.weight",
-        "lm_head.weight",
-        "lm_head",
-        1,
-        &[151936, 2048],
-        "BF16",
-        2,
-        "model-00016-of-00016.safetensors",
-      ),
-    ]),
+    patterns: rows_to_patterns(
+      16,
+      &[
+        ("model.embed_tokens.weight", "embedding", 1, 151936, 2048, false, 1),
+        ("model.layers.[0..47].self_attn.q_proj.weight", "attention", 48, 4096, 2048, false, 1),
+        ("model.layers.[0..47].self_attn.k_proj.weight", "attention", 48, 512, 2048, false, 1),
+        ("model.layers.[0..47].self_attn.v_proj.weight", "attention", 48, 512, 2048, false, 1),
+        ("model.layers.[0..47].self_attn.o_proj.weight", "attention", 48, 2048, 4096, false, 1),
+        ("model.layers.[0..47].self_attn.q_norm.weight", "attention", 48, 128, 0, false, 1),
+        ("model.layers.[0..47].self_attn.k_norm.weight", "attention", 48, 128, 0, false, 1),
+        ("model.layers.[0..47].input_layernorm.weight", "norm", 48, 2048, 0, false, 1),
+        ("model.layers.[0..47].post_attention_layernorm.weight", "norm", 48, 2048, 0, false, 1),
+        ("model.layers.[0..47].mlp.gate.weight", "moe", 48, 128, 2048, false, 1),
+        (
+          "model.layers.[0..47].mlp.experts.[0..127].gate_proj.weight",
+          "moe",
+          6144,
+          768,
+          2048,
+          false,
+          1,
+        ),
+        (
+          "model.layers.[0..47].mlp.experts.[0..127].up_proj.weight",
+          "moe",
+          6144,
+          768,
+          2048,
+          false,
+          1,
+        ),
+        (
+          "model.layers.[0..47].mlp.experts.[0..127].down_proj.weight",
+          "moe",
+          6144,
+          2048,
+          768,
+          false,
+          1,
+        ),
+        ("model.norm.weight", "norm", 1, 2048, 0, false, 16),
+        ("lm_head.weight", "lm_head", 1, 151936, 2048, false, 16),
+      ],
+    ),
   }
 }
 
@@ -3154,148 +3088,25 @@ fn qwen3_8b_safetensors_snapshot() -> SafetensorsSummary {
     has_attn_bias: false,
     has_qk_norm: true,
     dtype_histogram: vec![("BF16".to_string(), 399)],
-    patterns: rows_to_patterns(&[
-      (
-        "model.embed_tokens.weight",
-        "model.embed_tokens.weight",
-        "embedding",
-        1,
-        &[151936, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].self_attn.q_proj.weight",
-        "model.layers.0.self_attn.q_proj.weight",
-        "attention",
-        36,
-        &[4096, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].self_attn.k_proj.weight",
-        "model.layers.0.self_attn.k_proj.weight",
-        "attention",
-        36,
-        &[1024, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].self_attn.v_proj.weight",
-        "model.layers.0.self_attn.v_proj.weight",
-        "attention",
-        36,
-        &[1024, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].self_attn.o_proj.weight",
-        "model.layers.0.self_attn.o_proj.weight",
-        "attention",
-        36,
-        &[4096, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].self_attn.q_norm.weight",
-        "model.layers.0.self_attn.q_norm.weight",
-        "attention",
-        36,
-        &[128],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].self_attn.k_norm.weight",
-        "model.layers.0.self_attn.k_norm.weight",
-        "attention",
-        36,
-        &[128],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].input_layernorm.weight",
-        "model.layers.0.input_layernorm.weight",
-        "norm",
-        36,
-        &[4096],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].post_attention_layernorm.weight",
-        "model.layers.0.post_attention_layernorm.weight",
-        "norm",
-        36,
-        &[4096],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].mlp.gate_proj.weight",
-        "model.layers.0.mlp.gate_proj.weight",
-        "ffn",
-        36,
-        &[12288, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].mlp.up_proj.weight",
-        "model.layers.0.mlp.up_proj.weight",
-        "ffn",
-        36,
-        &[12288, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.layers.[0..35].mlp.down_proj.weight",
-        "model.layers.0.mlp.down_proj.weight",
-        "ffn",
-        36,
-        &[4096, 12288],
-        "BF16",
-        2,
-        "model-00001-of-00005.safetensors",
-      ),
-      (
-        "model.norm.weight",
-        "model.norm.weight",
-        "norm",
-        1,
-        &[4096],
-        "BF16",
-        2,
-        "model-00005-of-00005.safetensors",
-      ),
-      (
-        "lm_head.weight",
-        "lm_head.weight",
-        "lm_head",
-        1,
-        &[151936, 4096],
-        "BF16",
-        2,
-        "model-00005-of-00005.safetensors",
-      ),
-    ]),
+    patterns: rows_to_patterns(
+      5,
+      &[
+        ("model.embed_tokens.weight", "embedding", 1, 151936, 4096, false, 1),
+        ("model.layers.[0..35].self_attn.q_proj.weight", "attention", 36, 4096, 4096, false, 1),
+        ("model.layers.[0..35].self_attn.k_proj.weight", "attention", 36, 1024, 4096, false, 1),
+        ("model.layers.[0..35].self_attn.v_proj.weight", "attention", 36, 1024, 4096, false, 1),
+        ("model.layers.[0..35].self_attn.o_proj.weight", "attention", 36, 4096, 4096, false, 1),
+        ("model.layers.[0..35].self_attn.q_norm.weight", "attention", 36, 128, 0, false, 1),
+        ("model.layers.[0..35].self_attn.k_norm.weight", "attention", 36, 128, 0, false, 1),
+        ("model.layers.[0..35].input_layernorm.weight", "norm", 36, 4096, 0, false, 1),
+        ("model.layers.[0..35].post_attention_layernorm.weight", "norm", 36, 4096, 0, false, 1),
+        ("model.layers.[0..35].mlp.gate_proj.weight", "ffn", 36, 12288, 4096, false, 1),
+        ("model.layers.[0..35].mlp.up_proj.weight", "ffn", 36, 12288, 4096, false, 1),
+        ("model.layers.[0..35].mlp.down_proj.weight", "ffn", 36, 4096, 12288, false, 1),
+        ("model.norm.weight", "norm", 1, 4096, 0, false, 5),
+        ("lm_head.weight", "lm_head", 1, 151936, 4096, false, 5),
+      ],
+    ),
   }
 }
 
@@ -3312,128 +3123,23 @@ fn llama3_8b_safetensors_snapshot() -> SafetensorsSummary {
     has_attn_bias: false,
     has_qk_norm: false,
     dtype_histogram: vec![("BF16".to_string(), 291)],
-    patterns: rows_to_patterns(&[
-      (
-        "model.embed_tokens.weight",
-        "model.embed_tokens.weight",
-        "embedding",
-        1,
-        &[128256, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.layers.[0..31].self_attn.q_proj.weight",
-        "model.layers.0.self_attn.q_proj.weight",
-        "attention",
-        32,
-        &[4096, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.layers.[0..31].self_attn.k_proj.weight",
-        "model.layers.0.self_attn.k_proj.weight",
-        "attention",
-        32,
-        &[1024, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.layers.[0..31].self_attn.v_proj.weight",
-        "model.layers.0.self_attn.v_proj.weight",
-        "attention",
-        32,
-        &[1024, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.layers.[0..31].self_attn.o_proj.weight",
-        "model.layers.0.self_attn.o_proj.weight",
-        "attention",
-        32,
-        &[4096, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.layers.[0..31].input_layernorm.weight",
-        "model.layers.0.input_layernorm.weight",
-        "norm",
-        32,
-        &[4096],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.layers.[0..31].post_attention_layernorm.weight",
-        "model.layers.0.post_attention_layernorm.weight",
-        "norm",
-        32,
-        &[4096],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.layers.[0..31].mlp.gate_proj.weight",
-        "model.layers.0.mlp.gate_proj.weight",
-        "ffn",
-        32,
-        &[14336, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.layers.[0..31].mlp.up_proj.weight",
-        "model.layers.0.mlp.up_proj.weight",
-        "ffn",
-        32,
-        &[14336, 4096],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.layers.[0..31].mlp.down_proj.weight",
-        "model.layers.0.mlp.down_proj.weight",
-        "ffn",
-        32,
-        &[4096, 14336],
-        "BF16",
-        2,
-        "model-00001-of-00004.safetensors",
-      ),
-      (
-        "model.norm.weight",
-        "model.norm.weight",
-        "norm",
-        1,
-        &[4096],
-        "BF16",
-        2,
-        "model-00004-of-00004.safetensors",
-      ),
-      (
-        "lm_head.weight",
-        "lm_head.weight",
-        "lm_head",
-        1,
-        &[128256, 4096],
-        "BF16",
-        2,
-        "model-00004-of-00004.safetensors",
-      ),
-    ]),
+    patterns: rows_to_patterns(
+      4,
+      &[
+        ("model.embed_tokens.weight", "embedding", 1, 128256, 4096, false, 1),
+        ("model.layers.[0..31].self_attn.q_proj.weight", "attention", 32, 4096, 4096, false, 1),
+        ("model.layers.[0..31].self_attn.k_proj.weight", "attention", 32, 1024, 4096, false, 1),
+        ("model.layers.[0..31].self_attn.v_proj.weight", "attention", 32, 1024, 4096, false, 1),
+        ("model.layers.[0..31].self_attn.o_proj.weight", "attention", 32, 4096, 4096, false, 1),
+        ("model.layers.[0..31].input_layernorm.weight", "norm", 32, 4096, 0, false, 1),
+        ("model.layers.[0..31].post_attention_layernorm.weight", "norm", 32, 4096, 0, false, 1),
+        ("model.layers.[0..31].mlp.gate_proj.weight", "ffn", 32, 14336, 4096, false, 1),
+        ("model.layers.[0..31].mlp.up_proj.weight", "ffn", 32, 14336, 4096, false, 1),
+        ("model.layers.[0..31].mlp.down_proj.weight", "ffn", 32, 4096, 14336, false, 1),
+        ("model.norm.weight", "norm", 1, 4096, 0, false, 4),
+        ("lm_head.weight", "lm_head", 1, 128256, 4096, false, 4),
+      ],
+    ),
   }
 }
 
@@ -4705,5 +4411,74 @@ mod tests {
     .unwrap();
     assert_eq!(sdxl.family, ArchFamily::DiffusionPipeline);
     assert_eq!(sdxl.segments.len(), 3);
+  }
+
+  #[test]
+  fn direct_builtin_presets_match_json_parser_exactly() {
+    let cases = [
+      (
+        "deepseek-v3",
+        "deepseek-ai/DeepSeek-V3",
+        DEEPSEEK_V3_CONFIG,
+        r#"{"temperature": 0.6, "top_p": 0.95}"#,
+        r#"{"tokenizer_class": "LlamaTokenizerFast"}"#,
+        deepseek_v3_safetensors_snapshot(),
+      ),
+      (
+        "qwen3-30b-a3b",
+        "Qwen/Qwen3-30B-A3B",
+        QWEN3_30B_A3B_CONFIG,
+        r#"{"temperature": 0.6, "top_p": 0.95}"#,
+        r#"{"tokenizer_class": "Qwen2Tokenizer"}"#,
+        qwen3_30b_safetensors_snapshot(),
+      ),
+      (
+        "qwen3-8b",
+        "Qwen/Qwen3-8B",
+        QWEN3_8B_CONFIG,
+        r#"{"temperature": 0.6, "top_p": 0.95}"#,
+        r#"{"tokenizer_class": "Qwen2Tokenizer"}"#,
+        qwen3_8b_safetensors_snapshot(),
+      ),
+      (
+        "llama-3.1-8b",
+        "meta-llama/Llama-3.1-8B-Instruct",
+        LLAMA_3_1_8B_CONFIG,
+        r#"{"temperature": 0.6, "top_p": 0.9}"#,
+        r#"{"tokenizer_class": "PreTrainedTokenizerFast"}"#,
+        llama3_8b_safetensors_snapshot(),
+      ),
+    ];
+
+    for (key, repo, cfg, gen, tok, st) in cases {
+      let direct = load_builtin_preset(key).expect("direct preset");
+      let parsed = build_model_blueprint(
+        repo,
+        "Built-in Snapshot (HF/ModelScope Verified)",
+        cfg,
+        Some(gen),
+        Some(tok),
+        Some(st),
+      )
+      .expect("parsed preset");
+
+      assert_eq!(direct.repo_id, parsed.repo_id);
+      assert_eq!(direct.family, parsed.family);
+      assert_eq!(direct.architectures, parsed.architectures);
+      assert_eq!(direct.model_type, parsed.model_type);
+      assert_eq!(direct.quantization_summary, parsed.quantization_summary);
+      assert_eq!(direct.vocab_size, parsed.vocab_size);
+      assert_eq!(direct.hidden_size, parsed.hidden_size);
+      assert_eq!(direct.num_hidden_layers, parsed.num_hidden_layers);
+      assert_eq!(direct.max_position_embeddings, parsed.max_position_embeddings);
+      assert_eq!(direct.rope_summary, parsed.rope_summary);
+      assert_eq!(direct.num_nextn_predict_layers, parsed.num_nextn_predict_layers);
+      assert_eq!(direct.tokenizer_class, parsed.tokenizer_class);
+      assert_eq!(direct.default_temperature, parsed.default_temperature);
+      assert_eq!(direct.default_top_p, parsed.default_top_p);
+      assert_eq!(direct.segments, parsed.segments);
+      assert_eq!(direct.params, parsed.params);
+      assert_eq!(direct.safetensors, parsed.safetensors);
+    }
   }
 }
