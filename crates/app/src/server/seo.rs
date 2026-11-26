@@ -84,6 +84,8 @@ async fn collect_detail_paths(is_on: impl Fn(&str) -> bool) -> Vec<(String, Opti
     paths.extend(comps.iter().map(|c| (format!("/ai/components/{}", c.meta.slug), None)));
     let math_items = module_ai::math_atlas::load_all_math_entries();
     paths.extend(math_items.iter().map(|m| (format!("/ai/math/{}", m.meta.slug), None)));
+    let ml_items = module_ai::ml_atlas::load_all_ml_entries();
+    paths.extend(ml_items.iter().map(|m| (format!("/ai/ml/{}", m.meta.slug), None)));
   }
   #[cfg(feature = "course")]
   if is_on("course") {
@@ -161,6 +163,7 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
     static_paths.push("/ai/visualizer".to_string());
     static_paths.push("/ai/components".to_string());
     static_paths.push("/ai/math".to_string());
+    static_paths.push("/ai/ml".to_string());
     static_paths.push("/models".to_string());
     static_paths.push("/models/configs".to_string());
   }
@@ -578,7 +581,10 @@ mod tests {
 
     let paths = collect_detail_paths(|_| true).await;
     let ai_items = if cfg!(feature = "ai") {
-      count_dirs("models") + count_dirs("ai-components") + count_dirs("ai-math")
+      count_dirs("models")
+        + count_dirs("ai-components")
+        + count_dirs("ai-math")
+        + count_dirs("ai-ml")
     } else {
       0
     };
@@ -597,6 +603,8 @@ mod tests {
       assert!(paths.iter().any(|(x, _)| x == "/models/deepseek-v3"));
       assert!(paths.iter().any(|(x, _)| x == "/ai/components/rope-and-yarn-extrapolation"));
       assert!(paths.iter().any(|(x, _)| x == "/ai/math/svd-eckart-young-pseudoinverse"));
+      assert!(paths.iter().any(|(x, _)| x == "/ai/ml/decision-tree"));
+      assert!(paths.iter().any(|(x, _)| x == "/ai/ml/svm"));
     }
     // G6：示例付费课程只有第一课是试看。
     if cfg!(feature = "course") {

@@ -27,7 +27,7 @@ use crate::arch::{format_bytes_iec, format_count, ModelBlueprint};
 #[cfg(feature = "accounts")]
 use crate::atlas_store::{
   admin_ai_polish_model_draft, admin_delete_curated_model, admin_fetch_model_draft,
-  admin_save_curated_model, CuratedModelUpsertInput,
+  admin_save_curated_model, CuratedModelAiPolish, CuratedModelUpsertInput,
 };
 use crate::atlas_store::{ModelModality, RecordOrigin};
 #[cfg(feature = "accounts")]
@@ -507,12 +507,12 @@ pub async fn get_curated_model_detail(slug: String) -> Result<Option<String>, Se
 
 #[inline(never)]
 fn parse_models_json(raw: &str) -> Vec<CuratedModelSummary> {
-  serde_json::from_str(raw).unwrap_or_default()
+  serde_json::from_slice(raw.as_bytes()).unwrap_or_default()
 }
 
 #[inline(never)]
 fn parse_detail_json(raw: &str) -> Option<CuratedModelDetail> {
-  serde_json::from_str(raw).ok()
+  serde_json::from_slice(raw.as_bytes()).ok()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1360,7 +1360,12 @@ fn ModelDetailLoaded(slug: String) -> Element {
               refreshing_upstream.set(true);
               admin_notice.set(None);
               spawn(async move {
-                match admin_fetch_model_draft(r, "auto".to_string(), String::new()).await {
+                match admin_fetch_model_draft(r, "auto".to_string(), String::new())
+                  .await
+                  .and_then(|s| {
+                    serde_json::from_slice::<CuratedModelUpsertInput>(s.as_bytes())
+                      .map_err(|e| ServerFnError::new(e.to_string()))
+                  }) {
                   Ok(fresh_draft) => edit_draft.set(Some(fresh_draft)),
                   Err(e) => admin_notice.set(Some(clean_server_err(&e.to_string()))),
                 }
@@ -1767,7 +1772,10 @@ pub fn SaveToAtlasModal(
     err_msg.set(None);
     info_msg.set(None);
     spawn(async move {
-      match admin_fetch_model_draft(r, src, rev).await {
+      match admin_fetch_model_draft(r, src, rev).await.and_then(|s| {
+        serde_json::from_slice::<CuratedModelUpsertInput>(s.as_bytes())
+          .map_err(|e| ServerFnError::new(e.to_string()))
+      }) {
         Ok(d) => {
           slug.set(d.slug);
           name.set(d.name);
@@ -1827,7 +1835,18 @@ pub fn SaveToAtlasModal(
     err_msg.set(None);
     info_msg.set(None);
     spawn(async move {
-      match admin_ai_polish_model_draft(req_draft).await {
+      let req_json = match serde_json::to_string(&req_draft) {
+        Ok(s) => s,
+        Err(e) => {
+          err_msg.set(Some(e.to_string()));
+          polishing.set(false);
+          return;
+        }
+      };
+      match admin_ai_polish_model_draft(req_json).await.and_then(|s| {
+        serde_json::from_slice::<CuratedModelAiPolish>(s.as_bytes())
+          .map_err(|e| ServerFnError::new(e.to_string()))
+      }) {
         Ok(polished) => {
           summary.set(polished.summary);
           summary_en.set(polished.summary_en);
@@ -1878,8 +1897,16 @@ pub fn SaveToAtlasModal(
     saving.set(true);
     err_msg.set(None);
     spawn(async move {
-      match admin_save_curated_model(input).await {
-        Ok(saved_summary) => on_saved.call(saved_summary.slug),
+      let input_json = match serde_json::to_string(&input) {
+        Ok(s) => s,
+        Err(e) => {
+          err_msg.set(Some(e.to_string()));
+          saving.set(false);
+          return;
+        }
+      };
+      match admin_save_curated_model(input_json).await {
+        Ok(saved_slug) => on_saved.call(saved_slug),
         Err(e) => err_msg.set(Some(clean_server_err(&e.to_string()))),
       }
       saving.set(false);

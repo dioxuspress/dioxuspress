@@ -80,6 +80,8 @@ pub fn ClassicShell() -> Element {
       (Route::AiComponentDetail { .. }, Route::Ai {}) => true,
       (Route::AiMath {}, Route::Ai {}) => true,
       (Route::AiMathDetail { .. }, Route::Ai {}) => true,
+      (Route::AiMl {}, Route::Ai {}) => true,
+      (Route::AiMlDetail { .. }, Route::Ai {}) => true,
       (Route::ModelDetail { .. }, Route::Models {}) => true,
       (Route::Web3Article { .. }, Route::Web3 {}) => true,
       (Route::WasmArticle { .. }, Route::Wasm {}) => true,

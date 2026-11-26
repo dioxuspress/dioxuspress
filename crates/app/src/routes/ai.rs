@@ -5,7 +5,8 @@ use dioxus::prelude::*;
 use crate::components::module_gate::ModuleGate;
 use module_ai::{
   AiArticlePage, AiComponentDetailPage, AiComponentsAtlasPage, AiIndexPage, AiMathAtlasPage,
-  AiMathDetailPage, AiVisualizerPage, ModelConfigsGuidePage, ModelDetailPage, ModelsAtlasPage,
+  AiMathDetailPage, AiMlAtlasPage, AiMlDetailPage, AiVisualizerPage, ModelConfigsGuidePage,
+  ModelDetailPage, ModelsAtlasPage,
 };
 
 #[component]
@@ -36,6 +37,16 @@ pub fn AiMath() -> Element {
 #[component]
 pub fn AiMathDetail(slug: String) -> Element {
   rsx! { ModuleGate { id: "ai".to_string(), AiMathDetailPage { slug } } }
+}
+
+#[component]
+pub fn AiMl() -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), AiMlAtlasPage {} } }
+}
+
+#[component]
+pub fn AiMlDetail(slug: String) -> Element {
+  rsx! { ModuleGate { id: "ai".to_string(), AiMlDetailPage { slug } } }
 }
 
 #[component]

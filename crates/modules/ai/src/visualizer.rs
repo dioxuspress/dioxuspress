@@ -38,6 +38,11 @@ fn current_lang() -> Language {
 ///
 /// SSR 首屏渲染默认旗舰快照（`deepseek-v3`），水合后自动检测 URL 查询参数
 /// `?preset=...` 或 `?repo=...&source=...&rev=...` 并按需触发远端实时拉取，确保 SSR/水合 100% 一致。
+#[inline(never)]
+fn parse_blueprint_json(raw: String) -> Result<ModelBlueprint, ServerFnError> {
+  serde_json::from_slice(raw.as_bytes()).map_err(|e| ServerFnError::new(e.to_string()))
+}
+
 #[component]
 pub fn AiVisualizerPage() -> Element {
   let lang = current_lang();
@@ -156,7 +161,7 @@ pub fn AiVisualizerPage() -> Element {
       loading.set(true);
       error_msg.set(None);
       spawn(async move {
-        match fetch_model_blueprint(r, src_q, rev_q).await {
+        match fetch_model_blueprint(r, src_q, rev_q).await.and_then(parse_blueprint_json) {
           Ok(bp) => blueprint.set(Some(bp)),
           Err(e) => error_msg.set(Some(clean_server_err(&e.to_string()))),
         }
@@ -176,7 +181,7 @@ pub fn AiVisualizerPage() -> Element {
     loading.set(true);
     error_msg.set(None);
     spawn(async move {
-      match fetch_model_blueprint(raw_r, src, rev).await {
+      match fetch_model_blueprint(raw_r, src, rev).await.and_then(parse_blueprint_json) {
         Ok(bp) => blueprint.set(Some(bp)),
         Err(e) => error_msg.set(Some(clean_server_err(&e.to_string()))),
       }
@@ -194,7 +199,7 @@ pub fn AiVisualizerPage() -> Element {
     loading.set(true);
     error_msg.set(None);
     spawn(async move {
-      match parse_custom_model_config(cfg_str, idx_str).await {
+      match parse_custom_model_config(cfg_str, idx_str).await.and_then(parse_blueprint_json) {
         Ok(bp) => {
           error_msg.set(None);
           blueprint.set(Some(bp));
@@ -485,7 +490,7 @@ fn ModelArchEmbed(
     let rv = rev_for_eff.clone();
     loading_sig.set(true);
     spawn(async move {
-      match fetch_model_blueprint(r, s, rv).await {
+      match fetch_model_blueprint(r, s, rv).await.and_then(parse_blueprint_json) {
         Ok(b) => bp_sig.set(Some(b)),
         Err(e) => err_sig.set(Some(clean_server_err(&e.to_string()))),
       }

@@ -33,6 +33,7 @@ pub fn invalidate_all_in_memory_caches() -> u64 {
     module_ai::atlas::invalidate_models_cache();
     module_ai::components_atlas::invalidate_components_cache();
     module_ai::math_atlas::invalidate_math_cache();
+    module_ai::ml_atlas::invalidate_ml_cache();
   }
   board::server::invalidate_board_cache();
   crate::server::conditional_cache::bump_content_epoch()
@@ -106,6 +107,7 @@ pub fn compute_content_root_stamp(root: &Path) -> u128 {
     "models",
     "ai-components",
     "ai-math",
+    "ai-ml",
     "podcasts",
     "topics",
     "images",

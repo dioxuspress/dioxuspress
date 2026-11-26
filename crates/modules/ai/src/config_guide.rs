@@ -3185,7 +3185,7 @@ fn parse_field_docs_slice(rows: &[Value]) -> Vec<ConfigFieldDocDto> {
 
 /// 解析 `/api/ai/config-guide` 紧凑 JSON 载荷为完整的 `ConfigGuidePayload`。
 pub fn parse_config_guide_json(raw: &str) -> ConfigGuidePayload {
-  let Ok(Value::Array(top)) = serde_json::from_str::<Value>(raw) else {
+  let Ok(Value::Array(top)) = serde_json::from_slice::<Value>(raw.as_bytes()) else {
     return ConfigGuidePayload::default();
   };
   let file_specs = top
@@ -3515,7 +3515,7 @@ pub fn extract_annotated_fields_with_docs(
   default_file: ConfigFileKind,
   docs: &[ConfigFieldDocDto],
 ) -> Vec<AnnotatedConfigField> {
-  let Ok(root) = serde_json::from_str::<Value>(raw_json) else {
+  let Ok(root) = serde_json::from_slice::<Value>(raw_json.as_bytes()) else {
     return Vec::new();
   };
   let Some(obj) = root.as_object() else {

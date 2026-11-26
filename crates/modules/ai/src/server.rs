@@ -10,6 +10,7 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "server")]
 use crate::arch::ModelBlueprint;
 
 /// 支持的模型托管源。
@@ -651,13 +652,16 @@ pub async fn resolve_model_blueprint_server(
 }
 
 /// Dioxus Server Function：按 HuggingFace / ModelScope 仓库标识实时解析模型架构与 Safetensors 元数据。
+/// 统一经 `serde_json` 字符串返回，消除 `ciborium` CBOR 对大型 `ModelBlueprint` 的重复反序列化单态化。
 #[server]
 pub async fn fetch_model_blueprint(
   repo: String,
   source: String,
   revision: String,
-) -> Result<ModelBlueprint, ServerFnError> {
-  imp::resolve_model_blueprint(&repo, &source, &revision).await.map_err(ServerFnError::new)
+) -> Result<String, ServerFnError> {
+  let bp =
+    imp::resolve_model_blueprint(&repo, &source, &revision).await.map_err(ServerFnError::new)?;
+  serde_json::to_string(&bp).map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 /// Dioxus Server Function：解析用户手工粘贴的 `config.json`（含 Diffusers `model_index.json`）与可选 `model.safetensors.index.json`。
@@ -667,7 +671,7 @@ pub async fn fetch_model_blueprint(
 pub async fn parse_custom_model_config(
   raw_config: String,
   raw_index: String,
-) -> Result<ModelBlueprint, ServerFnError> {
+) -> Result<String, ServerFnError> {
   const MAX_CUSTOM_CONFIG_BYTES: usize = 2 * 1024 * 1024;
   const MAX_CUSTOM_INDEX_BYTES: usize = 8 * 1024 * 1024;
   if raw_config.trim().is_empty() {
@@ -688,7 +692,7 @@ pub async fn parse_custom_model_config(
     Some(crate::safetensors_meta::summarize_index_and_headers(tot, &wm, &[]))
   };
 
-  crate::arch::build_model_blueprint(
+  let bp = crate::arch::build_model_blueprint(
     "custom/pasted-config",
     "Custom Local JSON",
     &raw_config,
@@ -696,7 +700,8 @@ pub async fn parse_custom_model_config(
     None,
     st_opt,
   )
-  .map_err(ServerFnError::new)
+  .map_err(ServerFnError::new)?;
+  serde_json::to_string(&bp).map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 #[cfg(test)]

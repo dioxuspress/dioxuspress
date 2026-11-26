@@ -90,6 +90,8 @@ absent_pages! {
   AiComponentDetail { slug: String },
   AiMath {},
   AiMathDetail { slug: String },
+  AiMl {},
+  AiMlDetail { slug: String },
   AiArticle { slug: String },
   Models {},
   ModelConfigsGuide {},
@@ -263,6 +265,10 @@ mod route_def {
         AiMath {},
         #[route("/ai/math/:slug")]
         AiMathDetail { slug: String },
+        #[route("/ai/ml")]
+        AiMl {},
+        #[route("/ai/ml/:slug")]
+        AiMlDetail { slug: String },
         #[route("/ai/:slug")]
         AiArticle { slug: String },
 
