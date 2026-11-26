@@ -2353,6 +2353,61 @@ fn build_safetensors_fallback_blueprint(
   }
 }
 
+/// 从外置 `models/<slug>/graph.json` 构建声明式架构蓝图（供 YOLO / U-Net / SAM / 经典网络直接驱动）。
+#[cfg(feature = "server")]
+pub fn build_declarative_graph_blueprint(
+  repo_id: &str,
+  graph_json_raw: &str,
+  total_params: u64,
+  arch_class: &str,
+) -> Result<ModelBlueprint, String> {
+  let spec: crate::tensor_graph::DeclarativeGraphSpec =
+    serde_json::from_str(graph_json_raw).map_err(|e| format!("解析 graph.json 失败: {e}"))?;
+  spec.validate()?;
+  let wire = spec.encode_wire();
+  let node_count = spec.nodes.len() as u64;
+  Ok(ModelBlueprint {
+    repo_id: repo_id.to_string(),
+    source_label: "Declarative Architecture Graph (graph.json)".to_string(),
+    family: ArchFamily::DeclarativeGraph,
+    architectures: if arch_class.trim().is_empty() {
+      Vec::new()
+    } else {
+      vec![arch_class.trim().to_string()]
+    },
+    model_type: spec.shape_mode,
+    torch_dtype: "fp32/fp16".to_string(),
+    quantization_summary: None,
+    multimodal_note: None,
+    vision: None,
+    audio: None,
+    diffusion: None,
+    output_head: OutputHeadSpec::default(),
+    vocab_size: 0,
+    hidden_size: 0,
+    num_hidden_layers: node_count,
+    max_position_embeddings: 0,
+    rms_norm_eps: None,
+    tie_word_embeddings: false,
+    rope_summary: String::new(),
+    hidden_act: String::new(),
+    num_nextn_predict_layers: 0,
+    tokenizer_class: None,
+    default_temperature: None,
+    default_top_p: None,
+    segments: Vec::new(),
+    params: ParamBreakdown {
+      total_params,
+      active_params: total_params,
+      ..ParamBreakdown::default()
+    },
+    safetensors: None,
+    raw_config_pretty: String::new(),
+    aux_configs: Vec::new(),
+    declarative_graph_wire: Some(wire),
+  })
+}
+
 #[cfg(feature = "server")]
 fn u64_any(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u64> {
   keys.iter().find_map(|k| obj.get(*k).and_then(Value::as_u64))

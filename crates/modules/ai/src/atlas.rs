@@ -38,8 +38,8 @@ use crate::visualizer::ModelVisualizerWorkbench;
 
 #[cfg(feature = "server")]
 use crate::arch::{
-  build_diffusion_pipeline_blueprint, build_model_blueprint_with_aux, extract_diffusion_slots,
-  load_builtin_preset, AuxConfigFiles,
+  build_declarative_graph_blueprint, build_diffusion_pipeline_blueprint,
+  build_model_blueprint_with_aux, extract_diffusion_slots, load_builtin_preset, AuxConfigFiles,
 };
 #[cfg(feature = "server")]
 use crate::safetensors_meta::{parse_safetensors_index_json, summarize_index_and_headers};
@@ -103,6 +103,18 @@ pub struct CuratedModelSummary {
   pub has_mla: bool,
   pub has_hybrid_attn: bool,
   pub fp8_vram_bytes: f64,
+  /// 是否为外置 `graph.json` 声明式架构图模型（卡片自动隐藏不适用的 KV/FP8 显存指标）
+  #[serde(default)]
+  pub is_declarative: bool,
+  /// 系列演进时间轴顺序号（如 YOLO `1..=13`，`0` 表示不参与时间轴折叠排序）
+  #[serde(default)]
+  pub series_order: i32,
+  /// 时间轴胶囊短标签（如 `"v1 (2015)"`、`"v26 (2026)"`）
+  #[serde(default)]
+  pub version_label: String,
+  /// 一句话概括相对上一代的核心架构演进（显示在详情页时间轴下方）
+  #[serde(default)]
+  pub delta_from_prev: String,
 }
 
 impl CuratedModelSummary {
@@ -187,6 +199,22 @@ pub struct RawModelYaml {
   pub highlights: Vec<String>,
   #[serde(default)]
   pub highlights_en: Vec<String>,
+  #[serde(default)]
+  pub series_order: i32,
+  #[serde(default)]
+  pub version_label: String,
+  #[serde(default)]
+  pub delta_from_prev: String,
+  #[serde(default)]
+  pub family_badge: String,
+  #[serde(default)]
+  pub total_params: u64,
+  #[serde(default)]
+  pub params_m: f64,
+  #[serde(default)]
+  pub input_shape: String,
+  #[serde(default)]
+  pub core_mechanism: String,
 }
 
 #[cfg(feature = "server")]
@@ -235,8 +263,9 @@ pub fn parse_model_dir(dir: &Path, slug_fallback: &str) -> Result<CuratedModelDe
 
   let cfg_path = dir.join("config.json");
   let model_idx_path = dir.join("model_index.json");
-  if !cfg_path.is_file() && !model_idx_path.is_file() {
-    return Err(format!("{} 缺少 config.json 或 model_index.json", dir.display()));
+  let graph_path = dir.join("graph.json");
+  if !cfg_path.is_file() && !model_idx_path.is_file() && !graph_path.is_file() {
+    return Err(format!("{} 缺少 config.json、model_index.json 或 graph.json", dir.display()));
   }
 
   let yaml_raw = std::fs::read_to_string(&yaml_path)
@@ -275,7 +304,23 @@ pub fn parse_model_dir(dir: &Path, slug_fallback: &str) -> Result<CuratedModelDe
       .and_then(|bp| bp.safetensors)
   };
 
-  let blueprint = if model_idx_path.is_file() && !cfg_path.is_file() {
+  let blueprint = if graph_path.is_file() && !cfg_path.is_file() && !model_idx_path.is_file() {
+    let graph_raw = std::fs::read_to_string(&graph_path)
+      .map_err(|e| format!("读取 {} 失败: {e}", graph_path.display()))?;
+    let declared_params = if raw_meta.total_params > 0 {
+      raw_meta.total_params
+    } else if raw_meta.params_m > 0.0 {
+      (raw_meta.params_m * 1_000_000.0).round() as u64
+    } else {
+      0
+    };
+    build_declarative_graph_blueprint(
+      &repo_id,
+      &graph_raw,
+      declared_params,
+      &raw_meta.family_badge,
+    )?
+  } else if model_idx_path.is_file() && !cfg_path.is_file() {
     let idx_json_raw = std::fs::read_to_string(&model_idx_path)
       .map_err(|e| format!("读取 {} 失败: {e}", model_idx_path.display()))?;
     let (_pipe_cls, slots) = extract_diffusion_slots(&idx_json_raw)?;
@@ -338,7 +383,7 @@ pub fn parse_model_dir(dir: &Path, slug_fallback: &str) -> Result<CuratedModelDe
   };
   let explicit_modality = ModelModality::parse_str(&raw_meta.modality);
 
-  let meta = crate::atlas_store::build_curated_summary(
+  let mut meta = crate::atlas_store::build_curated_summary(
     slug,
     name,
     vendor,
@@ -357,6 +402,18 @@ pub fn parse_model_dir(dir: &Path, slug_fallback: &str) -> Result<CuratedModelDe
     &blueprint,
     RecordOrigin::Builtin,
   );
+  meta.series_order = raw_meta.series_order;
+  meta.version_label = raw_meta.version_label.trim().to_string();
+  meta.delta_from_prev = raw_meta.delta_from_prev.trim().to_string();
+  if !raw_meta.family_badge.trim().is_empty() {
+    meta.family_badge = raw_meta.family_badge.trim().to_string();
+  }
+  if !raw_meta.input_shape.trim().is_empty() {
+    meta.attention_short = raw_meta.input_shape.trim().to_string();
+  }
+  if !raw_meta.core_mechanism.trim().is_empty() {
+    meta.ffn_short = raw_meta.core_mechanism.trim().to_string();
+  }
 
   Ok(CuratedModelDetail { meta, blueprint, readme_md })
 }
@@ -371,6 +428,7 @@ pub fn load_curated_models_full() -> Arc<Vec<CuratedModelDetail>> {
         n,
         "model.yaml"
           | "model.yml"
+          | "graph.json"
           | "config.json"
           | "model_index.json"
           | "scheduler_config.json"
@@ -423,22 +481,38 @@ pub fn scan_curated_models() -> Vec<CuratedModelSummary> {
 }
 
 /// 获取合并后的全部指定模型卡片列表（静态 `models/` + PostgreSQL 在线收录）。
+/// 统一经 `serde_json` 字符串下发，消除 `use_server_future` (`ciborium` CBOR) 对 `Vec<CuratedModelSummary>` 的双重单态化膨胀。
 #[get("/api/ai/models")]
-pub async fn list_curated_models() -> Result<Vec<CuratedModelSummary>, ServerFnError> {
-  Ok(crate::atlas_store::list_curated_models_merged().await)
+pub async fn list_curated_models() -> Result<String, ServerFnError> {
+  let list = crate::atlas_store::list_curated_models_merged().await;
+  serde_json::to_string(&list).map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 /// 按 `slug` 获取单个指定模型的完整架构蓝图与解读详情（数据库优先覆盖同名静态条目）。
 #[get("/api/ai/models/:slug")]
-pub async fn get_curated_model_detail(
-  slug: String,
-) -> Result<Option<CuratedModelDetail>, ServerFnError> {
+pub async fn get_curated_model_detail(slug: String) -> Result<Option<String>, ServerFnError> {
   let clean = slug.trim();
   if clean.is_empty() || clean.contains("..") || clean.contains('/') || clean.contains('\\') {
     return Ok(None);
   }
   let all = crate::atlas_store::load_merged_curated_models_full().await;
-  Ok(all.into_iter().find(|d| d.meta.slug == clean))
+  match all.into_iter().find(|d| d.meta.slug == clean) {
+    Some(detail) => {
+      let json = serde_json::to_string(&detail).map_err(|e| ServerFnError::new(e.to_string()))?;
+      Ok(Some(json))
+    }
+    None => Ok(None),
+  }
+}
+
+#[inline(never)]
+fn parse_models_json(raw: &str) -> Vec<CuratedModelSummary> {
+  serde_json::from_str(raw).unwrap_or_default()
+}
+
+#[inline(never)]
+fn parse_detail_json(raw: &str) -> Option<CuratedModelDetail> {
+  serde_json::from_str(raw).ok()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -448,11 +522,12 @@ pub async fn get_curated_model_detail(
 #[component]
 pub fn ModelsAtlasPage() -> Element {
   let lang = current_lang();
-  let title = lang.pick("主流模型架构图鉴", "Flagship Model Architecture Atlas").to_string();
+  let title =
+    lang.pick("全谱系 AI 模型架构图鉴", "Full-Spectrum AI Model Architecture Atlas").to_string();
   let desc = lang
     .pick(
-      "涵盖 LLM、VLM 视觉多模态、Audio 语音（ASR/TTS）、Diffusion 图像视频生成与 Embedding 向量模型的官方架构精算与多层级可折叠框图。",
-      "Interactive, multi-scale collapsible architecture diagrams across LLM, VLM, Audio, Diffusion, and Embedding models derived from official configs.",
+      "从感知机、经典视觉/NLP、YOLO 全代检测与 U-Net/SAM 分割到万亿大模型（LLM / VLM / Audio / Diffusion / Embedding），端到端可折叠张量维流详图与跨代演进对比。",
+      "Interactive, collapsible tensor-flow architecture diagrams spanning perceptrons, classic CV/NLP, YOLO detection, U-Net/SAM segmentation, and flagship LLMs/VLMs/Diffusion models.",
     )
     .to_string();
 
@@ -502,7 +577,7 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
     list
   } else {
     match models_res() {
-      Some(Ok(list)) => list,
+      Some(Ok(raw)) => parse_models_json(&raw),
       Some(Err(_)) => {
         return rsx! {
           widgets::LoadFailed {
@@ -517,6 +592,7 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
   let mut modality_filter: Signal<Option<ModelModality>> = use_signal(|| None);
   let mut series_filter = use_signal(|| "all".to_string());
   let mut trait_filter = use_signal(|| ArchTraitFilter::All);
+  let mut expand_series = use_signal(|| false);
   let mut search_q = use_signal(String::new);
   let mut custom_repo = use_signal(String::new);
   #[cfg(feature = "accounts")]
@@ -579,8 +655,8 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
           show_add_modal.set(false);
           saved_slug_banner.set(Some(slug));
           spawn(async move {
-            if let Ok(fresh) = list_curated_models().await {
-              live_models_override.set(Some(fresh));
+            if let Ok(raw) = list_curated_models().await {
+              live_models_override.set(Some(parse_models_json(&raw)));
             }
           });
         },
@@ -612,7 +688,7 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
   let cur_series = series_filter();
   let cur_trait = trait_filter();
 
-  let filtered: Vec<CuratedModelSummary> = models
+  let filtered_raw: Vec<CuratedModelSummary> = models
     .iter()
     .filter(|m| cur_modality.is_none_or(|md| m.modality == md))
     .filter(|m| cur_series == "all" || m.series == cur_series)
@@ -640,22 +716,56 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
     .cloned()
     .collect();
 
-  let modality_tabs: [(Option<ModelModality>, &str); 6] = [
-    (None, lang.pick("全部模态", "All Modalities")),
-    (Some(ModelModality::Llm), ModelModality::Llm.label(lang)),
-    (Some(ModelModality::Vlm), ModelModality::Vlm.label(lang)),
-    (Some(ModelModality::Audio), ModelModality::Audio.label(lang)),
-    (Some(ModelModality::Diffusion), ModelModality::Diffusion.label(lang)),
-    (Some(ModelModality::Embedding), ModelModality::Embedding.label(lang)),
-  ];
+  // 长演进系列防刷屏：默认折叠含 ≥3 个带 `series_order` 版本的同系条目，仅保留最新代表作并附版本数徽章。
+  let collapse_long_series = cur_series == "all" && q_norm.is_empty() && !expand_series();
+  let mut has_collapsible_series = false;
+  let mut filtered: Vec<CuratedModelSummary> = Vec::with_capacity(filtered_raw.len());
+  let mut series_counts: Vec<usize> = Vec::with_capacity(filtered_raw.len());
+  for m in &filtered_raw {
+    let is_long_series = !m.series.is_empty()
+      && m.series != "other"
+      && m.series_order > 0
+      && filtered_raw.iter().filter(|x| x.series == m.series && x.series_order > 0).count() >= 3;
+    if is_long_series {
+      has_collapsible_series = true;
+    }
+    if collapse_long_series && is_long_series {
+      let max_ord = filtered_raw
+        .iter()
+        .filter(|x| x.series == m.series && x.series_order > 0)
+        .map(|x| x.series_order)
+        .max()
+        .unwrap_or(m.series_order);
+      if m.series_order != max_ord {
+        continue;
+      }
+      filtered.push(m.clone());
+      series_counts.push(filtered_raw.iter().filter(|x| x.series == m.series).count());
+    } else {
+      filtered.push(m.clone());
+      series_counts.push(1);
+    }
+  }
 
-  let series_tabs = [
+  let mut modality_tabs: Vec<(Option<ModelModality>, &str)> = Vec::with_capacity(9);
+  modality_tabs.push((None, lang.pick("全部模态", "All Modalities")));
+  for &m_opt in ModelModality::ALL {
+    modality_tabs.push((Some(m_opt), m_opt.label(lang)));
+  }
+
+  let base_series: &[(&str, &str)] = &[
     ("all", lang.pick("全部家族", "All Families")),
     ("deepseek", lang.pick("DeepSeek 系列", "DeepSeek")),
     ("qwen", lang.pick("Qwen 通义系列", "Qwen")),
     ("llama", lang.pick("Llama 系列", "Llama")),
-    ("other", lang.pick("主流开源 (Gemma/GLM/FLUX...)", "Open Frontier")),
+    ("yolo", lang.pick("YOLO 全系", "YOLO")),
+    ("unet", lang.pick("U-Net 家族", "U-Net")),
+    ("sam", lang.pick("SAM 分割", "SAM")),
+    ("classic", lang.pick("经典基石", "Classic")),
+    ("other", lang.pick("其它前沿开源", "Open Frontier")),
   ];
+  let series_tabs: Vec<(&str, &str)> =
+    base_series.iter().copied().filter(|&(sid, _)| sid == "all" || count_series(sid) > 0).collect();
 
   let trait_chips = [
     (ArchTraitFilter::All, lang.pick("全部架构特性", "All Traits")),
@@ -829,24 +939,38 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
           }
         }
 
-        // 2C. 架构机制快速过滤条
-        div { class: "flex flex-wrap items-center gap-1.5",
-          for (tf, tf_lbl) in trait_chips {
-            {
-              let active = trait_filter() == tf;
-              let cls = if active {
-                "px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-indigo-600 text-white cursor-pointer"
-              } else {
-                "px-2.5 py-1 rounded-lg text-[11px] font-medium border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:border-indigo-400 cursor-pointer"
-              };
-              rsx! {
-                button {
-                  key: "{tf_lbl}",
-                  r#type: "button",
-                  class: cls,
-                  onclick: move |_| trait_filter.set(tf),
-                  "{tf_lbl}"
+        // 2C. 架构机制快速过滤条 + 长系列折叠开关
+        div { class: "flex flex-wrap items-center justify-between gap-2",
+          div { class: "flex flex-wrap items-center gap-1.5",
+            for (tf, tf_lbl) in trait_chips {
+              {
+                let active = trait_filter() == tf;
+                let cls = if active {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-indigo-600 text-white cursor-pointer"
+                } else {
+                  "px-2.5 py-1 rounded-lg text-[11px] font-medium border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:border-indigo-400 cursor-pointer"
+                };
+                rsx! {
+                  button {
+                    key: "{tf_lbl}",
+                    r#type: "button",
+                    class: cls,
+                    onclick: move |_| trait_filter.set(tf),
+                    "{tf_lbl}"
+                  }
                 }
+              }
+            }
+          }
+          if has_collapsible_series && cur_series == "all" && q_norm.is_empty() {
+            button {
+              r#type: "button",
+              class: "px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 cursor-pointer",
+              onclick: move |_| expand_series.set(!expand_series()),
+              if expand_series() {
+                {lang.pick("按系列折叠展示", "Group Series")}
+              } else {
+                {lang.pick("展开全部演进版本", "Expand All Versions")}
               }
             }
           }
@@ -860,8 +984,13 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
         }
       } else {
         div { class: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5",
-          for m in filtered {
-            CuratedModelCard { key: "{m.slug}", model: m, show_origin: is_admin }
+          for (idx, m) in filtered.into_iter().enumerate() {
+            CuratedModelCard {
+              key: "{m.slug}",
+              model: m,
+              series_count: series_counts.get(idx).copied().unwrap_or(1),
+              show_origin: is_admin,
+            }
           }
         }
       }
@@ -883,6 +1012,18 @@ fn series_accent_badge(series: &str) -> (&'static str, &'static str) {
       "Meta Llama",
       "bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800",
     ),
+    "yolo" => (
+      "YOLO",
+      "bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800",
+    ),
+    "unet" => (
+      "U-Net",
+      "bg-teal-500/10 text-teal-700 dark:text-teal-300 border-teal-200 dark:border-teal-800",
+    ),
+    "sam" => (
+      "SAM",
+      "bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800",
+    ),
     _ => (
       "Open Frontier",
       "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800",
@@ -897,16 +1038,87 @@ fn modality_badge_style(modality: ModelModality) -> &'static str {
     ModelModality::Audio => "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300",
     ModelModality::Diffusion => "bg-rose-500/15 text-rose-700 dark:text-rose-300",
     ModelModality::Embedding => "bg-teal-500/15 text-teal-700 dark:text-teal-300",
+    ModelModality::Detection => "bg-amber-500/15 text-amber-800 dark:text-amber-300",
+    ModelModality::Segmentation => "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+    ModelModality::Classic => "bg-slate-500/15 text-slate-700 dark:text-slate-300",
   }
 }
 
 #[component]
-fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
+fn CuratedModelCard(model: CuratedModelSummary, series_count: usize, show_origin: bool) -> Element {
   let lang = current_lang();
   let (_, series_cls) = series_accent_badge(&model.series);
   let mod_cls = modality_badge_style(model.modality);
-  let is_sparse = model.active_params < model.total_params;
+  let is_sparse = !model.is_declarative && model.active_params < model.total_params;
   let detail_href = format!("/models/{}", model.slug);
+
+  let (k1, v1_main, v1_active) = if model.is_declarative {
+    (
+      lang.pick("参数规模", "Parameters"),
+      if model.total_params > 0 { format_count(model.total_params) } else { "Multi-Scale".into() },
+      String::new(),
+    )
+  } else {
+    let lbl = if model.modality == ModelModality::Diffusion {
+      lang.pick("全管线 / 去噪主干", "Pipeline / Denoiser")
+    } else {
+      lang.pick("总参数 / 激活", "Total / Active")
+    };
+    if is_sparse {
+      (lbl, format!("{} / ", format_count(model.total_params)), format_count(model.active_params))
+    } else {
+      (lbl, format!("{} Dense", format_count(model.total_params)), String::new())
+    }
+  };
+
+  let (k2, v2) = if model.is_declarative {
+    (lang.pick("图谱算子节点", "Graph Nodes"), format!("{} Nodes", model.num_layers))
+  } else {
+    (
+      lang.pick("层栈 × 隐藏维", "Layers × Hidden"),
+      format!("{}L × {}d", model.num_layers, model.hidden_size),
+    )
+  };
+
+  let (k3, v3) = if model.is_declarative {
+    let val = if !model.version_label.is_empty() {
+      model.version_label.clone()
+    } else {
+      model.modality.short_badge().to_string()
+    };
+    (lang.pick("版本 / 演进定位", "Version"), val)
+  } else if model.modality == ModelModality::Diffusion {
+    (lang.pick("去噪状态模式", "Denoising Mode"), "0 KV (Latent ODE)".to_string())
+  } else if model.modality == ModelModality::Embedding {
+    (lang.pick("推理缓存模式", "Cache Mode"), "0 B (Single-Pass)".to_string())
+  } else if model.kv_compression_ratio >= 500.0 {
+    (lang.pick("KV 压缩效率", "KV Compression"), "O(1) State".to_string())
+  } else {
+    (
+      lang.pick("KV 压缩效率", "KV Compression"),
+      format!("{:.1}× vs MHA", model.kv_compression_ratio),
+    )
+  };
+
+  let (k4, v4) = if model.is_declarative {
+    (
+      lang.pick("发布年份", "Released"),
+      if !model.release_date.is_empty() { model.release_date.clone() } else { "Classic".into() },
+    )
+  } else {
+    (lang.pick("FP8 预估显存", "Est. FP8 VRAM"), format_bytes_iec(model.fp8_vram_bytes))
+  };
+
+  let sig1 = if model.is_declarative {
+    format!("Input: {}", model.attention_short)
+  } else {
+    format!("Attn: {}", model.attention_short)
+  };
+  let sig2 = if model.is_declarative {
+    format!("Core:  {}", model.ffn_short)
+  } else {
+    format!("FFN:  {}", model.ffn_short)
+  };
 
   rsx! {
     Link {
@@ -919,6 +1131,11 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
             "{model.vendor}"
           }
           div { class: "flex items-center gap-1.5",
+            if series_count > 1 {
+              span { class: "px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-600 text-white font-mono",
+                "含 {series_count} 代演进"
+              }
+            }
             if show_origin && model.origin != RecordOrigin::Builtin {
               Badge {
                 variant: BadgeVariant::Warning,
@@ -937,7 +1154,7 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
           }
         }
 
-        // 模型标题与 HF Repo
+        // 模型标题与仓库/年份
         h2 { class: "text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors",
           "{model.name}"
         }
@@ -952,75 +1169,35 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
           "{model.localized_summary(lang)}"
         }
 
-        // 4 宫格硬核指标矩阵
+        // 4 宫格硬核指标矩阵（零条件 RSX 模板，纯 Rust 预计算以最小化 WASM 体积）
         div { class: "mt-3.5 grid grid-cols-2 gap-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-slate-200/70 dark:border-slate-800/80 p-3 font-mono",
           div {
-            div { class: "text-[11px] text-slate-500 dark:text-slate-400",
-              if model.modality == ModelModality::Diffusion {
-                {lang.pick("全管线 / 去噪主干", "Pipeline / Denoiser")}
-              } else {
-                {lang.pick("总参数 / 激活", "Total / Active")}
-              }
-            }
+            div { class: "text-[11px] text-slate-500 dark:text-slate-400", "{k1}" }
             div { class: "text-[13px] font-bold text-slate-900 dark:text-white tabular-nums",
-              if is_sparse {
-                "{format_count(model.total_params)} / "
-                span { class: "text-amber-600 dark:text-amber-400",
-                  "{format_count(model.active_params)}"
-                }
-              } else {
-                "{format_count(model.total_params)} Dense"
+              "{v1_main}"
+              if !v1_active.is_empty() {
+                span { class: "text-amber-600 dark:text-amber-400", "{v1_active}" }
               }
             }
           }
           div {
-            div { class: "text-[11px] text-slate-500 dark:text-slate-400",
-              {lang.pick("层栈 × 隐藏维", "Layers × Hidden")}
-            }
-            div { class: "text-[13px] font-bold text-slate-900 dark:text-white tabular-nums",
-              "{model.num_layers}L × {model.hidden_size}d"
-            }
+            div { class: "text-[11px] text-slate-500 dark:text-slate-400", "{k2}" }
+            div { class: "text-[13px] font-bold text-slate-900 dark:text-white tabular-nums", "{v2}" }
           }
           div {
-            div { class: "text-[11px] text-slate-500 dark:text-slate-400",
-              if model.modality == ModelModality::Diffusion {
-                {lang.pick("去噪状态模式", "Denoising Mode")}
-              } else if model.modality == ModelModality::Embedding {
-                {lang.pick("推理缓存模式", "Cache Mode")}
-              } else {
-                {lang.pick("KV 压缩效率", "KV Compression")}
-              }
-            }
-            div { class: "text-[13px] font-bold text-indigo-600 dark:text-indigo-400 tabular-nums",
-              if model.modality == ModelModality::Diffusion {
-                "0 KV (Latent ODE)"
-              } else if model.modality == ModelModality::Embedding {
-                "0 B (Single-Pass)"
-              } else if model.kv_compression_ratio >= 500.0 {
-                "O(1) State"
-              } else {
-                "{model.kv_compression_ratio:.1}× vs MHA"
-              }
-            }
+            div { class: "text-[11px] text-slate-500 dark:text-slate-400", "{k3}" }
+            div { class: "text-[13px] font-bold text-indigo-600 dark:text-indigo-400 tabular-nums truncate", "{v3}" }
           }
           div {
-            div { class: "text-[11px] text-slate-500 dark:text-slate-400",
-              {lang.pick("FP8 预估显存", "Est. FP8 VRAM")}
-            }
-            div { class: "text-[13px] font-bold text-slate-800 dark:text-slate-200 tabular-nums",
-              "{format_bytes_iec(model.fp8_vram_bytes)}"
-            }
+            div { class: "text-[11px] text-slate-500 dark:text-slate-400", "{k4}" }
+            div { class: "text-[13px] font-bold text-slate-800 dark:text-slate-200 tabular-nums", "{v4}" }
           }
         }
 
-        // 注意力与前馈简明签名
+        // 注意力/输入与前馈/核心机制简明签名
         div { class: "mt-3 space-y-1.5 text-xs font-mono",
-          div { class: "truncate text-indigo-700 dark:text-indigo-300 bg-indigo-50/70 dark:bg-indigo-950/40 px-2.5 py-1 rounded",
-            "Attn: {model.attention_short}"
-          }
-          div { class: "truncate text-amber-800 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-950/40 px-2.5 py-1 rounded",
-            "FFN:  {model.ffn_short}"
-          }
+          div { class: "truncate text-indigo-700 dark:text-indigo-300 bg-indigo-50/70 dark:bg-indigo-950/40 px-2.5 py-1 rounded", "{sig1}" }
+          div { class: "truncate text-amber-800 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-950/40 px-2.5 py-1 rounded", "{sig2}" }
         }
       }
 
@@ -1094,15 +1271,19 @@ fn ModelDetailLoaded(slug: String) -> Element {
   #[cfg(feature = "accounts")]
   let mut admin_notice: Signal<Option<String>> = use_signal(|| None);
 
-  let all_models =
-    live_all_override().unwrap_or_else(|| all_res().and_then(Result::ok).unwrap_or_default());
+  let all_models = live_all_override().unwrap_or_else(|| {
+    all_res().and_then(Result::ok).map(|r| parse_models_json(&r)).unwrap_or_default()
+  });
 
   let detail = if let Some((ref ov_slug, ref ov_d)) = live_detail_override() {
     if ov_slug == &slug {
       ov_d.clone()
     } else {
       match detail_res() {
-        Some(Ok(Some(d))) => d,
+        Some(Ok(Some(raw))) => match parse_detail_json(&raw) {
+          Some(d) => d,
+          None => return render_model_not_found(lang),
+        },
         Some(Err(_)) => {
           return rsx! {
             widgets::LoadFailed {
@@ -1115,7 +1296,10 @@ fn ModelDetailLoaded(slug: String) -> Element {
     }
   } else {
     match detail_res() {
-      Some(Ok(Some(d))) => d,
+      Some(Ok(Some(raw))) => match parse_detail_json(&raw) {
+        Some(d) => d,
+        None => return render_model_not_found(lang),
+      },
       Some(Err(_)) => {
         return rsx! {
           widgets::LoadFailed {
@@ -1199,11 +1383,13 @@ fn ModelDetailLoaded(slug: String) -> Element {
                       Ok(_) => {
                         confirm_delete.set(false);
                         if origin_for_delete == RecordOrigin::Override {
-                          if let Ok(Some(restored)) = get_curated_model_detail(s.clone()).await {
-                            live_detail_override.set(Some((s, restored)));
+                          if let Ok(Some(raw)) = get_curated_model_detail(s.clone()).await {
+                            if let Some(restored) = parse_detail_json(&raw) {
+                              live_detail_override.set(Some((s, restored)));
+                            }
                           }
-                          if let Ok(list) = list_curated_models().await {
-                            live_all_override.set(Some(list));
+                          if let Ok(raw) = list_curated_models().await {
+                            live_all_override.set(Some(parse_models_json(&raw)));
                           }
                           admin_notice.set(Some("已恢复为静态目录默认版本".to_string()));
                         } else {
@@ -1260,12 +1446,14 @@ fn ModelDetailLoaded(slug: String) -> Element {
           edit_draft.set(None);
           let c_slug = cur_slug.clone();
           spawn(async move {
-            if let Ok(list) = list_curated_models().await {
-              live_all_override.set(Some(list));
+            if let Ok(raw) = list_curated_models().await {
+              live_all_override.set(Some(parse_models_json(&raw)));
             }
             if saved_slug == c_slug {
-              if let Ok(Some(fresh_d)) = get_curated_model_detail(saved_slug.clone()).await {
-                live_detail_override.set(Some((saved_slug, fresh_d)));
+              if let Ok(Some(raw)) = get_curated_model_detail(saved_slug.clone()).await {
+                if let Some(fresh_d) = parse_detail_json(&raw) {
+                  live_detail_override.set(Some((saved_slug, fresh_d)));
+                }
               }
               admin_notice.set(Some("已保存并即时更新图鉴页面".to_string()));
             } else {
@@ -1303,52 +1491,123 @@ fn ModelDetailLoaded(slug: String) -> Element {
           }
 
           div { class: "flex flex-wrap items-center gap-2",
-            a {
-              href: "{hf_url}",
-              target: "_blank",
-              rel: "noopener noreferrer",
-              class: "px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:border-indigo-400 font-mono text-[11px]",
-              "HuggingFace ↗"
-            }
-            if let Some(ms) = ms_url {
+            if !meta.is_declarative {
               a {
-                href: "{ms}",
+                href: "{hf_url}",
                 target: "_blank",
                 rel: "noopener noreferrer",
                 class: "px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:border-indigo-400 font-mono text-[11px]",
-                "ModelScope ↗"
+                "HuggingFace ↗"
               }
-            }
-            Link {
-              to: live_sandbox_href,
-              class: "px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 text-[11px] font-semibold",
-              {lang.pick("实时拉取远端 Safetensors ↗", "Fetch Live Safetensors ↗")}
+              if let Some(ms) = ms_url {
+                a {
+                  href: "{ms}",
+                  target: "_blank",
+                  rel: "noopener noreferrer",
+                  class: "px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:border-indigo-400 font-mono text-[11px]",
+                  "ModelScope ↗"
+                }
+              }
+              Link {
+                to: live_sandbox_href,
+                class: "px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 text-[11px] font-semibold",
+                {lang.pick("实时拉取远端 Safetensors ↗", "Fetch Live Safetensors ↗")}
+              }
+            } else if meta.hf_repo.starts_with("http://") || meta.hf_repo.starts_with("https://") {
+              a {
+                href: "{meta.hf_repo}",
+                target: "_blank",
+                rel: "noopener noreferrer",
+                class: "px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:border-indigo-400 font-mono text-[11px]",
+                {lang.pick("论文 / 官方实现 ↗", "Paper / Source ↗")}
+              }
             }
           }
         }
 
         {admin_detail_toolbar}
 
-        // 快速对比切换条：同页面一键切换其它指定旗舰模型观察架构差异
-        if all_models.len() > 1 {
-          div { class: "flex items-center gap-1.5 overflow-x-auto pb-1",
-            span { class: "text-[11px] font-semibold text-slate-400 shrink-0 mr-1",
-              {lang.pick("快速切换模型：", "Switch Model:")}
+        // 系列演进时间轴 / 旗舰模型快速切换条（统一单一 RSX 循环模板 + 轻量插入排序，零 driftsort 膨胀）
+        {
+          let mut nav_peers: Vec<&CuratedModelSummary> = Vec::new();
+          let is_timeline = if !meta.series.is_empty() && meta.series != "other" {
+            for item in &all_models {
+              if item.series == meta.series {
+                let pos = nav_peers
+                  .iter()
+                  .position(|p| {
+                    (item.series_order, item.order, item.slug.as_str())
+                      < (p.series_order, p.order, p.slug.as_str())
+                  })
+                  .unwrap_or(nav_peers.len());
+                nav_peers.insert(pos, item);
+              }
             }
-            for item in all_models.iter() {
-              {
-                let is_cur = item.slug == meta.slug;
-                let cls = if is_cur {
-                  "shrink-0 px-2.5 py-1 rounded-lg text-xs font-bold bg-indigo-600 text-white shadow-xs"
-                } else {
-                  "shrink-0 px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
-                };
-                rsx! {
-                  Link {
-                    key: "{item.slug}",
-                    to: format!("/models/{}", item.slug),
-                    class: cls,
-                    "{item.name}"
+            nav_peers.len() >= 2
+          } else {
+            false
+          };
+          if !is_timeline {
+            nav_peers.clear();
+            for item in all_models.iter().take(16) {
+              nav_peers.push(item);
+            }
+          }
+          let show_nav = nav_peers.len() >= 2;
+          let bar_cls = if is_timeline {
+            "rounded-xl border border-indigo-200/80 dark:border-indigo-900/60 bg-indigo-50/40 dark:bg-indigo-950/20 px-3.5 py-2.5 space-y-2"
+          } else {
+            "space-y-1"
+          };
+          let bar_lbl = if is_timeline {
+            lang.pick("系列演进时间轴：", "Series Timeline:")
+          } else {
+            lang.pick("快速切换模型：", "Switch Model:")
+          };
+          let lbl_cls = if is_timeline {
+            "text-[11px] font-bold text-indigo-700 dark:text-indigo-300 shrink-0 mr-1"
+          } else {
+            "text-[11px] font-semibold text-slate-400 shrink-0 mr-1"
+          };
+          rsx! {
+            if show_nav {
+              div { class: bar_cls,
+                div { class: "flex items-center gap-1.5 overflow-x-auto pb-0.5",
+                  span { class: lbl_cls, "{bar_lbl}" }
+                  for (pi, item) in nav_peers.iter().enumerate() {
+                    {
+                      let is_cur = item.slug == meta.slug;
+                      let pill_txt = if is_timeline && !item.version_label.is_empty() {
+                        item.version_label.as_str()
+                      } else {
+                        item.name.as_str()
+                      };
+                      let cls = if is_cur {
+                        "shrink-0 px-2.5 py-1 rounded-lg text-xs font-bold bg-indigo-600 text-white shadow-xs"
+                      } else {
+                        "shrink-0 px-2.5 py-1 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-indigo-400 transition-colors"
+                      };
+                      rsx! {
+                        span {
+                          key: "nav-{item.slug}",
+                          class: "inline-flex items-center gap-1.5 shrink-0",
+                          if is_timeline && pi > 0 {
+                            span { class: "text-slate-400 text-[11px]", "→" }
+                          }
+                          Link {
+                            to: format!("/models/{}", item.slug),
+                            class: cls,
+                            "{pill_txt}"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                if is_timeline && !meta.delta_from_prev.is_empty() {
+                  div { class: "text-xs text-slate-700 dark:text-slate-300 font-medium",
+                    span { class: "font-bold text-amber-700 dark:text-amber-400 mr-1.5", "⚡ 相对上一代演进：" }
+                    "{meta.delta_from_prev}"
                   }
                 }
               }
@@ -1792,13 +2051,7 @@ pub fn SaveToAtlasModal(
               "所属模态 (Modality)"
             }
             div { class: "flex flex-wrap gap-1.5",
-              for m_opt in [
-                ModelModality::Llm,
-                ModelModality::Vlm,
-                ModelModality::Audio,
-                ModelModality::Diffusion,
-                ModelModality::Embedding,
-              ] {
+              for &m_opt in ModelModality::ALL {
                 {
                   let active = modality() == m_opt;
                   let cls = if active {
@@ -2048,6 +2301,40 @@ mod tests {
     assert_eq!(detail.meta.modality, ModelModality::Diffusion);
     assert_eq!(detail.blueprint.num_hidden_layers, 57);
     assert!(detail.blueprint.is_diffusion_pipeline());
+
+    let encoded = serde_json::to_vec(&detail).expect("encode wire");
+    let decoded: CuratedModelDetail = serde_json::from_slice(&encoded).expect("decode wire");
+    assert_eq!(decoded, detail);
+  }
+
+  #[test]
+  fn parses_declarative_graph_dir_and_roundtrips_detail_wire() {
+    let tmp = std::env::temp_dir().join(format!("dp-atlas-decl-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("mkdir decl");
+
+    std::fs::write(
+      tmp.join("model.yaml"),
+      "slug: yolo26\nname: YOLO26\nvendor: Ultralytics\nmodality: detection\nseries: yolo\nseries_order: 13\nversion_label: v26 (2026)\ndelta_from_prev: 移除 DFL，原生端到端 One-to-One NMS-Free Head\nfamily_badge: YOLO · NMS-Free\nparams_m: 9.5\ninput_shape: 640×640×3 RGB\ncore_mechanism: C3k2 + C2PSA + NMS-Free Head\nrelease_date: 2026-01\nsummary: Ultralytics YOLO26 端到端实时目标检测\n",
+    )
+    .expect("write yaml");
+    std::fs::write(
+      tmp.join("graph.json"),
+      r#"{"title":"YOLO26 · 端到端目标检测张量维流图","subtitle":"9.5M Params · NMS-Free One-to-One","legend_style":"classic_cnn","shape_mode":"image_2d","nodes":[{"id":"in","kind":"input","dims":[640,640,3],"op_title":"RGB Input","col_q":0,"row":0},{"id":"p3","kind":"conv_or_linear","dims":[80,80,256],"op_title":"P3 Feature","col_q":0,"row":1},{"id":"out","kind":"fc_head","dims":[80,80,84],"op_title":"One-to-One Head","col_q":0,"row":2}],"edges":[{"from":"in","to":"p3"},{"from":"p3","to":"out"}]}"#,
+    )
+    .expect("write graph.json");
+
+    let detail = parse_model_dir(&tmp, "yolo26").expect("parse declarative dir");
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert_eq!(detail.meta.modality, ModelModality::Detection);
+    assert_eq!(detail.meta.series, "yolo");
+    assert_eq!(detail.meta.series_order, 13);
+    assert_eq!(detail.meta.version_label, "v26 (2026)");
+    assert!(detail.meta.is_declarative);
+    assert_eq!(detail.meta.total_params, 9_500_000);
+    assert_eq!(detail.meta.family_badge, "YOLO · NMS-Free");
+    assert!(detail.blueprint.is_declarative_graph());
 
     let encoded = serde_json::to_vec(&detail).expect("encode wire");
     let decoded: CuratedModelDetail = serde_json::from_slice(&encoded).expect("decode wire");

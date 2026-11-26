@@ -565,6 +565,15 @@ pub fn ModelVisualizerWorkbench(
 
   let open_href = format!("/ai/visualizer?repo={}", blueprint.repo_id);
 
+  if blueprint.is_declarative_graph() {
+    return rsx! {
+      TensorFlowGraphView {
+        blueprint,
+        on_drill_to_workbench: move |_| {},
+      }
+    };
+  }
+
   rsx! {
     div { class: if embedded {
       card_class("p-4 sm:p-6 bg-white dark:bg-slate-950 shadow-sm")
