@@ -534,10 +534,11 @@ pub struct ParamBreakdown {
 /// 架构图中可点击检视的模块焦点。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum InspectorFocus {
+  #[default]
+  Overview,
   Vision,
   Audio,
   Embedding,
-  #[default]
   Attention,
   FfnOrMoe,
   NormAndResidual,
@@ -548,6 +549,7 @@ pub enum InspectorFocus {
 impl InspectorFocus {
   pub fn from_attr(raw: &str) -> Self {
     match raw.trim().to_ascii_lowercase().as_str() {
+      "overview" | "macro" | "summary" | "all" => Self::Overview,
       "vision" | "vit" | "siglip" => Self::Vision,
       "audio" | "whisper" | "speech" | "mel" => Self::Audio,
       "embed" | "embedding" => Self::Embedding,
@@ -560,8 +562,14 @@ impl InspectorFocus {
     }
   }
 
+  /// 是否属于具体 Transformer 层块内部的子模块（仅此类模块在标题中显示 `Layer #N`）。
+  pub fn is_layer_scoped(self) -> bool {
+    matches!(self, Self::Attention | Self::FfnOrMoe | Self::NormAndResidual)
+  }
+
   pub fn stage_filter(&self) -> &'static str {
     match self {
+      Self::Overview => "all",
       Self::Vision => "vision",
       Self::Audio => "audio",
       Self::Embedding => "embedding",
@@ -664,8 +672,13 @@ impl ModelBlueprint {
     self.family == ArchFamily::DiffusionPipeline || self.diffusion.is_some()
   }
 
-  /// 默认推荐高亮聚焦的子模块。
+  /// 工作台未指定初始焦点时的默认视图：先呈现全模型端到端总体架构，再按需钻取算子细节。
   pub fn default_focus(&self) -> InspectorFocus {
+    InspectorFocus::Overview
+  }
+
+  /// 该模型最具代表性的算子级子图焦点（用于从总览钻取或默认实验室推荐）。
+  pub fn primary_operator_focus(&self) -> InspectorFocus {
     match self.family {
       ArchFamily::AudioAsr if self.audio.is_some() => InspectorFocus::Audio,
       ArchFamily::SpeechTtsOmni => InspectorFocus::LmHead,
@@ -676,8 +689,45 @@ impl ModelBlueprint {
     }
   }
 
+  /// 是否存在多个层段且所有层段共用相同的注意力机制（例如 DeepSeek-V3 全部层段均使用 MLA，仅 FFN 异构）。
+  pub fn has_uniform_attention(&self) -> bool {
+    let Some(first) = self.segments.first() else {
+      return false;
+    };
+    if self.segments.len() <= 1 {
+      return false;
+    }
+    let first_lbl = first.attention.short_label();
+    self.segments.iter().skip(1).all(|s| s.attention.short_label() == first_lbl)
+  }
+
+  /// 点击左侧某个层段时，自动选择最能体现该层段架构特征的算子焦点。
+  pub fn recommended_focus_for_segment(&self, _seg_idx: usize) -> InspectorFocus {
+    if self.segments.len() > 1 {
+      let uniform_attn = self.has_uniform_attention();
+      let uniform_ffn = self
+        .segments
+        .first()
+        .map(|first| {
+          let lbl = first.ffn.short_label();
+          self.segments.iter().skip(1).all(|s| s.ffn.short_label() == lbl)
+        })
+        .unwrap_or(true);
+      if uniform_attn && !uniform_ffn {
+        return InspectorFocus::FfnOrMoe;
+      }
+      if !uniform_attn {
+        return InspectorFocus::Attention;
+      }
+    }
+    self.primary_operator_focus()
+  }
+
   /// 按当前选中的模块焦点筛选匹配的 L2 Safetensors 真实权重模式。
   pub fn matching_tensors(&self, focus: InspectorFocus) -> Vec<&TensorPatternEntry> {
+    if focus == InspectorFocus::Overview {
+      return Vec::new();
+    }
     let Some(ref st) = self.safetensors else {
       return Vec::new();
     };
@@ -692,6 +742,34 @@ impl ModelBlueprint {
         }
       })
       .collect()
+  }
+
+  /// 按当前选中的模块焦点与具体层号筛选 L2 Safetensors 权重，区分异构模型中的 Dense FFN 层段与 Sparse MoE 层段。
+  pub fn matching_tensors_for_layer(
+    &self,
+    focus: InspectorFocus,
+    layer_idx: u64,
+  ) -> Vec<&TensorPatternEntry> {
+    if focus == InspectorFocus::Overview {
+      return Vec::new();
+    }
+    let Some(ref st) = self.safetensors else {
+      return Vec::new();
+    };
+    if focus == InspectorFocus::FfnOrMoe {
+      if let Some(seg) = self.segment_for_layer(layer_idx) {
+        let preferred_stage = match seg.ffn {
+          FfnSpec::DenseGated { .. } => "ffn",
+          FfnSpec::SparseMoe { .. } => "moe",
+        };
+        let exact: Vec<&TensorPatternEntry> =
+          st.patterns.iter().filter(|p| p.stage == preferred_stage).collect();
+        if !exact.is_empty() {
+          return exact;
+        }
+      }
+    }
+    self.matching_tensors(focus)
   }
 }
 

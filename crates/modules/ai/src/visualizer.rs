@@ -530,11 +530,13 @@ pub fn ModelVisualizerWorkbench(
   blueprint: ModelBlueprint,
   initial_focus: Option<InspectorFocus>,
   embedded: bool,
+  #[props(default = false)] hide_identity_header: bool,
 ) -> Element {
   let default_layer = blueprint.segments.last().map(|s| s.start_layer).unwrap_or(0);
   let mut selected_layer = use_signal(|| default_layer);
   let mut focus = use_signal(|| initial_focus.unwrap_or_else(|| blueprint.default_focus()));
   let mut detail_tab = use_signal(|| DetailTab::VramSimulator);
+  let initial_compact = initial_focus.is_none();
 
   // VRAM 模拟器交互状态
   let default_prec = if blueprint.quantization_summary.as_deref().is_some_and(|q| q.contains("FP8"))
@@ -555,10 +557,8 @@ pub fn ModelVisualizerWorkbench(
   };
   let is_sparse = blueprint.params.active_params < blueprint.params.total_params;
 
-  let kv_ratio = blueprint
-    .segment_for_layer(selected_layer())
-    .map(|s| s.attention.kv_compression_ratio())
-    .unwrap_or(1.0);
+  let cur_segment = blueprint.segment_for_layer(selected_layer()).cloned();
+  let kv_ratio = cur_segment.as_ref().map(|s| s.attention.kv_compression_ratio()).unwrap_or(1.0);
 
   let open_href = format!("/ai/visualizer?repo={}", blueprint.repo_id);
 
@@ -566,25 +566,44 @@ pub fn ModelVisualizerWorkbench(
     div { class: if embedded {
       card_class("p-4 sm:p-6 bg-white dark:bg-slate-950 shadow-sm")
     } else {
-      "space-y-6".to_string()
+      "space-y-5".to_string()
     },
-      // 1. 顶部模型身份栏 + 参数分布进度条
-      div { class: if embedded { "pb-4 mb-5 border-b border-slate-200 dark:border-slate-800" } else { card_class("p-5 bg-white dark:bg-slate-900/80") },
+      // 1. 顶部模型身份栏 + 核心工程指标卡 + 参数分布进度条
+      div { class: if embedded { "pb-4 mb-5 border-b border-slate-200 dark:border-slate-800" } else { card_class("p-4 sm:p-5 bg-white dark:bg-slate-900/80") },
         div { class: "flex flex-wrap items-start justify-between gap-3",
           div {
-            div { class: "flex flex-wrap items-center gap-2",
-              h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white font-mono",
-                "{blueprint.repo_id}"
+            if !hide_identity_header {
+              div { class: "flex flex-wrap items-center gap-2",
+                h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white font-mono",
+                  "{blueprint.repo_id}"
+                }
+                span { class: badge_class(BadgeVariant::Default, "text-xs"),
+                  "{blueprint.family.badge_label()}"
+                }
+                span { class: badge_class(BadgeVariant::Secondary, "text-xs font-mono"),
+                  "{blueprint.torch_dtype}"
+                }
+                if let Some(ref q) = blueprint.quantization_summary {
+                  span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-xs font-mono font-semibold",
+                    "{q}"
+                  }
+                }
               }
-              span { class: badge_class(BadgeVariant::Default, "text-[11px]"),
-                "{blueprint.family.badge_label()}"
-              }
-              span { class: badge_class(BadgeVariant::Secondary, "text-[11px] font-mono"),
-                "{blueprint.torch_dtype}"
-              }
-              if let Some(ref q) = blueprint.quantization_summary {
-                span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[11px] font-mono font-semibold",
-                  "{q}"
+            } else {
+              div { class: "flex flex-wrap items-center gap-2",
+                span { class: badge_class(BadgeVariant::Default, "text-xs"),
+                  "{blueprint.family.badge_label()}"
+                }
+                span { class: badge_class(BadgeVariant::Secondary, "text-xs font-mono"),
+                  "{blueprint.torch_dtype}"
+                }
+                if let Some(ref q) = blueprint.quantization_summary {
+                  span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-xs font-mono font-semibold",
+                    "{q}"
+                  }
+                }
+                span { class: "text-xs text-slate-500 dark:text-slate-400 font-mono",
+                  "{blueprint.repo_id}"
                 }
               }
             }
@@ -614,9 +633,9 @@ pub fn ModelVisualizerWorkbench(
         }
 
         // 4 格核心工程指标卡
-        div { class: "mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3",
+        div { class: "mt-3.5 grid grid-cols-2 lg:grid-cols-4 gap-3",
           div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3",
-            div { class: "text-[11px] font-medium text-slate-500 dark:text-slate-400",
+            div { class: "text-xs font-medium text-slate-500 dark:text-slate-400",
               if blueprint.is_diffusion_pipeline() {
                 "全管线总参 / 单步去噪激活"
               } else {
@@ -636,13 +655,13 @@ pub fn ModelVisualizerWorkbench(
           }
 
           div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3",
-            div { class: "text-[11px] font-medium text-slate-500 dark:text-slate-400",
+            div { class: "text-xs font-medium text-slate-500 dark:text-slate-400",
               "主干维度 (Layers × Hidden)"
             }
             div { class: "mt-1 text-base sm:text-lg font-extrabold text-slate-900 dark:text-white font-mono tabular-nums",
               "{blueprint.num_hidden_layers}L × {blueprint.hidden_size}d"
             }
-            div { class: "text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate",
+            div { class: "text-xs text-slate-500 dark:text-slate-400 font-mono truncate",
               if let Some(ref diff) = blueprint.diffusion {
                 "{diff.components.len()} 组件 · {diff.latent_channels}ch Latent"
               } else {
@@ -652,7 +671,7 @@ pub fn ModelVisualizerWorkbench(
           }
 
           div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3",
-            div { class: "text-[11px] font-medium text-slate-500 dark:text-slate-400",
+            div { class: "text-xs font-medium text-slate-500 dark:text-slate-400",
               if blueprint.is_diffusion_pipeline() {
                 "去噪采样与缓存"
               } else if blueprint.is_single_pass_encoder() {
@@ -672,21 +691,21 @@ pub fn ModelVisualizerWorkbench(
                 "{kv_ratio:.1}× vs MHA"
               }
             }
-            div { class: "text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate",
+            div { class: "text-xs text-slate-500 dark:text-slate-400 font-mono truncate",
               if let Some(ref diff) = blueprint.diffusion {
                 "{diff.scheduler_summary}"
               } else if blueprint.is_single_pass_encoder() {
                 "单次并行编码 (无自回归缓存)"
               } else if blueprint.has_linear_recurrent() {
                 "循环状态随序列长度 S 零增长"
-              } else if let Some(seg) = blueprint.segment_for_layer(selected_layer()) {
+              } else if let Some(ref seg) = cur_segment {
                 "{seg.attention.cached_elements_per_token()} elems/tok/layer"
               }
             }
           }
 
           div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3",
-            div { class: "text-[11px] font-medium text-slate-500 dark:text-slate-400",
+            div { class: "text-xs font-medium text-slate-500 dark:text-slate-400",
               if blueprint.is_diffusion_pipeline() {
                 "潜空间序列 & 位置编码"
               } else {
@@ -700,7 +719,7 @@ pub fn ModelVisualizerWorkbench(
                 "{blueprint.max_position_embeddings / 1024}K ctx"
               }
             }
-            div { class: "text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate",
+            div { class: "text-xs text-slate-500 dark:text-slate-400 font-mono truncate",
               if let Some(ref diff) = blueprint.diffusion {
                 "{diff.patch_summary} · {blueprint.rope_summary}"
               } else {
@@ -717,12 +736,12 @@ pub fn ModelVisualizerWorkbench(
         }
       }
 
-      // 2. 双栏联动工作区：左「宏观分层拓扑流」+ 右「算子级内部子图 & 工程检视面板」
+      // 2. 双栏联动工作区：左「宏观分层拓扑流 (桌面吸顶)」+ 右「总体架构 / 算子级内部子图 & 工程检视面板」
       div { class: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start",
         // 左栏：宏观架构流
-        div { class: format!("lg:col-span-5 {}", card_class("p-4 bg-white dark:bg-slate-900/60")),
+        div { class: format!("lg:col-span-5 lg:sticky lg:top-20 {}", card_class("p-4 bg-white dark:bg-slate-900/60")),
           div { class: "flex items-center justify-between mb-3",
-            span { class: "text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400",
+            span { class: "text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300",
               "Macro Forward Pass (点击任意模块钻取细节)"
             }
           }
@@ -730,23 +749,52 @@ pub fn ModelVisualizerWorkbench(
             blueprint: blueprint.clone(),
             selected_layer: selected_layer(),
             focus: focus(),
+            initial_compact,
             on_select_layer: move |l| selected_layer.set(l),
             on_select_focus: move |f| focus.set(f),
           }
         }
 
-        // 右栏：微观子图放大镜 + 真实张量核验 + 三合一深度面板
+        // 右栏：总体架构总览 / 微观子图放大镜 + 真实张量核验 + 三合一深度面板
         div { class: "lg:col-span-7 space-y-5",
-          // 2A. 算子级内部子图卡片
+          // 2A. 总体架构 / 算子级内部子图卡片
           div { class: card_class("p-4 sm:p-5 bg-white dark:bg-slate-900/60"),
-            div { class: "flex flex-wrap items-center justify-between gap-2 pb-3 mb-4 border-b border-slate-200 dark:border-slate-800",
-              div {
-                span { class: "text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400",
-                  "Operator Subgraph · Layer #{selected_layer()}"
+            div { class: "flex flex-wrap items-center justify-between gap-2.5 pb-3 mb-4 border-b border-slate-200 dark:border-slate-800",
+              div { class: "min-w-0",
+                if focus() == InspectorFocus::Overview {
+                  span { class: "text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400",
+                    "Architecture Overview · 全模型端到端总体架构"
+                  }
+                } else if focus().is_layer_scoped() {
+                  div { class: "flex flex-wrap items-center gap-1.5",
+                    span { class: "text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400",
+                      "Operator Subgraph · Layer #{selected_layer()}"
+                    }
+                    if let Some(ref seg) = cur_segment {
+                      span { class: "px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-300",
+                        "{seg.range_label()} · {seg.title}"
+                      }
+                    }
+                  }
+                } else {
+                  span { class: "text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400",
+                    "Operator Subgraph · Global Module · {focus_short_label(focus())}"
+                  }
                 }
               }
-              // 快捷切换子模块焦点按钮
-              div { class: "flex flex-wrap gap-1",
+              // 快捷切换：先总体架构，后各细粒度算子模块
+              div { class: "flex flex-wrap items-center gap-1",
+                button {
+                  r#type: "button",
+                  class: if focus() == InspectorFocus::Overview {
+                    "px-2.5 py-1 rounded-md text-xs font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-2xs cursor-pointer"
+                  } else {
+                    "px-2.5 py-1 rounded-md text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:border-indigo-400 cursor-pointer"
+                  },
+                  onclick: move |_| focus.set(InspectorFocus::Overview),
+                  "总体架构"
+                }
+                span { class: "mx-0.5 text-slate-300 dark:text-slate-700 select-none", "|" }
                 if blueprint.vision.is_some() {
                   button {
                     r#type: "button",
@@ -824,6 +872,27 @@ pub fn ModelVisualizerWorkbench(
               blueprint: blueprint.clone(),
               selected_layer: selected_layer(),
               focus: focus(),
+              on_select_layer: move |l| selected_layer.set(l),
+              on_select_focus: move |f| focus.set(f),
+            }
+
+            // 跨层段共用同一 Attention 时的智能导引条：避免在异构模型（如 DeepSeek-V3）切段后误以为右侧无变化
+            if focus() == InspectorFocus::Attention && blueprint.has_uniform_attention() {
+              if let Some(ref seg) = cur_segment {
+                div { class: "mt-3 rounded-lg border border-amber-200/80 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900 dark:text-amber-200",
+                  span {
+                    "当前观测 "
+                    strong { class: "font-mono", "{seg.range_label()}" }
+                    "（{seg.title}）：全部层段共用 {seg.attention.short_label()} 注意力，本段异构特征位于 FFN 子层。"
+                  }
+                  button {
+                    r#type: "button",
+                    class: "shrink-0 px-2.5 py-1 rounded-md bg-amber-600 text-white font-semibold hover:bg-amber-700 cursor-pointer transition-colors",
+                    onclick: move |_| focus.set(InspectorFocus::FfnOrMoe),
+                    "查看本段 FFN / MoE →"
+                  }
+                }
+              }
             }
 
             // 上下文关联算子动态原理实验室直通车（与 /ai/components/:slug 双向咬合）
@@ -835,10 +904,10 @@ pub fn ModelVisualizerWorkbench(
                 crate::math_atlas::recommended_math_links(&blueprint, focus(), lang_here);
               if !comp_links.is_empty() || !math_links.is_empty() {
                 rsx! {
-                  div { class: "mt-3.5 pt-3 border-t border-slate-100 dark:border-slate-800/80 space-y-2 text-xs",
+                  div { class: "mt-3.5 pt-3 border-t border-slate-100 dark:border-slate-800/80 space-y-2 text-[13px]",
                     if !comp_links.is_empty() {
                       div { class: "flex flex-wrap items-center gap-2",
-                        span { class: "text-[11px] font-bold text-emerald-700 dark:text-emerald-400 shrink-0",
+                        span { class: "text-xs font-bold text-emerald-700 dark:text-emerald-400 shrink-0",
                           {lang_here.pick("🔬 深入算子动态原理：", "🔬 Interactive Operator Lab:")}
                         }
                         for (href, badge_txt, link_title) in comp_links {
@@ -846,7 +915,7 @@ pub fn ModelVisualizerWorkbench(
                             key: "{href}-{badge_txt}",
                             to: href,
                             class: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/70 dark:bg-emerald-950/30 text-slate-800 dark:text-slate-200 hover:border-emerald-500 transition-colors",
-                            span { class: "px-1.5 py-0.2 rounded bg-emerald-600 text-white text-[10px] font-mono font-bold",
+                            span { class: "px-1.5 py-0.5 rounded bg-emerald-600 text-white text-[11px] font-mono font-bold",
                               "{badge_txt}"
                             }
                             span { class: "font-medium", "{link_title} →" }
@@ -856,7 +925,7 @@ pub fn ModelVisualizerWorkbench(
                     }
                     if !math_links.is_empty() {
                       div { class: "flex flex-wrap items-center gap-2",
-                        span { class: "text-[11px] font-bold text-violet-700 dark:text-violet-400 shrink-0",
+                        span { class: "text-xs font-bold text-violet-700 dark:text-violet-400 shrink-0",
                           {lang_here.pick("📐 底层数学定理推导：", "📐 Mathematical Proof Lab:")}
                         }
                         for (href, badge_txt, link_title) in math_links {
@@ -864,7 +933,7 @@ pub fn ModelVisualizerWorkbench(
                             key: "{href}-{badge_txt}",
                             to: href,
                             class: "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-violet-200 dark:border-violet-900/70 bg-violet-50/70 dark:bg-violet-950/30 text-slate-800 dark:text-slate-200 hover:border-violet-500 transition-colors",
-                            span { class: "px-1.5 py-0.2 rounded bg-violet-600 text-white text-[10px] font-mono font-bold",
+                            span { class: "px-1.5 py-0.5 rounded bg-violet-600 text-white text-[11px] font-mono font-bold",
                               "{badge_txt}"
                             }
                             span { class: "font-medium", "{link_title} →" }
@@ -879,21 +948,37 @@ pub fn ModelVisualizerWorkbench(
               }
             }
 
-            // 当前选中子模块关联的 L2 Safetensors 真实权重对照表
-            {
-              let matched = blueprint.matching_tensors(focus());
-              if !matched.is_empty() {
-                rsx! {
-                  div { class: "mt-4 pt-3 border-t border-slate-200 dark:border-slate-800",
-                    div { class: "text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2 flex items-center justify-between",
-                      span { "匹配该子模块的真实 Safetensors 权重张量 ({matched.len()} 项)" }
-                      span { class: "text-[11px] font-mono text-slate-400", "Shape = [out, in]" }
-                    }
-                    TensorPatternTable { items: matched.into_iter().cloned().collect() }
+            // 当前选中子模块关联的 L2 Safetensors 真实权重对照表（总览态给轻量直达摘要，钻取态精准匹配当前层段张量）
+            if focus() == InspectorFocus::Overview {
+              if let Some(ref st) = blueprint.safetensors {
+                div { class: "mt-4 pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-300",
+                  span { class: "font-mono",
+                    "L2 Safetensors 核验：{st.patterns.len()} 类权重模式 · {st.shard_count} 分片 · {st.total_tensor_count} 个原始张量"
+                  }
+                  button {
+                    r#type: "button",
+                    class: "font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer",
+                    onclick: move |_| detail_tab.set(DetailTab::SafetensorsTree),
+                    "在下方展开全量权重命名空间 ↓"
                   }
                 }
-              } else {
-                rsx! {}
+              }
+            } else {
+              {
+                let matched = blueprint.matching_tensors_for_layer(focus(), selected_layer());
+                if !matched.is_empty() {
+                  rsx! {
+                    div { class: "mt-4 pt-3 border-t border-slate-200 dark:border-slate-800",
+                      div { class: "text-[13px] font-semibold text-slate-700 dark:text-slate-300 mb-2 flex items-center justify-between",
+                        span { "匹配该子模块的真实 Safetensors 权重张量 ({matched.len()} 项)" }
+                        span { class: "text-xs font-mono text-slate-400", "Shape = [out, in]" }
+                      }
+                      TensorPatternTable { items: matched.into_iter().cloned().collect() }
+                    }
+                  }
+                } else {
+                  rsx! {}
+                }
               }
             }
           }
@@ -1180,6 +1265,7 @@ enum ConfigViewMode {
 
 fn focus_short_label(f: InspectorFocus) -> &'static str {
   match f {
+    InspectorFocus::Overview => "总体架构",
     InspectorFocus::Vision => "Vision",
     InspectorFocus::Audio => "Audio",
     InspectorFocus::Embedding => "Embed",
@@ -1591,7 +1677,7 @@ fn ParamStackedBar(params: crate::arch::ParamBreakdown, is_diffusion: bool) -> E
           }
         }
       }
-      div { class: "mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono text-slate-600 dark:text-slate-400",
+      div { class: "mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono text-slate-600 dark:text-slate-400",
         for (name, val, color) in slices.iter() {
           if *val > 0 {
             {
@@ -1613,15 +1699,15 @@ fn ParamStackedBar(params: crate::arch::ParamBreakdown, is_diffusion: bool) -> E
 #[component]
 fn TensorPatternTable(items: Vec<TensorPatternEntry>) -> Element {
   rsx! {
-    div { class: "max-h-64 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800",
-      table { class: "w-full text-left border-collapse text-xs font-mono",
-        thead { class: "bg-slate-100 dark:bg-slate-800/90 text-[11px] text-slate-600 dark:text-slate-300 sticky top-0",
+    div { class: "max-h-72 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800",
+      table { class: "w-full text-left border-collapse text-[13px] font-mono",
+        thead { class: "bg-slate-100 dark:bg-slate-800/90 text-xs text-slate-600 dark:text-slate-300 sticky top-0",
           tr {
-            th { class: "py-2 px-2.5 font-semibold", "Tensor Pattern" }
-            th { class: "py-2 px-2 font-semibold", "Shape" }
-            th { class: "py-2 px-2 font-semibold", "Dtype" }
-            th { class: "py-2 px-2 font-semibold text-right", "Count" }
-            th { class: "py-2 px-2.5 font-semibold text-right", "Params" }
+            th { class: "py-2 px-3 font-semibold whitespace-nowrap", "Tensor Pattern" }
+            th { class: "py-2 px-2.5 font-semibold whitespace-nowrap", "Shape" }
+            th { class: "py-2 px-2.5 font-semibold whitespace-nowrap", "Dtype" }
+            th { class: "py-2 px-2.5 font-semibold text-right whitespace-nowrap", "Count" }
+            th { class: "py-2 px-3 font-semibold text-right whitespace-nowrap", "Params" }
           }
         }
         tbody { class: "divide-y divide-slate-200 dark:divide-slate-800 bg-white dark:bg-slate-950/60",
@@ -1646,20 +1732,20 @@ fn TensorPatternTable(items: Vec<TensorPatternEntry>) -> Element {
                 tr {
                   key: "{item.pattern}",
                   class: "hover:bg-slate-50 dark:hover:bg-slate-900/70",
-                  td { class: "py-1.5 px-2.5 text-slate-800 dark:text-slate-200 break-all",
+                  td { class: "py-2 px-3 text-slate-800 dark:text-slate-200 whitespace-nowrap",
                     title: item.example_shard.clone().unwrap_or_default(),
                     "{item.pattern}"
                   }
-                  td { class: "py-1.5 px-2 text-indigo-600 dark:text-indigo-400 whitespace-nowrap",
+                  td { class: "py-2 px-2.5 text-indigo-600 dark:text-indigo-400 whitespace-nowrap",
                     "{shape_str}"
                   }
-                  td { class: "py-1.5 px-2 text-slate-600 dark:text-slate-400 whitespace-nowrap",
+                  td { class: "py-2 px-2.5 text-slate-600 dark:text-slate-400 whitespace-nowrap",
                     "{dt_str}"
                   }
-                  td { class: "py-1.5 px-2 text-right text-slate-500 tabular-nums whitespace-nowrap",
+                  td { class: "py-2 px-2.5 text-right text-slate-500 tabular-nums whitespace-nowrap",
                     "×{item.repeat_count}"
                   }
-                  td { class: "py-1.5 px-2.5 text-right text-slate-700 dark:text-slate-300 tabular-nums whitespace-nowrap",
+                  td { class: "py-2 px-3 text-right text-slate-700 dark:text-slate-300 tabular-nums whitespace-nowrap",
                     "{tot_str}"
                   }
                 }
@@ -1940,5 +2026,81 @@ mod tests {
     assert!(html.contains("font-semibold text-amber-600 dark:text-amber-400"));
     assert!(html.contains("font-semibold text-violet-600 dark:text-violet-400"));
     assert!(html.contains("text-[13px] font-mono"));
+  }
+
+  #[test]
+  fn ssr_defaults_to_overview_first_and_distinguishes_segments_and_global_modules() {
+    let bp = load_builtin_preset("deepseek-v3").expect("deepseek-v3 preset");
+
+    // 1. 异构分段行为验证：DeepSeek-V3 全部层段共用 MLA，点击层段时优先聚焦差异所在的 FFN / MoE
+    assert_eq!(bp.default_focus(), InspectorFocus::Overview);
+    assert!(bp.has_uniform_attention());
+    assert_eq!(bp.recommended_focus_for_segment(0), InspectorFocus::FfnOrMoe);
+    assert_eq!(bp.recommended_focus_for_segment(1), InspectorFocus::FfnOrMoe);
+    assert!(bp.matching_tensors_for_layer(InspectorFocus::Overview, 0).is_empty());
+
+    let dense_tensors = bp.matching_tensors_for_layer(InspectorFocus::FfnOrMoe, 0);
+    let moe_tensors = bp.matching_tensors_for_layer(InspectorFocus::FfnOrMoe, 3);
+    assert!(!dense_tensors.is_empty());
+    assert!(!moe_tensors.is_empty());
+    assert!(dense_tensors.iter().all(|t| t.stage == "ffn"));
+    assert!(moe_tensors.iter().all(|t| t.stage == "moe"));
+
+    // 2. 默认渲染：先总体架构（紧凑总览 + 全模型端到端 SVG + 异构段对照），左栏吸顶，隐藏重复 h2
+    #[derive(Routable, Clone, PartialEq)]
+    enum OverviewRoute {
+      #[route("/")]
+      Home {},
+    }
+
+    #[component]
+    fn Home() -> Element {
+      let ds = load_builtin_preset("deepseek-v3").expect("deepseek-v3");
+      let ds_lm = ds.clone();
+      let ds_attn = ds.clone();
+      rsx! {
+        div {
+          ModelVisualizerWorkbench {
+            blueprint: ds,
+            initial_focus: None,
+            embedded: false,
+            hide_identity_header: true,
+          }
+          ModelVisualizerWorkbench {
+            blueprint: ds_lm,
+            initial_focus: Some(InspectorFocus::LmHead),
+            embedded: true,
+          }
+          ModelVisualizerWorkbench {
+            blueprint: ds_attn,
+            initial_focus: Some(InspectorFocus::Attention),
+            embedded: true,
+          }
+        }
+      }
+    }
+
+    #[component]
+    fn Host() -> Element {
+      rsx! { Router::<OverviewRoute> {} }
+    }
+
+    let mut vdom = VirtualDom::new(Host);
+    vdom.rebuild_in_place();
+    let html = dioxus_ssr::render(&vdom);
+
+    assert!(html.contains("Architecture Overview · 全模型端到端总体架构"));
+    assert!(html.contains("总体架构"));
+    assert!(html.contains("异构层段架构对照 (2 段)"));
+    assert!(html.contains("钻取 Dense FFN →"));
+    assert!(html.contains("钻取 Sparse MoE →"));
+    assert!(html.contains("展开层块"));
+    assert!(html.contains("展开输出层"));
+    assert!(html.contains("lg:sticky lg:top-20"));
+    assert!(html.contains("Operator Subgraph · Global Module · Output Head"));
+    assert!(html.contains("全部层段共用"));
+    assert!(html.contains("查看本段 FFN / MoE →"));
+    // TensorPatternTable 不再使用 break-all 折断权重名
+    assert!(html.contains("text-slate-800 dark:text-slate-200 whitespace-nowrap"));
   }
 }

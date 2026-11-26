@@ -284,6 +284,70 @@ pub fn recommended_component_links(
 ) -> Vec<(&'static str, &'static str, &'static str)> {
   let mut out = Vec::new();
   match focus {
+    InspectorFocus::Overview => {
+      if bp.is_diffusion_pipeline() {
+        out.push((
+          "/ai/components/diffusion-mmdit-vae-and-flow-matching",
+          "Diffusion & Flow Lab",
+          lang.pick(
+            "MMDiT 联合注意力、VAE 潜空间与 Rectified Flow 流匹配实验台",
+            "MMDiT Joint Attention, VAE Latent & Rectified Flow Lab",
+          ),
+        ));
+      } else if bp.has_linear_recurrent() {
+        out.push((
+          "/ai/components/lstm-deltanet-and-mamba-ssm",
+          "SSM & DeltaNet Lab",
+          lang.pick(
+            "Gated DeltaNet 矩阵擦写与 Mamba 选择性状态空间实验台",
+            "Gated DeltaNet & Selective Mamba State Lab",
+          ),
+        ));
+      } else {
+        out.push((
+          "/ai/components/attention-mla-and-flash-online-softmax",
+          "MLA & FlashAttn Lab",
+          lang.pick(
+            "MLA 矩阵吸收、GQA 与 FlashAttention 在线重缩放实验台",
+            "MLA Matrix Absorption, GQA & FlashAttention Lab",
+          ),
+        ));
+      }
+      if bp.has_moe() {
+        out.push((
+          "/ai/components/moe-routing-quant-and-speculative-decoding",
+          "Sparse MoE Lab",
+          lang.pick(
+            "无辅助损失动态偏置 MoE 路由与负载均衡实验台",
+            "Aux-Loss-Free Sparse MoE Routing Lab",
+          ),
+        ));
+      } else if bp.vision.is_some() {
+        out.push((
+          "/ai/components/vision-patchify-siglip-and-projector",
+          "Vision Tower Lab",
+          lang.pick(
+            "ViT / SigLIP Patchify 与多模态投影对齐实验台",
+            "ViT / SigLIP Patchify & Multimodal Projector Lab",
+          ),
+        ));
+      } else if bp.audio.is_some() {
+        out.push((
+          "/ai/components/audio-mel-whisper-and-rvq-codec",
+          "Audio Frontend Lab",
+          lang.pick(
+            "Log-Mel 声学前端、Whisper 编码器与 RVQ 语音编码实验台",
+            "Log-Mel Frontend, Whisper Encoder & RVQ Codec Lab",
+          ),
+        ));
+      } else if !bp.is_diffusion_pipeline() {
+        out.push((
+          "/ai/components/rope-and-yarn-extrapolation",
+          "Positional Lab",
+          lang.pick("旋转位置编码 RoPE / YaRN 外推实验台", "RoPE & YaRN Extrapolation Lab"),
+        ));
+      }
+    }
     InspectorFocus::Attention => {
       if bp.has_linear_recurrent() {
         out.push((
