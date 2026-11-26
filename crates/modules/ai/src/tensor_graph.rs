@@ -3667,56 +3667,50 @@ fn write_static_svg_layers(
   out.push_str("</g>");
 
   // 1. 绘制大框容器与 Attention/FFN 轻量内部子块分隔线
-  for (gi, grp) in graph.groups.iter().enumerate() {
-    if let Some(&gr) = layout.group_rects.get(gi) {
-      push_rect(
+  for &gr in &layout.group_rects {
+    push_rect(
+      out,
+      gr.x,
+      gr.y,
+      gr.w,
+      gr.h,
+      10,
+      th.grp_rect,
+      "stroke-width=\"1.2\" stroke-dasharray=\"5 4\"",
+    );
+
+    if gr.split_y > 0 {
+      let sy = gr.split_y;
+      push_line(
         out,
-        gr.x,
-        gr.y,
-        gr.w,
-        gr.h,
-        10,
-        th.grp_rect,
-        "stroke-width=\"1.2\" stroke-dasharray=\"5 4\"",
+        gr.inner_rail_x + 42,
+        sy,
+        gr.x + gr.w - 10,
+        sy,
+        th.grp_split_line,
+        "stroke-width=\"1\" stroke-dasharray=\"3 3\"",
       );
-
-      if gr.split_y > 0 {
-        let sy = gr.split_y;
-        push_line(
-          out,
-          gr.inner_rail_x + 42,
-          sy,
-          gr.x + gr.w - 10,
-          sy,
-          th.grp_split_line,
-          "stroke-width=\"1\" stroke-dasharray=\"3 3\"",
-        );
-        let rx = gr.x + gr.w - 12;
-        push_text(
-          out,
-          rx,
-          sy - 5,
-          "9",
-          "text-anchor=\"end\"",
-          th.grp_split_txt,
-          "① Attention / Mixer",
-          false,
-        );
-        push_text(
-          out,
-          rx,
-          sy + 12,
-          "9",
-          "text-anchor=\"end\"",
-          th.grp_split_txt,
-          "② FFN / MoE",
-          false,
-        );
-      }
-
-      if draw_group_headers || grp.seg_idx.is_none() {
-        write_group_header_svg(out, grp, gr, layout.graph_origin_x, false, th);
-      }
+      let rx = gr.x + gr.w - 12;
+      push_text(
+        out,
+        rx,
+        sy - 5,
+        "9",
+        "text-anchor=\"end\"",
+        th.grp_split_txt,
+        "① Attention / Mixer",
+        false,
+      );
+      push_text(
+        out,
+        rx,
+        sy + 12,
+        "9",
+        "text-anchor=\"end\"",
+        th.grp_split_txt,
+        "② FFN / MoE",
+        false,
+      );
     }
   }
 
@@ -3842,7 +3836,16 @@ fn write_static_svg_layers(
                 t_attr,
               );
               if !edge.label.is_empty() {
-                push_text(out, rail_x + 4, y1_c - 5, "9", "", t_attr, &edge.label, true);
+                push_text(
+                  out,
+                  x1 - NODE_W / 2 - 8,
+                  y1_c - 5,
+                  "9",
+                  "text-anchor=\"end\"",
+                  t_attr,
+                  &edge.label,
+                  true,
+                );
               }
             }
           } else {
@@ -3973,6 +3976,15 @@ fn write_static_svg_layers(
             );
           }
         }
+      }
+    }
+  }
+
+  // 2.5 将大框标题胶囊置于连线之上（与交互模式层叠一致），防止多路斜线穿过标题文字
+  for (gi, grp) in graph.groups.iter().enumerate() {
+    if let Some(&gr) = layout.group_rects.get(gi) {
+      if draw_group_headers || grp.seg_idx.is_none() {
+        write_group_header_svg(out, grp, gr, layout.graph_origin_x, false, th);
       }
     }
   }
