@@ -28,6 +28,7 @@ use crate::safetensors_meta::TensorPatternEntry;
 use crate::server::{
   fetch_model_blueprint, normalize_repo_request, parse_custom_model_config, ModelHubSource,
 };
+use crate::tensor_graph::TensorFlowGraphView;
 
 fn current_lang() -> Language {
   try_consume_context::<Signal<Language>>().map(|s| s()).unwrap_or_default()
@@ -525,6 +526,12 @@ enum DetailTab {
   HyperparamsAndJson,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkbenchViewMode {
+  LayeredWorkbench,
+  TensorFlowDag,
+}
+
 #[component]
 pub fn ModelVisualizerWorkbench(
   blueprint: ModelBlueprint,
@@ -535,6 +542,7 @@ pub fn ModelVisualizerWorkbench(
   let default_layer = blueprint.segments.last().map(|s| s.start_layer).unwrap_or(0);
   let mut selected_layer = use_signal(|| default_layer);
   let mut focus = use_signal(|| initial_focus.unwrap_or_else(|| blueprint.default_focus()));
+  let mut view_mode = use_signal(|| WorkbenchViewMode::LayeredWorkbench);
   let mut detail_tab = use_signal(|| DetailTab::VramSimulator);
   let initial_compact = initial_focus.is_none();
 
@@ -736,6 +744,58 @@ pub fn ModelVisualizerWorkbench(
         }
       }
 
+      // 1.5 顶层视图模式切换：分层联动工作台 vs 全网张量维流图（色块 + 维度流 DAG）
+      div { class: "flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/50 px-3 py-2",
+        div { class: "inline-flex items-center gap-1.5",
+          button {
+            r#type: "button",
+            class: if view_mode() == WorkbenchViewMode::LayeredWorkbench {
+              "px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-2xs cursor-pointer"
+            } else {
+              "px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 cursor-pointer"
+            },
+            onclick: move |_| view_mode.set(WorkbenchViewMode::LayeredWorkbench),
+            "分层联动工作台"
+          }
+          button {
+            r#type: "button",
+            class: if view_mode() == WorkbenchViewMode::TensorFlowDag {
+              "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 text-white shadow-2xs cursor-pointer"
+            } else {
+              "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-800 cursor-pointer"
+            },
+            onclick: move |_| view_mode.set(WorkbenchViewMode::TensorFlowDag),
+            span { "全网张量维流图 (DAG)" }
+            span { class: if view_mode() == WorkbenchViewMode::TensorFlowDag {
+              "px-1.5 py-0.5 rounded bg-white/20 text-[10px] font-mono"
+            } else {
+              "px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 text-[10px] font-mono"
+            },
+              "色块维度流"
+            }
+          }
+        }
+        span { class: "text-xs text-slate-500 dark:text-slate-400",
+          if view_mode() == WorkbenchViewMode::LayeredWorkbench {
+            "默认展示端到端总体架构，点左侧层段/模块在右侧钻取算子子图、Safetensors 权重与显存精算。"
+          } else {
+            "网格蓝图 + 算子实色块 + 框内张量维度 + 右上角图例；支持切换 B×S 实数维度、对照 Inception-v3 / ResNet-50 及导出高清 SVG。"
+          }
+        }
+      }
+
+      if view_mode() == WorkbenchViewMode::TensorFlowDag {
+        TensorFlowGraphView {
+          blueprint: blueprint.clone(),
+          on_drill_to_workbench: move |(layer_opt, target_focus)| {
+            if let Some(l) = layer_opt {
+              selected_layer.set(l);
+            }
+            focus.set(target_focus);
+            view_mode.set(WorkbenchViewMode::LayeredWorkbench);
+          },
+        }
+      } else {
       // 2. 双栏联动工作区：左「宏观分层拓扑流 (桌面吸顶)」+ 右「总体架构 / 算子级内部子图 & 工程检视面板」
       div { class: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start",
         // 左栏：宏观架构流
@@ -1252,6 +1312,7 @@ pub fn ModelVisualizerWorkbench(
             }
           }
         }
+      }
       }
     }
   }
@@ -2102,5 +2163,35 @@ mod tests {
     assert!(html.contains("查看本段 FFN / MoE →"));
     // TensorPatternTable 不再使用 break-all 折断权重名
     assert!(html.contains("text-slate-800 dark:text-slate-200 whitespace-nowrap"));
+    // 顶层视图模式切换栏包含「分层联动工作台」与「全网张量维流图 (DAG)」
+    assert!(html.contains("分层联动工作台"));
+    assert!(html.contains("全网张量维流图 (DAG)"));
+  }
+
+  #[test]
+  fn ssr_renders_tensor_flow_dag_view_with_legend_and_export() {
+    #[component]
+    fn DagHost() -> Element {
+      let ds = load_builtin_preset("deepseek-v3").expect("deepseek-v3");
+      rsx! {
+        TensorFlowGraphView {
+          blueprint: ds,
+          on_drill_to_workbench: move |_| {},
+        }
+      }
+    }
+
+    let mut vdom = VirtualDom::new(DagHost);
+    vdom.rebuild_in_place();
+    let html = dioxus_ssr::render(&vdom);
+
+    assert!(html.contains("算子色块图例 (Legend)"));
+    assert!(html.contains("Inception-v3 (经典 CNN)"));
+    assert!(html.contains("ResNet-50 (残差 CNN)"));
+    assert!(html.contains("导出高清 SVG ↓"));
+    assert!(html.contains("data:image/svg+xml;charset=utf-8,"));
+    assert!(html.contains("B×S×7168"));
+    assert!(html.contains("B×S×576"));
+    assert!(html.contains("切回分层工作台查看该算子 →"));
   }
 }
