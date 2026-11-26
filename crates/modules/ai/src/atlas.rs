@@ -758,9 +758,14 @@ fn ModelsAtlasLoaded(title: String, desc: String) -> Element {
     ("deepseek", lang.pick("DeepSeek 系列", "DeepSeek")),
     ("qwen", lang.pick("Qwen 通义系列", "Qwen")),
     ("llama", lang.pick("Llama 系列", "Llama")),
+    ("ssm", lang.pick("SSM / 线性序列", "SSM / Linear")),
     ("yolo", lang.pick("YOLO 全系", "YOLO")),
+    ("detr", lang.pick("DETR 检测", "DETR")),
     ("unet", lang.pick("U-Net 家族", "U-Net")),
     ("sam", lang.pick("SAM 分割", "SAM")),
+    ("classic-nlp", lang.pick("经典 NLP", "Classic NLP")),
+    ("classic-cnn", lang.pick("经典 CNN", "Classic CNN")),
+    ("classic-mlp", lang.pick("经典基础", "Classic MLP")),
     ("classic", lang.pick("经典基石", "Classic")),
     ("other", lang.pick("其它前沿开源", "Open Frontier")),
   ];
@@ -1023,6 +1028,26 @@ fn series_accent_badge(series: &str) -> (&'static str, &'static str) {
     "sam" => (
       "SAM",
       "bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800",
+    ),
+    "detr" => (
+      "DETR",
+      "bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800",
+    ),
+    "ssm" => (
+      "SSM / Linear",
+      "bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800",
+    ),
+    "classic-nlp" => (
+      "Classic NLP",
+      "bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800",
+    ),
+    "classic-cnn" => (
+      "Classic CNN",
+      "bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800",
+    ),
+    "classic-mlp" | "classic" => (
+      "Classic Base",
+      "bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800",
     ),
     _ => (
       "Open Frontier",
@@ -2366,5 +2391,35 @@ mod tests {
     let encoded = serde_json::to_vec(&detail).expect("encode wire");
     let decoded: CuratedModelDetail = serde_json::from_slice(&encoded).expect("decode wire");
     assert_eq!(decoded, detail);
+  }
+
+  #[test]
+  fn declarative_ssm_sets_hybrid_attn_and_series_badges_cover_all_families() {
+    let tmp = std::env::temp_dir().join(format!("dp-atlas-ssm-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("mkdir ssm");
+
+    std::fs::write(
+      tmp.join("model.yaml"),
+      "slug: mamba-2\nname: Mamba-2\nmodality: llm\nseries: ssm\nseries_order: 1\nfamily_badge: SSM · SSD\nparams_m: 2700\nsummary: Mamba-2 SSD\ntags:\n  - ssm\n  - mamba\n",
+    )
+    .expect("write yaml");
+    std::fs::write(
+      tmp.join("graph.json"),
+      r#"{"title":"Mamba-2","subtitle":"SSD","legend_style":"llm_or_multimodal","shape_mode":"seq","nodes":[{"id":"in","kind":"input","dims":[4096,2560],"op_title":"Input","col_q":0,"row":0},{"id":"out","kind":"fc_head","dims":[4096,50280],"op_title":"LM Head","col_q":0,"row":1}],"edges":[{"from":"in","to":"out"}]}"#,
+    )
+    .expect("write graph");
+
+    let detail = parse_model_dir(&tmp, "mamba-2").expect("parse ssm dir");
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert_eq!(detail.meta.modality, ModelModality::Llm);
+    assert_eq!(detail.meta.series, "ssm");
+    assert!(detail.meta.has_hybrid_attn, "SSM models should match SWA/iRoPE/SSM trait filter");
+    assert_eq!(series_accent_badge("ssm").0, "SSM / Linear");
+    assert_eq!(series_accent_badge("detr").0, "DETR");
+    assert_eq!(series_accent_badge("classic-nlp").0, "Classic NLP");
+    assert_eq!(series_accent_badge("classic-cnn").0, "Classic CNN");
+    assert_eq!(series_accent_badge("classic-mlp").0, "Classic Base");
   }
 }
