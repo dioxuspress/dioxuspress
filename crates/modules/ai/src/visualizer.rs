@@ -536,9 +536,10 @@ pub fn ModelVisualizerWorkbench(
   let default_layer = blueprint.segments.last().map(|s| s.start_layer).unwrap_or(0);
   let mut selected_layer = use_signal(|| default_layer);
   let mut focus = use_signal(|| initial_focus.unwrap_or_else(|| blueprint.default_focus()));
-  let mut dag_mode = use_signal(|| false);
+  // 默认首屏优先展示「全网张量维流图 (DAG)」建立端到端全景；若外部显式指定了算子焦点则直达分层工作台。
+  let mut dag_mode = use_signal(|| initial_focus.is_none());
   let mut detail_tab = use_signal(|| DetailTab::VramSimulator);
-  let initial_compact = initial_focus.is_none();
+  let initial_compact = matches!(initial_focus, None | Some(InspectorFocus::Overview));
 
   // VRAM 模拟器交互状态
   let default_prec = if blueprint.quantization_summary.as_deref().is_some_and(|q| q.contains("FP8"))
@@ -738,19 +739,9 @@ pub fn ModelVisualizerWorkbench(
         }
       }
 
-      // 1.5 顶层视图模式切换：分层联动工作台 vs 全网张量维流图（色块 + 维度流 DAG）
+      // 1.5 顶层视图模式切换：全网张量维流图（默认首屏） vs 分层联动工作台
       div { class: "flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/50 px-3 py-2",
         div { class: "inline-flex items-center gap-1.5",
-          button {
-            r#type: "button",
-            class: if !dag_mode() {
-              "px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-2xs cursor-pointer"
-            } else {
-              "px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 cursor-pointer"
-            },
-            onclick: move |_| dag_mode.set(false),
-            "分层联动工作台"
-          }
           button {
             r#type: "button",
             class: if dag_mode() {
@@ -768,12 +759,22 @@ pub fn ModelVisualizerWorkbench(
               "色块维度流"
             }
           }
+          button {
+            r#type: "button",
+            class: if !dag_mode() {
+              "px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-2xs cursor-pointer"
+            } else {
+              "px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 cursor-pointer"
+            },
+            onclick: move |_| dag_mode.set(false),
+            "分层联动工作台"
+          }
         }
         span { class: "text-xs text-slate-500 dark:text-slate-400",
-          if !dag_mode() {
-            "默认展示端到端总体架构，点左侧层段/模块在右侧钻取算子子图、Safetensors 权重与显存精算。"
+          if dag_mode() {
+            "网格蓝图 + 算子实色块 + 框内张量维度 + 右上角图例；点击大块可收起/展开，点击色块可下钻至分层工作台。"
           } else {
-            "网格蓝图 + 算子实色块 + 框内张量维度 + 右上角图例；支持切换 B×S 实数维度、对照 Inception-v3 / ResNet-50 及导出高清 SVG。"
+            "左栏总览全模型层段，点任意模块在右侧钻取算子子图、Safetensors 权重与显存精算。"
           }
         }
       }
@@ -2111,6 +2112,7 @@ mod tests {
     #[component]
     fn Home() -> Element {
       let ds = load_builtin_preset("deepseek-v3").expect("deepseek-v3");
+      let ds_overview = ds.clone();
       let ds_lm = ds.clone();
       let ds_attn = ds.clone();
       rsx! {
@@ -2118,6 +2120,12 @@ mod tests {
           ModelVisualizerWorkbench {
             blueprint: ds,
             initial_focus: None,
+            embedded: false,
+            hide_identity_header: true,
+          }
+          ModelVisualizerWorkbench {
+            blueprint: ds_overview,
+            initial_focus: Some(InspectorFocus::Overview),
             embedded: false,
             hide_identity_header: true,
           }
@@ -2144,6 +2152,9 @@ mod tests {
     vdom.rebuild_in_place();
     let html = dioxus_ssr::render(&vdom);
 
+    // 默认无焦点时直接 SSR 出全网张量维流图（含连线语义图例与亮金黄 MoE 色块）
+    assert!(html.contains("连线语义图例 (Edges)"));
+    assert!(html.contains("#facc15"));
     assert!(html.contains("Architecture Overview · 全模型端到端总体架构"));
     assert!(html.contains("总体架构"));
     assert!(html.contains("异构层段架构对照 (2 段)"));
@@ -2157,9 +2168,9 @@ mod tests {
     assert!(html.contains("查看本段 FFN / MoE →"));
     // TensorPatternTable 不再使用 break-all 折断权重名
     assert!(html.contains("text-slate-800 dark:text-slate-200 whitespace-nowrap"));
-    // 顶层视图模式切换栏包含「分层联动工作台」与「全网张量维流图 (DAG)」
-    assert!(html.contains("分层联动工作台"));
+    // 顶层视图模式切换栏包含「全网张量维流图 (DAG)」与「分层联动工作台」
     assert!(html.contains("全网张量维流图 (DAG)"));
+    assert!(html.contains("分层联动工作台"));
   }
 
   #[test]
@@ -2186,6 +2197,6 @@ mod tests {
     assert!(html.contains("data:image/svg+xml;charset=utf-8,"));
     assert!(html.contains("B×S×7168"));
     assert!(html.contains("B×S×576"));
-    assert!(html.contains("切回分层工作台查看该算子 →"));
+    assert!(html.contains("进入分层工作台查看该算子 →"));
   }
 }
