@@ -186,7 +186,7 @@ impl OpKind {
       Self::AvgPool => ("#0ea5e9", "#0369a1", "#ffffff"),
       Self::MaxPool => ("#16a34a", "#15803d", "#ffffff"),
       Self::Attention => ("#4f46e5", "#3730a3", "#ffffff"),
-      Self::MoeRouter => ("#d97706", "#b45309", "#ffffff"),
+      Self::MoeRouter => ("#facc15", "#ca8a04", "#0f172a"),
       Self::Merge => ("#dc2626", "#991b1b", "#ffffff"),
       Self::Softmax => ("#22d3ee", "#0891b2", "#0f172a"),
       Self::FcHead => ("#a21caf", "#701a75", "#ffffff"),
@@ -3483,7 +3483,7 @@ pub fn TensorFlowGraphView(
                   r#type: "button",
                   class: "shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition-colors cursor-pointer",
                   onclick: move |_| on_drill_to_workbench.call((drill_layer, target_focus)),
-                  "切回分层工作台查看该算子 →"
+                  "进入分层工作台查看该算子 →"
                 }
               }
             }
