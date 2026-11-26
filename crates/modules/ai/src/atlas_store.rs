@@ -330,8 +330,16 @@ pub fn build_curated_summary(
   let attention_short =
     main_seg.map(|s| s.attention.short_label()).unwrap_or_else(|| "Attention".to_string());
   let ffn_short = main_seg.map(|s| s.ffn.short_label()).unwrap_or_else(|| "FFN".to_string());
+  let series_norm = normalize_series_id(&series, &hf_repo);
   let has_mla = matches!(main_seg.map(|s| &s.attention), Some(AttentionSpec::DeepSeekMla { .. }));
-  let has_hybrid_attn = main_seg.is_some_and(|s| s.schedule_note.is_some());
+  let has_hybrid_attn = main_seg.is_some_and(|s| s.schedule_note.is_some())
+    || series_norm == "ssm"
+    || tags.iter().any(|t| {
+      matches!(
+        t.to_ascii_lowercase().as_str(),
+        "ssm" | "mamba" | "mamba-2" | "rwkv" | "linear-attention" | "swa"
+      )
+    });
   let eval_ctx = 32_768u64.min(blueprint.max_position_embeddings.max(4096));
   let fp8_vram_bytes = blueprint.estimate_vram(PrecisionPreset::Fp8, eval_ctx, 1).total_bytes;
 
@@ -341,7 +349,7 @@ pub fn build_curated_summary(
     vendor,
     modality: resolved_modality,
     origin,
-    series: normalize_series_id(&series, &hf_repo),
+    series: series_norm,
     release_date,
     hf_repo,
     ms_repo: ms_repo.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
