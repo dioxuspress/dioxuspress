@@ -115,6 +115,16 @@ impl ConfigFileCategory {
       }
     }
   }
+
+  /// 与分类徽章色相一致的纯文字加粗强调色（用于行内引导语，避免与下方带框徽章重复堆砌）。
+  pub fn accent_text_classes(self) -> &'static str {
+    match self {
+      Self::Architecture => "font-semibold text-indigo-600 dark:text-indigo-400",
+      Self::InferenceControl => "font-semibold text-emerald-600 dark:text-emerald-400",
+      Self::WeightStorage => "font-semibold text-amber-600 dark:text-amber-400",
+      Self::FineTuningAdapter => "font-semibold text-violet-600 dark:text-violet-400",
+    }
+  }
 }
 
 /// 大模型权重仓库中的 8 类核心配置文件。
@@ -4176,7 +4186,7 @@ pub(crate) fn render_config_guide_content(
     div { class: "space-y-10",
       // 1. 顶部 Hero 区域
       div { class: "rounded-3xl border border-slate-200 dark:border-slate-800 bg-linear-to-br from-slate-50 via-white to-indigo-50/70 dark:from-slate-900 dark:via-slate-950 dark:to-indigo-950/30 p-6 sm:p-8 shadow-xs",
-        div { class: "flex flex-wrap items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 mb-3",
+        div { class: "flex flex-wrap items-center gap-2 text-sm font-semibold text-indigo-600 dark:text-indigo-400 mb-3",
           Link { to: "/models", class: "hover:underline",
             {lang.pick("← 返回主流大模型架构图鉴", "← Back to Model Atlas")}
           }
@@ -4188,8 +4198,8 @@ pub(crate) fn render_config_guide_content(
 
         div { class: "flex flex-col lg:flex-row lg:items-end justify-between gap-6",
           div { class: "max-w-3xl",
-            div { class: "inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-2",
-              span { class: "px-2.5 py-0.5 rounded-full bg-indigo-600 text-white text-[10px]",
+            div { class: "inline-flex items-center gap-2 text-xs sm:text-sm font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-2",
+              span { class: "px-2.5 py-0.5 rounded-full bg-indigo-600 text-white text-[11px]",
                 "Config Anatomy"
               }
               span {
@@ -4202,41 +4212,41 @@ pub(crate) fn render_config_guide_content(
             h1 { class: "text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white",
               {lang.pick("大模型配置文件全景解剖指南", "Model Repository Config Files Guide")}
             }
-            p { class: "mt-2.5 text-sm sm:text-base text-slate-600 dark:text-slate-400 leading-relaxed",
+            p { class: "mt-2.5 text-base text-slate-600 dark:text-slate-400 leading-relaxed",
               "{desc}"
             }
           }
 
           div { class: "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-2.5 shrink-0",
             div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
-              div { class: "text-lg font-extrabold font-mono text-indigo-600 dark:text-indigo-400",
+              div { class: "text-xl font-extrabold font-mono text-indigo-600 dark:text-indigo-400",
                 "{payload.file_specs.len()}"
               }
-              div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+              div { class: "text-xs text-slate-500 dark:text-slate-400",
                 {lang.pick("类核心配置文件", "Core Config Files")}
               }
             }
             div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
-              div { class: "text-lg font-extrabold font-mono text-emerald-600 dark:text-emerald-400",
+              div { class: "text-xl font-extrabold font-mono text-emerald-600 dark:text-emerald-400",
                 "{payload.field_docs.len()}+"
               }
-              div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+              div { class: "text-xs text-slate-500 dark:text-slate-400",
                 {lang.pick("高频字段双语词典", "Annotated Fields")}
               }
             }
             div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
-              div { class: "text-lg font-extrabold font-mono text-violet-600 dark:text-violet-400",
+              div { class: "text-xl font-extrabold font-mono text-violet-600 dark:text-violet-400",
                 "{payload.repo_trees.len()}"
               }
-              div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+              div { class: "text-xs text-slate-500 dark:text-slate-400",
                 {lang.pick("模态仓库文件树", "Modality Repo Trees")}
               }
             }
             div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-3.5 py-2.5",
-              div { class: "text-lg font-extrabold font-mono text-amber-600 dark:text-amber-400",
+              div { class: "text-xl font-extrabold font-mono text-amber-600 dark:text-amber-400",
                 "{payload.gotchas.len()}"
               }
-              div { class: "text-[11px] text-slate-500 dark:text-slate-400",
+              div { class: "text-xs text-slate-500 dark:text-slate-400",
                 {lang.pick("工程高频踩坑", "Production Gotchas")}
               }
             }
@@ -4248,10 +4258,10 @@ pub(crate) fn render_config_guide_content(
       div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
         div { class: "flex flex-col md:flex-row md:items-center justify-between gap-3",
           div {
-            h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+            h2 { class: "text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white",
               {lang.pick("1. 模型仓库文件树与加载协作关系", "1. Repository File Tree by Modality")}
             }
-            p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+            p { class: "mt-1.5 text-sm sm:text-[15px] text-slate-500 dark:text-slate-400 leading-relaxed",
               {lang.pick(
                 "切换不同模态，快速看清打开一个 HuggingFace / ModelScope 仓库时，各个文件各自管什么、按什么顺序被推理引擎消费。",
                 "Switch modalities to see what each JSON/weight file controls and how inference engines load them together.",
@@ -4265,9 +4275,9 @@ pub(crate) fn render_config_guide_content(
                 let bid = bp.id.clone();
                 let active = active_modality() == bid;
                 let cls = if active {
-                  "px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 text-white shadow-xs cursor-pointer transition-all"
+                  "px-3 py-1.5 rounded-xl text-xs sm:text-sm font-bold bg-indigo-600 text-white shadow-xs cursor-pointer transition-all"
                 } else {
-                  "px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer transition-all"
+                  "px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer transition-all"
                 };
                 rsx! {
                   button {
@@ -4284,15 +4294,15 @@ pub(crate) fn render_config_guide_content(
         }
 
         if let Some(tree) = cur_tree {
-          div { class: "rounded-2xl border border-indigo-200/80 dark:border-indigo-900/60 bg-indigo-50/50 dark:bg-indigo-950/25 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs",
+          div { class: "rounded-2xl border border-indigo-200/80 dark:border-indigo-900/60 bg-indigo-50/50 dark:bg-indigo-950/25 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs sm:text-sm",
             div { class: "space-y-1",
-              div { class: "font-bold text-indigo-700 dark:text-indigo-300",
+              div { class: "font-bold text-indigo-700 dark:text-indigo-300 leading-relaxed",
                 {lang.pick("推理加载数据流：", "Loader Pipeline Flow: ")}
                 span { class: "font-normal text-slate-700 dark:text-slate-300",
                   {render_inline_markup(tree.flow(lang))}
                 }
               }
-              div { class: "font-mono text-[11px] text-slate-500 dark:text-slate-400",
+              div { class: "font-mono text-xs text-slate-500 dark:text-slate-400",
                 {lang.pick("典型仓库参考：", "Reference Repos: ")}
                 "{tree.example_repo}"
               }
@@ -4300,7 +4310,7 @@ pub(crate) fn render_config_guide_content(
             if let Some(ref slug) = tree.example_slug {
               Link {
                 to: format!("/models/{slug}"),
-                class: "shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition-colors",
+                class: "shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs sm:text-sm font-semibold hover:bg-indigo-700 transition-colors",
                 {lang.pick("查看真实代表模型 →", "Inspect Example Model →")}
               }
             }
@@ -4314,34 +4324,34 @@ pub(crate) fn render_config_guide_content(
                 rsx! {
                   div {
                     key: "{tree.id}-{item.path}",
-                    class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-3.5 flex flex-col justify-between gap-2",
+                    class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-4 flex flex-col justify-between gap-2.5",
                     div { class: "flex items-start justify-between gap-2",
-                      code { class: "text-xs sm:text-sm font-mono font-bold text-slate-900 dark:text-white break-all",
+                      code { class: "text-sm sm:text-[15px] font-mono font-bold text-slate-900 dark:text-white break-all",
                         "{item.path}"
                       }
                       div { class: "flex items-center gap-1.5 shrink-0",
-                        span { class: format!("px-2 py-0.5 rounded-md text-[10px] font-bold whitespace-nowrap {}", cat.badge_classes()),
+                        span { class: format!("px-2 py-0.5 rounded-md text-[11px] font-bold whitespace-nowrap {}", cat.badge_classes()),
                           "{cat.short_label(lang)}"
                         }
                         if item.required {
-                          span { class: badge_class(BadgeVariant::Default, "text-[10px] shrink-0"),
+                          span { class: badge_class(BadgeVariant::Default, "text-[11px] shrink-0"),
                             {lang.pick("必需", "Required")}
                           }
                         } else {
-                          span { class: badge_class(BadgeVariant::Secondary, "text-[10px] shrink-0"),
+                          span { class: badge_class(BadgeVariant::Secondary, "text-[11px] shrink-0"),
                             {lang.pick("可选", "Optional")}
                           }
                         }
                       }
                     }
-                    p { class: "text-xs text-slate-600 dark:text-slate-400 leading-relaxed",
+                    p { class: "text-sm text-slate-600 dark:text-slate-400 leading-relaxed",
                       {render_inline_markup(item.note(lang))}
                     }
                     div { class: "flex items-center justify-between pt-1",
-                      span { class: "text-[11px] font-mono text-slate-400", "{fk.short_name()}" }
+                      span { class: "text-xs font-mono text-slate-400", "{fk.short_name()}" }
                       button {
                         r#type: "button",
-                        class: "text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer",
+                        class: "text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer",
                         onclick: move |_| {
                           active_file_spec.set(fk);
                           filter_category.set(Some(cat));
@@ -4361,17 +4371,34 @@ pub(crate) fn render_config_guide_content(
       // 3. 按 4 大职责归类的 8 类主流配置文件深度蓝图
       div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
         div {
-          h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+          h2 { class: "text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white",
             {lang.pick(
               "2. 按职责归类的八大配置文件拆解",
               "2. The 8 Standard Config Files by Responsibility",
             )}
           }
-          p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
-            {lang.pick(
-              "按「模型架构」「输入与推理控制」「权重存储」「微调增量」四大职责归类，先看清每个文件管什么，再点击展开框架加载机制与 JSON 示例。",
-              "Grouped into Architecture, Inference Control, Weight Storage, and Fine-Tuning Adapters so you immediately see what each file controls.",
-            )}
+          p { class: "mt-1.5 text-sm sm:text-[15px] text-slate-500 dark:text-slate-400 leading-relaxed",
+            if matches!(lang, Language::Zh) {
+              "按 "
+              span { class: ConfigFileCategory::Architecture.accent_text_classes(), "模型架构" }
+              "、"
+              span { class: ConfigFileCategory::InferenceControl.accent_text_classes(), "输入与推理控制" }
+              "、"
+              span { class: ConfigFileCategory::WeightStorage.accent_text_classes(), "权重存储" }
+              "、"
+              span { class: ConfigFileCategory::FineTuningAdapter.accent_text_classes(), "微调增量" }
+              " 四大职责归类，先看清每个文件管什么，再点击展开框架加载机制与 JSON 示例。"
+            } else {
+              "Grouped into "
+              span { class: ConfigFileCategory::Architecture.accent_text_classes(), "Architecture" }
+              ", "
+              span { class: ConfigFileCategory::InferenceControl.accent_text_classes(), "Inference Control" }
+              ", "
+              span { class: ConfigFileCategory::WeightStorage.accent_text_classes(), "Weight Storage" }
+              ", and "
+              span { class: ConfigFileCategory::FineTuningAdapter.accent_text_classes(), "Fine-Tuning Adapters" }
+              " so you immediately see what each file controls."
+            }
           }
         }
 
@@ -4379,17 +4406,17 @@ pub(crate) fn render_config_guide_content(
           for cat in ConfigFileCategory::ALL {
             div {
               key: "cat-{cat.id()}",
-              class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 p-3.5 space-y-2.5 flex flex-col justify-between",
+              class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 p-4 space-y-3 flex flex-col justify-between",
               div { class: "space-y-1.5",
                 div { class: "flex items-center justify-between gap-2",
-                  span { class: format!("px-2 py-0.5 rounded-md text-[11px] font-bold whitespace-nowrap {}", cat.badge_classes()),
+                  span { class: format!("px-2.5 py-0.5 rounded-md text-xs font-bold whitespace-nowrap {}", cat.badge_classes()),
                     "{cat.label(lang)}"
                   }
-                  span { class: "text-[11px] font-mono text-slate-400 shrink-0",
+                  span { class: "text-xs font-mono text-slate-400 shrink-0",
                     "{cat.files().len()}"
                   }
                 }
-                p { class: "text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed",
+                p { class: "text-xs sm:text-[13px] text-slate-600 dark:text-slate-400 leading-relaxed",
                   "{cat.summary(lang)}"
                 }
               }
@@ -4398,9 +4425,9 @@ pub(crate) fn render_config_guide_content(
                   {
                     let active = active_file_spec() == kind;
                     let cls = if active {
-                      "px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer transition-all"
+                      "px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer transition-all"
                     } else {
-                      "px-2.5 py-1 rounded-lg text-[11px] font-mono font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-indigo-400 dark:hover:border-indigo-600 cursor-pointer transition-all"
+                      "px-2.5 py-1 rounded-lg text-xs font-mono font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-indigo-400 dark:hover:border-indigo-600 cursor-pointer transition-all"
                     };
                     rsx! {
                       button {
@@ -4428,23 +4455,23 @@ pub(crate) fn render_config_guide_content(
               div { class: "grid grid-cols-1 lg:grid-cols-12 gap-5 items-start pt-1",
                 div { class: "lg:col-span-6 space-y-3.5",
                   div { class: "flex flex-wrap items-center gap-2",
-                    h3 { class: "text-base sm:text-lg font-extrabold font-mono text-slate-900 dark:text-white",
+                    h3 { class: "text-lg sm:text-xl font-extrabold font-mono text-slate-900 dark:text-white",
                       "{spec.filenames}"
                     }
-                    span { class: format!("px-2 py-0.5 rounded-md text-[11px] font-bold whitespace-nowrap {}", spec_cat.badge_classes()),
+                    span { class: format!("px-2.5 py-0.5 rounded-md text-xs font-bold whitespace-nowrap {}", spec_cat.badge_classes()),
                       "{spec_cat.label(lang)}"
                     }
-                    span { class: badge_class(BadgeVariant::Secondary, "text-[11px]"),
+                    span { class: badge_class(BadgeVariant::Secondary, "text-xs"),
                       "{spec.modalities(lang)}"
                     }
                   }
-                  div { class: "text-sm font-bold text-indigo-600 dark:text-indigo-400",
+                  div { class: "text-base font-bold text-indigo-600 dark:text-indigo-400",
                     "{spec.role(lang)}"
                   }
-                  p { class: "text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
+                  p { class: "text-sm sm:text-[15px] text-slate-700 dark:text-slate-300 leading-relaxed",
                     {render_inline_markup(spec.summary(lang))}
                   }
-                  div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3.5 text-xs space-y-1.5",
+                  div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-4 text-xs sm:text-sm space-y-1.5",
                     div { class: "font-bold text-slate-800 dark:text-slate-200",
                       {lang.pick("⚙ 框架与推理引擎加载方式", "⚙ How Frameworks Consume It")}
                     }
@@ -4452,7 +4479,7 @@ pub(crate) fn render_config_guide_content(
                       {render_inline_markup(spec.loader(lang))}
                     }
                   }
-                  div { class: "rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 p-3.5 text-xs space-y-1.5",
+                  div { class: "rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 p-4 text-xs sm:text-sm space-y-1.5",
                     div { class: "font-bold text-amber-800 dark:text-amber-300",
                       {lang.pick("⚠ 实战最容易踩的坑", "⚠ Common Pitfall")}
                     }
@@ -4477,7 +4504,7 @@ pub(crate) fn render_config_guide_content(
 
                 div { class: "lg:col-span-6",
                   div { class: "rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden shadow-xs",
-                    div { class: "px-3.5 py-2 border-b border-slate-800 flex items-center justify-between gap-2 text-[11px] font-mono text-slate-400",
+                    div { class: "px-3.5 py-2.5 border-b border-slate-800 flex items-center justify-between gap-2 text-xs font-mono text-slate-400",
                       span { class: "truncate text-slate-200 font-semibold", "{spec_kind.short_name()}" }
                       div { class: "flex items-center gap-2 shrink-0",
                         span { class: "hidden sm:inline text-slate-500",
@@ -4485,7 +4512,7 @@ pub(crate) fn render_config_guide_content(
                         }
                         button {
                           r#type: "button",
-                          class: "px-2 py-0.5 rounded-md border border-slate-700 bg-slate-900 text-slate-200 hover:border-indigo-400 hover:text-white cursor-pointer transition-colors whitespace-nowrap",
+                          class: "px-2.5 py-0.5 rounded-md border border-slate-700 bg-slate-900 text-slate-200 hover:border-indigo-400 hover:text-white cursor-pointer transition-colors whitespace-nowrap",
                           onclick: move |_| {
                             let text = snippet_for_copy.clone();
                             spawn(async move {
@@ -4502,7 +4529,7 @@ pub(crate) fn render_config_guide_content(
                         }
                       }
                     }
-                    pre { class: "p-3.5 max-h-[30rem] overflow-auto text-xs font-mono text-slate-100 leading-relaxed",
+                    pre { class: "p-4 max-h-[30rem] overflow-auto text-[13px] font-mono text-slate-100 leading-relaxed",
                       {render_highlighted_json(&spec.snippet)}
                     }
                   }
@@ -4517,17 +4544,17 @@ pub(crate) fn render_config_guide_content(
       div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
         div { class: "flex flex-col md:flex-row md:items-end justify-between gap-3",
           div {
-            h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+            h2 { class: "text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white",
               {lang.pick("3. 交互式配置字段速查词典", "3. Interactive Config Field Dictionary")}
             }
-            p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+            p { class: "mt-1.5 text-sm sm:text-[15px] text-slate-500 dark:text-slate-400 leading-relaxed",
               {lang.pick(
                 "按文件、语义分组或关键词（如 kv / rope / fp8 / eos / patch / lora）即时检索，附显存与维度影响公式、代表真实模型及实验室直达。",
                 "Filter by file, semantic group, or keyword (e.g. kv, rope, fp8, eos, patch, lora) with memory/shape formulas and live model links.",
               )}
             }
           }
-          div { class: "text-xs font-mono text-slate-500 dark:text-slate-400 shrink-0",
+          div { class: "text-sm font-mono text-slate-500 dark:text-slate-400 shrink-0",
             {lang.pick("当前命中 ", "Showing ")}
             span { class: "font-bold text-indigo-600 dark:text-indigo-400", "{filtered_docs.len()}" }
             " / {payload.field_docs.len()}"
@@ -4539,7 +4566,7 @@ pub(crate) fn render_config_guide_content(
           div { class: "flex flex-col sm:flex-row items-stretch sm:items-center gap-2",
             div { class: "flex-1",
               Input {
-                class: "font-mono text-xs sm:text-sm bg-slate-50 dark:bg-slate-950",
+                class: "font-mono text-sm bg-slate-50 dark:bg-slate-950",
                 placeholder: lang.pick(
                   "搜索字段名、别名或含义（例如 kv_lora_rank、rope、fp8、eos、lora_alpha、patch_size）...",
                   "Search field key, alias, or meaning (e.g. kv_lora_rank, rope, fp8, eos, lora_alpha)...",
@@ -4567,15 +4594,15 @@ pub(crate) fn render_config_guide_content(
 
           // 职责大类筛选行
           div { class: "flex flex-wrap items-center gap-1.5",
-            span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
+            span { class: "text-xs font-semibold text-slate-500 dark:text-slate-400 mr-1",
               {lang.pick("按职责：", "Role:")}
             }
             button {
               r#type: "button",
               class: if sel_category.is_none() {
-                "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
+                "px-2.5 py-1 rounded-lg text-xs font-bold bg-indigo-600 text-white cursor-pointer"
               } else {
-                "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                "px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
               },
               onclick: move |_| filter_category.set(None),
               {lang.pick("全部职责", "All Roles")}
@@ -4584,9 +4611,9 @@ pub(crate) fn render_config_guide_content(
               {
                 let active = sel_category == Some(cat);
                 let cls = if active {
-                  "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
+                  "px-2.5 py-1 rounded-lg text-xs font-bold bg-indigo-600 text-white cursor-pointer"
                 } else {
-                  "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                  "px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
                 };
                 rsx! {
                   button {
@@ -4608,15 +4635,15 @@ pub(crate) fn render_config_guide_content(
 
           // 文件筛选行（随所选职责大类自动收窄）
           div { class: "flex flex-wrap items-center gap-1.5",
-            span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
+            span { class: "text-xs font-semibold text-slate-500 dark:text-slate-400 mr-1",
               {lang.pick("按文件：", "File:")}
             }
             button {
               r#type: "button",
               class: if sel_file.is_none() {
-                "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
+                "px-2.5 py-1 rounded-lg text-xs font-bold bg-indigo-600 text-white cursor-pointer"
               } else {
-                "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                "px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
               },
               onclick: move |_| filter_file.set(None),
               {lang.pick("全部文件", "All Files")}
@@ -4625,9 +4652,9 @@ pub(crate) fn render_config_guide_content(
               {
                 let active = sel_file == Some(kind);
                 let cls = if active {
-                  "px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-indigo-600 text-white cursor-pointer"
+                  "px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-indigo-600 text-white cursor-pointer"
                 } else {
-                  "px-2.5 py-1 rounded-lg text-[11px] font-mono bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                  "px-2.5 py-1 rounded-lg text-xs font-mono bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
                 };
                 rsx! {
                   button {
@@ -4644,15 +4671,15 @@ pub(crate) fn render_config_guide_content(
 
           // 语义分组筛选行
           div { class: "flex flex-wrap items-center gap-1.5",
-            span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400 mr-1",
+            span { class: "text-xs font-semibold text-slate-500 dark:text-slate-400 mr-1",
               {lang.pick("按维度：", "Group:")}
             }
             button {
               r#type: "button",
               class: if sel_group.is_none() {
-                "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
+                "px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
               } else {
-                "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                "px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
               },
               onclick: move |_| filter_group.set(None),
               {lang.pick("全部语义分组", "All Groups")}
@@ -4661,9 +4688,9 @@ pub(crate) fn render_config_guide_content(
               {
                 let active = sel_group == Some(grp);
                 let cls = if active {
-                  "px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
+                  "px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
                 } else {
-                  "px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                  "px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
                 };
                 rsx! {
                   button {
@@ -4681,7 +4708,7 @@ pub(crate) fn render_config_guide_content(
 
         // 字段结果列表（按工程语义维度分节归类）
         if grouped_docs.is_empty() {
-          div { class: "py-10 text-center text-sm text-slate-500 dark:text-slate-400",
+          div { class: "py-10 text-center text-sm sm:text-base text-slate-500 dark:text-slate-400",
             {lang.pick(
               "未找到匹配的配置字段，请尝试更简短的关键词或点击「重置筛选」。",
               "No matching config fields found. Try a shorter keyword or reset filters.",
@@ -4693,14 +4720,14 @@ pub(crate) fn render_config_guide_content(
               div { key: "grp-sec-{grp.id()}", class: "space-y-3",
                 div { class: "flex flex-wrap items-baseline justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800",
                   div { class: "space-y-0.5",
-                    h3 { class: "text-sm sm:text-base font-extrabold text-slate-900 dark:text-white",
+                    h3 { class: "text-base sm:text-lg font-extrabold text-slate-900 dark:text-white",
                       "{grp.label(lang)}"
                     }
-                    p { class: "text-xs text-slate-500 dark:text-slate-400",
+                    p { class: "text-sm text-slate-500 dark:text-slate-400",
                       "{grp.description(lang)}"
                     }
                   }
-                  span { class: "px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 shrink-0",
+                  span { class: "px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-xs font-mono font-bold text-slate-600 dark:text-slate-300 shrink-0",
                     "{items.len()} "
                     {lang.pick("项", "fields")}
                   }
@@ -4716,41 +4743,41 @@ pub(crate) fn render_config_guide_content(
                           class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 flex flex-col justify-between gap-2.5 hover:border-indigo-300 dark:hover:border-indigo-800 transition-colors",
                           div { class: "space-y-2",
                             div { class: "flex flex-wrap items-center justify-between gap-2",
-                              code { class: "text-xs sm:text-sm font-mono font-bold text-indigo-700 dark:text-indigo-300 break-all",
+                              code { class: "text-sm sm:text-[15px] font-mono font-bold text-indigo-700 dark:text-indigo-300 break-all",
                                 "{doc.key}"
                               }
                               div { class: "flex flex-wrap items-center gap-1.5",
-                                span { class: "px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[10px] font-mono text-slate-700 dark:text-slate-300",
+                                span { class: "px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[11px] font-mono text-slate-700 dark:text-slate-300",
                                   "{doc.value_type}"
                                 }
-                                span { class: format!("px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap {}", doc_cat.badge_classes()),
+                                span { class: format!("px-1.5 py-0.5 rounded text-[11px] font-bold whitespace-nowrap {}", doc_cat.badge_classes()),
                                   "{doc_cat.short_label(lang)}"
                                 }
-                                span { class: badge_class(BadgeVariant::Secondary, "text-[10px] font-mono"),
+                                span { class: badge_class(BadgeVariant::Secondary, "text-[11px] font-mono"),
                                   "{doc.file.short_name()}"
                                 }
                               }
                             }
 
                             if !doc.aliases.is_empty() {
-                              div { class: "text-[11px] font-mono text-slate-400",
+                              div { class: "text-xs font-mono text-slate-400",
                                 {lang.pick("别名：", "Aliases: ")}
                                 "{doc.aliases.join(\", \")}"
                               }
                             }
 
-                            p { class: "text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
+                            p { class: "text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
                               {render_inline_markup(doc.summary(lang))}
                             }
 
                             if let Some(ref formula) = doc.formula_impact {
-                              div { class: "rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/70 dark:border-indigo-900/60 px-2.5 py-1.5 text-[11px] font-mono text-indigo-800 dark:text-indigo-300",
+                              div { class: "rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/70 dark:border-indigo-900/60 px-2.5 py-1.5 text-xs font-mono text-indigo-800 dark:text-indigo-300",
                                 "ƒ {formula}"
                               }
                             }
                           }
 
-                          div { class: "flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]",
+                          div { class: "flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-800/70 text-xs",
                             span { class: "text-slate-500 dark:text-slate-400", "{doc.group.label(lang)}" }
                             div { class: "flex flex-wrap items-center gap-2",
                               if let Some(ref slug) = doc.example_model_slug {
@@ -4783,10 +4810,10 @@ pub(crate) fn render_config_guide_content(
       // 5. 常见工程踩坑速查（Gotchas）
       div { class: card_class("p-5 sm:p-6 bg-white dark:bg-slate-900/60 space-y-5"),
         div {
-          h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white",
+          h2 { class: "text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white",
             {lang.pick("4. 真实工程高频踩坑速查（Gotchas）", "4. Production Engineering Gotchas")}
           }
-          p { class: "mt-1 text-xs sm:text-sm text-slate-500 dark:text-slate-400",
+          p { class: "mt-1.5 text-sm sm:text-[15px] text-slate-500 dark:text-slate-400 leading-relaxed",
             {lang.pick(
               "写推理引擎、算显存预算或对齐微调权重时最容易因为误读配置文件而翻车的 6 类经典陷阱。",
               "Six classic failure modes when implementing inference engines, sizing VRAM, or merging fine-tuned checkpoints.",
@@ -4800,14 +4827,14 @@ pub(crate) fn render_config_guide_content(
               key: "gotcha-{g.id}",
               class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4 space-y-2.5",
               div { class: "flex items-center gap-2",
-                span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-bold shrink-0",
+                span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[11px] font-bold shrink-0",
                   "{g.badge}"
                 }
-                h3 { class: "text-sm font-extrabold text-slate-900 dark:text-white",
+                h3 { class: "text-base font-extrabold text-slate-900 dark:text-white",
                   "{g.title(lang)}"
                 }
               }
-              div { class: "text-xs space-y-1.5 leading-relaxed",
+              div { class: "text-sm space-y-1.5 leading-relaxed",
                 p { class: "text-slate-600 dark:text-slate-400",
                   span { class: "font-bold text-rose-600 dark:text-rose-400 mr-1",
                     {lang.pick("现象：", "Symptom: ")}
@@ -4835,7 +4862,7 @@ pub(crate) fn render_config_guide_content(
                       button {
                         key: "{g.id}-{rk}",
                         r#type: "button",
-                        class: "px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-[11px] font-mono text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/60 cursor-pointer",
+                        class: "px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-xs font-mono text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-950/60 cursor-pointer",
                         onclick: move |_| {
                           filter_category.set(None);
                           filter_file.set(None);

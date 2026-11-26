@@ -1934,5 +1934,11 @@ mod tests {
     assert!(html.contains("text-sky-300 font-medium"));
     assert!(html.contains("text-emerald-300"));
     assert!(html.contains("text-slate-500 italic"));
+    // 四大职责引导词采用与卡片一致的同色系加粗文字
+    assert!(html.contains("font-semibold text-indigo-600 dark:text-indigo-400"));
+    assert!(html.contains("font-semibold text-emerald-600 dark:text-emerald-400"));
+    assert!(html.contains("font-semibold text-amber-600 dark:text-amber-400"));
+    assert!(html.contains("font-semibold text-violet-600 dark:text-violet-400"));
+    assert!(html.contains("text-[13px] font-mono"));
   }
 }
