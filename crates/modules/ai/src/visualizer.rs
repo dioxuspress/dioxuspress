@@ -2191,8 +2191,8 @@ mod tests {
     let html = dioxus_ssr::render(&vdom);
 
     assert!(html.contains("算子色块图例 (Legend)"));
-    assert!(html.contains("Inception-v3 (经典 CNN)"));
-    assert!(html.contains("ResNet-50 (残差 CNN)"));
+    assert!(html.contains("连线语义图例 (Edges)"));
+    assert!(html.contains("收起全部大块"));
     assert!(html.contains("导出高清 SVG ↓"));
     assert!(html.contains("data:image/svg+xml;charset=utf-8,"));
     assert!(html.contains("B×S×7168"));

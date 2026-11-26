@@ -47,6 +47,8 @@ pub enum ArchFamily {
   GenericTransformer,
   /// 未提供标准 Transformer 超参、仅由 Safetensors 权重树还原的自定义模型
   SafetensorsTree,
+  /// 由外部声明式 `graph.json` 驱动的全谱系架构图（YOLO / U-Net / SAM / 经典网络等）
+  DeclarativeGraph,
 }
 
 impl ArchFamily {
@@ -67,6 +69,7 @@ impl ArchFamily {
       Self::DiffusionPipeline => "Diffusion / DiT Pipeline",
       Self::GenericTransformer => "Transformer Decoder",
       Self::SafetensorsTree => "Safetensors Weight Tree",
+      Self::DeclarativeGraph => "Architecture Graph",
     }
   }
 }
@@ -638,9 +641,16 @@ pub struct ModelBlueprint {
   /// 附属配置文件裁剪快照（`generation_config.json` / `tokenizer_config.json` / `preprocessor_config.json` / `1_Pooling/config.json`）
   #[serde(default)]
   pub aux_configs: Vec<AuxConfigSnapshot>,
+  /// 可选声明式张量维流图紧凑线编码（由服务端读取 `models/<slug>/graph.json` 校验并编码，客户端零 serde 膨胀解码）
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub declarative_graph_wire: Option<String>,
 }
 
 impl ModelBlueprint {
+  /// 是否为基于外部声明式 `graph.json` 的架构图模型（无标准 LLM `config.json`）。
+  pub fn is_declarative_graph(&self) -> bool {
+    self.family == ArchFamily::DeclarativeGraph || self.declarative_graph_wire.is_some()
+  }
   /// 获取指定层号 `layer_idx` 对应的层段（超出范围时回退首段或末段）。
   pub fn segment_for_layer(&self, layer_idx: u64) -> Option<&LayerSegment> {
     self
@@ -1686,6 +1696,7 @@ pub fn build_model_blueprint_with_aux(
     safetensors,
     raw_config_pretty,
     aux_configs,
+    declarative_graph_wire: None,
   })
 }
 
@@ -2338,6 +2349,7 @@ fn build_safetensors_fallback_blueprint(
     safetensors: Some(st),
     raw_config_pretty,
     aux_configs: Vec::new(),
+    declarative_graph_wire: None,
   }
 }
 
@@ -2539,6 +2551,7 @@ fn direct_preset_blueprint(
     safetensors: Some(safetensors),
     raw_config_pretty: raw_config_pretty.to_string(),
     aux_configs: Vec::new(),
+    declarative_graph_wire: None,
   }
 }
 
@@ -3933,6 +3946,7 @@ mod diffusion_parser {
       safetensors,
       raw_config_pretty,
       aux_configs: Vec::new(),
+      declarative_graph_wire: None,
     })
   }
 }
