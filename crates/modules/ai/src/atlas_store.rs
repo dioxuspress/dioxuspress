@@ -18,12 +18,10 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[cfg(any(feature = "server", feature = "accounts", test))]
-use crate::arch::AttentionSpec;
-#[cfg(any(feature = "server", test))]
-use crate::arch::PrecisionPreset;
-#[cfg(any(feature = "server", feature = "accounts", test))]
-use crate::arch::{format_count, FfnSpec, OutputHeadSpec};
+use crate::arch::format_count;
 use crate::arch::{ArchFamily, ModelBlueprint};
+#[cfg(any(feature = "server", test))]
+use crate::arch::{AttentionSpec, FfnSpec, OutputHeadSpec, PrecisionPreset};
 #[cfg(any(feature = "server", test))]
 use crate::atlas::CuratedModelDetail;
 #[cfg(any(feature = "server", feature = "accounts", test))]
@@ -334,8 +332,8 @@ pub fn build_curated_summary(
   }
 }
 
-/// 从 `ModelBlueprint` 零延迟自动合成高质量双语图鉴草稿（管理员可在弹窗中直接保存或继续润色）。
-#[cfg(any(feature = "server", feature = "accounts", test))]
+/// 从 `ModelBlueprint` 零延迟自动合成高质量双语图鉴草稿（服务端与测试使用完整双语模板）。
+#[cfg(any(feature = "server", test))]
 pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
   let repo_id = if bp.repo_id.trim().is_empty() || bp.repo_id == "custom/pasted-config" {
     format!("custom/{}", bp.model_type)
@@ -801,6 +799,73 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
     tags,
     highlights,
     highlights_en,
+    readme_md: None,
+    blueprint: bp.clone(),
+  }
+}
+
+/// 客户端 WASM 轻量版草稿初始化（完整多模态双语文案由服务端 `admin_fetch_model_draft` / `admin_ai_polish_model_draft` 生成，
+/// 避免将 450+ 行管理员文案模板打入全站公共 WASM 包）。
+#[cfg(all(feature = "accounts", not(feature = "server"), not(test)))]
+pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
+  let repo_id = if bp.repo_id.trim().is_empty() || bp.repo_id == "custom/pasted-config" {
+    format!("custom/{}", bp.model_type)
+  } else {
+    bp.repo_id.trim().to_string()
+  };
+  let slug = slugify_repo_id(&repo_id);
+  let raw_title = repo_id.split('/').nth(1).unwrap_or(&slug);
+  let total_str = format_count(bp.params.total_params);
+  let active_str = format_count(bp.params.active_params);
+  let vendor = infer_vendor_from_repo(&repo_id);
+  let modality = ModelModality::infer_from_blueprint(bp);
+  let series = normalize_series_id("", &repo_id);
+  let name = if raw_title.chars().any(|c| c.is_ascii_digit())
+    && raw_title.to_ascii_lowercase().contains('b')
+  {
+    raw_title.to_string()
+  } else {
+    format!("{raw_title} ({total_str})")
+  };
+  let mut tags = Vec::new();
+  if modality != ModelModality::Llm {
+    tags.push(modality.as_str().to_string());
+  }
+  tags.push(if bp.has_moe() { "moe" } else { "dense" }.to_string());
+  let summary = format!(
+    "{vendor} 开源模型（{total_str} 总参 / {active_str} 激活）：{} 层 × {} 维 {} 架构。",
+    bp.num_hidden_layers,
+    bp.hidden_size,
+    bp.family.badge_label()
+  );
+  let summary_en = format!(
+    "{vendor} open model ({total_str} total / {active_str} active): {}L × {}d {} architecture.",
+    bp.num_hidden_layers,
+    bp.hidden_size,
+    bp.family.badge_label()
+  );
+  CuratedModelUpsertInput {
+    slug,
+    name,
+    vendor,
+    modality,
+    series,
+    release_date: String::new(),
+    hf_repo: repo_id,
+    ms_repo: None,
+    featured: false,
+    order: 50,
+    summary,
+    summary_en,
+    tags,
+    highlights: vec![format!(
+      "{}L × {}d · {}",
+      bp.num_hidden_layers, bp.hidden_size, bp.rope_summary
+    )],
+    highlights_en: vec![format!(
+      "{}L × {}d · {}",
+      bp.num_hidden_layers, bp.hidden_size, bp.rope_summary
+    )],
     readme_md: None,
     blueprint: bp.clone(),
   }

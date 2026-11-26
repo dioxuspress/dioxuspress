@@ -1,0 +1,2822 @@
+//! 全网张量维流图（Tensor Flow DAG）引擎与可视化组件。
+//!
+//! 采用纯 Rust 确定性整数网格布局（零泛型膨胀、零 `HashMap`/`Cow` 开销、零第三方 JS 依赖、100% 兼容无 `'unsafe-eval'` CSP）：
+//! 1. 从任意 [`ModelBlueprint`] 自动推导端到端多分支张量维度流（覆盖 LLM / VLM / ASR / TTS / Diffusion / SSM / Embedding）；
+//! 2. 符号维度（`B×S`）与实数维度（`1×1` / `1×512` / `4×4096`）一键切换实时重算；
+//! 3. 内置经典 CV 静态表驱动教学对照（Inception-v3 8 色完整图例 + 4 分支拼接、ResNet-50 残差瓶颈）；
+//! 4. 点击任意色块查看算子变换公式并一键切回分层工作台对应算子子图；
+//! 5. 零 JS 导出独立高清 `.svg` 矢量图。
+
+use dioxus::prelude::*;
+use dioxus_shadcn::card_class;
+
+use crate::arch::{
+  format_count, AttentionSpec, FfnSpec, InspectorFocus, LayerSegment, ModelBlueprint,
+  OutputHeadSpec,
+};
+
+#[inline(never)]
+fn push_u64(out: &mut String, mut n: u64) {
+  if n == 0 {
+    out.push('0');
+    return;
+  }
+  let mut buf = [0u8; 20];
+  let mut i = buf.len();
+  while n > 0 {
+    i -= 1;
+    buf[i] = b'0' + (n % 10) as u8;
+    n /= 10;
+  }
+  if let Ok(s) = std::str::from_utf8(&buf[i..]) {
+    out.push_str(s);
+  }
+}
+
+#[inline(never)]
+fn push_i32(out: &mut String, n: i32) {
+  if n < 0 {
+    out.push('-');
+    push_u64(out, n.unsigned_abs() as u64);
+  } else {
+    push_u64(out, n as u64);
+  }
+}
+
+/// 算子着色类别（与右上角图例一一对应）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum OpKind {
+  Input = 0,
+  Embedding = 1,
+  ConvOrLinear = 2,
+  AvgPool = 3,
+  MaxPool = 4,
+  Attention = 5,
+  MoeRouter = 6,
+  Merge = 7,
+  Softmax = 8,
+  FcHead = 9,
+  Dropout = 10,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegendStyle {
+  LlmOrMultimodal,
+  ClassicCnn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapePreset {
+  Symbolic,
+  Decode1,
+  Prefill512,
+  Batch4K,
+}
+
+impl ShapePreset {
+  pub fn label(self) -> &'static str {
+    match self {
+      Self::Symbolic => "符号 (B×S)",
+      Self::Decode1 => "Decode (1×1)",
+      Self::Prefill512 => "Prefill (1×512)",
+      Self::Batch4K => "Batch (4×4096)",
+    }
+  }
+
+  fn seq_prefix(self) -> &'static str {
+    match self {
+      Self::Symbolic => "B×S",
+      Self::Decode1 => "1×1",
+      Self::Prefill512 => "1×512",
+      Self::Batch4K => "4×4096",
+    }
+  }
+
+  fn batch_str(self) -> &'static str {
+    match self {
+      Self::Symbolic => "B",
+      Self::Decode1 | Self::Prefill512 => "1",
+      Self::Batch4K => "4",
+    }
+  }
+
+  fn seq_str(self) -> &'static str {
+    match self {
+      Self::Symbolic => "S",
+      Self::Decode1 => "1",
+      Self::Prefill512 => "512",
+      Self::Batch4K => "4096",
+    }
+  }
+
+  #[inline(never)]
+  fn fmt_seq(self, dim: u64) -> String {
+    let mut s = String::with_capacity(16);
+    s.push_str(self.seq_prefix());
+    s.push('×');
+    push_u64(&mut s, dim);
+    s
+  }
+
+  #[inline(never)]
+  fn fmt_batch(self, suffix: &str) -> String {
+    let mut s = String::with_capacity(suffix.len() + 4);
+    s.push_str(self.batch_str());
+    s.push('×');
+    s.push_str(suffix);
+    s
+  }
+
+  #[inline(never)]
+  fn fmt_batch_u64(self, n: u64, suffix: &str) -> String {
+    let mut s = String::with_capacity(suffix.len() + 12);
+    s.push_str(self.batch_str());
+    s.push('×');
+    push_u64(&mut s, n);
+    s.push_str(suffix);
+    s
+  }
+
+  #[inline(never)]
+  fn fmt_heads(self, heads: u64, head_dim: u64) -> String {
+    let mut s = String::with_capacity(20);
+    s.push_str(self.batch_str());
+    s.push('×');
+    push_u64(&mut s, heads);
+    s.push('×');
+    s.push_str(self.seq_str());
+    s.push('×');
+    push_u64(&mut s, head_dim);
+    s
+  }
+
+  #[inline(never)]
+  fn fmt_cv(self, h: u64, w: u64, c: u64) -> String {
+    let mut s = String::with_capacity(18);
+    if h == 0 && w == 0 {
+      s.push_str(self.batch_str());
+      s.push('×');
+      push_u64(&mut s, c);
+    } else if matches!(self, Self::Symbolic) {
+      push_u64(&mut s, h);
+      s.push('*');
+      push_u64(&mut s, w);
+      s.push('*');
+      push_u64(&mut s, c);
+    } else {
+      s.push_str(self.batch_str());
+      s.push('×');
+      push_u64(&mut s, h);
+      s.push('×');
+      push_u64(&mut s, w);
+      s.push('×');
+      push_u64(&mut s, c);
+    }
+    s
+  }
+}
+
+impl OpKind {
+  pub fn palette(self) -> (&'static str, &'static str, &'static str) {
+    match self {
+      Self::Input => ("#f472b6", "#db2777", "#0f172a"),
+      Self::Embedding => ("#fb7185", "#e11d48", "#0f172a"),
+      Self::ConvOrLinear => ("#f97316", "#c2410c", "#ffffff"),
+      Self::AvgPool => ("#0ea5e9", "#0369a1", "#ffffff"),
+      Self::MaxPool => ("#16a34a", "#15803d", "#ffffff"),
+      Self::Attention => ("#4f46e5", "#3730a3", "#ffffff"),
+      Self::MoeRouter => ("#d97706", "#b45309", "#ffffff"),
+      Self::Merge => ("#dc2626", "#991b1b", "#ffffff"),
+      Self::Softmax => ("#22d3ee", "#0891b2", "#0f172a"),
+      Self::FcHead => ("#a21caf", "#701a75", "#ffffff"),
+      Self::Dropout => ("#1e3a8a", "#172554", "#ffffff"),
+    }
+  }
+
+  pub fn legend_label(self, style: LegendStyle) -> &'static str {
+    match (self, style) {
+      (Self::Input, LegendStyle::ClassicCnn) => "输入图像",
+      (Self::Input, LegendStyle::LlmOrMultimodal) => "输入张量",
+      (Self::Embedding, _) => "Embedding / 切片",
+      (Self::ConvOrLinear, LegendStyle::ClassicCnn) => "卷积层",
+      (Self::ConvOrLinear, LegendStyle::LlmOrMultimodal) => "线性投影 / 卷积",
+      (Self::AvgPool, LegendStyle::ClassicCnn) => "平均池化层",
+      (Self::AvgPool, LegendStyle::LlmOrMultimodal) => "潜空间压缩 / 池化",
+      (Self::MaxPool, LegendStyle::ClassicCnn) => "最大池化层",
+      (Self::MaxPool, LegendStyle::LlmOrMultimodal) => "归一化 / 激活门控",
+      (Self::Attention, _) => "注意力 / SSM 混合",
+      (Self::MoeRouter, _) => "MoE 路由 / 专家",
+      (Self::Merge, LegendStyle::ClassicCnn) => "拼接 / 残差相加",
+      (Self::Merge, LegendStyle::LlmOrMultimodal) => "残差相加 / 拼接融合",
+      (Self::Softmax, _) => "Softmax / 归一化输出",
+      (Self::FcHead, LegendStyle::ClassicCnn) => "全连接层",
+      (Self::FcHead, LegendStyle::LlmOrMultimodal) => "输出头 / 解码投影",
+      (Self::Dropout, _) => "Dropout",
+    }
+  }
+
+  const ALL_ORDER: [Self; 11] = [
+    Self::Input,
+    Self::Embedding,
+    Self::AvgPool,
+    Self::ConvOrLinear,
+    Self::Attention,
+    Self::MoeRouter,
+    Self::Merge,
+    Self::Softmax,
+    Self::FcHead,
+    Self::MaxPool,
+    Self::Dropout,
+  ];
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TensorNode {
+  pub kind: OpKind,
+  pub shape: String,
+  pub side_note: String,
+  pub op_title: &'static str,
+  pub formula: String,
+  pub params_hint: String,
+  pub col_q: i32,
+  pub row: usize,
+  pub focus_target: Option<InspectorFocus>,
+  pub layer_target: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TensorEdge {
+  pub from: usize,
+  pub to: usize,
+  pub label: &'static str,
+  pub dashed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepeatGroup {
+  pub row_start: usize,
+  pub row_end: usize,
+  pub min_col_q: i32,
+  pub max_col_q: i32,
+  pub badge: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TensorGraph {
+  pub file_slug: String,
+  pub title: String,
+  pub subtitle: String,
+  pub legend_style: LegendStyle,
+  pub nodes: Vec<TensorNode>,
+  pub edges: Vec<TensorEdge>,
+  pub groups: Vec<RepeatGroup>,
+  pub total_rows: usize,
+}
+
+impl TensorGraph {
+  #[inline(never)]
+  pub fn active_legend(&self) -> Vec<(OpKind, &'static str)> {
+    let mut mask: u16 = 0;
+    for n in &self.nodes {
+      mask |= 1u16 << (n.kind as u8);
+    }
+    let mut out = Vec::with_capacity(8);
+    for k in OpKind::ALL_ORDER {
+      if (mask & (1u16 << (k as u8))) != 0 {
+        out.push((k, k.legend_label(self.legend_style)));
+      }
+    }
+    out
+  }
+}
+
+struct GraphBuilder {
+  nodes: Vec<TensorNode>,
+  edges: Vec<TensorEdge>,
+  groups: Vec<RepeatGroup>,
+  focus: Option<InspectorFocus>,
+  layer: Option<u64>,
+}
+
+impl GraphBuilder {
+  fn new() -> Self {
+    Self { nodes: Vec::new(), edges: Vec::new(), groups: Vec::new(), focus: None, layer: None }
+  }
+
+  fn set_ctx(&mut self, focus: Option<InspectorFocus>, layer: Option<u64>) {
+    self.focus = focus;
+    self.layer = layer;
+  }
+
+  /// 紧凑无泛型节点构造（复用 `focus`/`layer` 上下文，缩减 WASM 调用参数槽位）。
+  #[inline(never)]
+  #[allow(clippy::too_many_arguments)]
+  fn add(
+    &mut self,
+    kind: OpKind,
+    shape: &str,
+    side_note: &str,
+    op_title: &'static str,
+    formula: &str,
+    params_hint: &str,
+    col_q: i32,
+    row: usize,
+  ) -> usize {
+    let idx = self.nodes.len();
+    self.nodes.push(TensorNode {
+      kind,
+      shape: shape.to_string(),
+      side_note: side_note.to_string(),
+      op_title,
+      formula: formula.to_string(),
+      params_hint: params_hint.to_string(),
+      col_q,
+      row,
+      focus_target: self.focus,
+      layer_target: self.layer,
+    });
+    idx
+  }
+
+  #[inline(never)]
+  #[allow(clippy::too_many_arguments)]
+  fn add_norm(
+    &mut self,
+    prev: usize,
+    row: usize,
+    d: u64,
+    seq_d: &str,
+    side: &str,
+    title: &'static str,
+    hint: &str,
+  ) -> usize {
+    let saved = self.focus;
+    self.focus = Some(InspectorFocus::NormAndResidual);
+    let idx =
+      self.add(OpKind::MaxPool, seq_d, side, title, &fmt_num("RMSNorm(dim=", d, ")"), hint, 0, row);
+    self.focus = saved;
+    self.edge(prev, idx);
+    idx
+  }
+
+  #[inline(never)]
+  #[allow(clippy::too_many_arguments)]
+  fn add_residual(
+    &mut self,
+    from: usize,
+    skip_from: usize,
+    row: usize,
+    seq_d: &str,
+    title: &'static str,
+    formula: &str,
+    hint: &str,
+  ) -> usize {
+    let saved = self.focus;
+    self.focus = Some(InspectorFocus::NormAndResidual);
+    let idx = self.add(OpKind::Merge, seq_d, "Add (+)", title, formula, hint, 0, row);
+    self.focus = saved;
+    self.edge(from, idx);
+    self.edge_skip(skip_from, idx, "Skip");
+    idx
+  }
+
+  #[inline(never)]
+  #[allow(clippy::too_many_arguments)]
+  fn add_proj(
+    &mut self,
+    kind: OpKind,
+    shape: &str,
+    side: &str,
+    title: &'static str,
+    in_d: u64,
+    out_d: u64,
+    hint: &str,
+    col_q: i32,
+    row: usize,
+  ) -> usize {
+    let f = fmt_proj(in_d, out_d);
+    self.add(kind, shape, side, title, &f, hint, col_q, row)
+  }
+
+  fn edge(&mut self, from: usize, to: usize) {
+    self.edges.push(TensorEdge { from, to, label: "", dashed: false });
+  }
+
+  fn edge_skip(&mut self, from: usize, to: usize, label: &'static str) {
+    self.edges.push(TensorEdge { from, to, label, dashed: true });
+  }
+
+  fn group(
+    &mut self,
+    row_start: usize,
+    row_end: usize,
+    min_col_q: i32,
+    max_col_q: i32,
+    badge: String,
+  ) {
+    self.groups.push(RepeatGroup { row_start, row_end, min_col_q, max_col_q, badge });
+  }
+
+  fn finish(
+    self,
+    file_slug: String,
+    title: String,
+    subtitle: String,
+    legend_style: LegendStyle,
+  ) -> TensorGraph {
+    let total_rows = self.nodes.iter().map(|n| n.row + 1).max().unwrap_or(1);
+    TensorGraph {
+      file_slug,
+      title,
+      subtitle,
+      legend_style,
+      nodes: self.nodes,
+      edges: self.edges,
+      groups: self.groups,
+      total_rows,
+    }
+  }
+}
+
+#[inline(never)]
+fn fmt_proj(in_d: u64, out_d: u64) -> String {
+  let mut s = String::with_capacity(24);
+  s.push_str("Linear [");
+  push_u64(&mut s, in_d);
+  s.push_str(" → ");
+  push_u64(&mut s, out_d);
+  s.push(']');
+  s
+}
+
+#[inline(never)]
+fn fmt_pair(a: u64, sep: &str, b: u64) -> String {
+  let mut s = String::with_capacity(16);
+  push_u64(&mut s, a);
+  s.push_str(sep);
+  push_u64(&mut s, b);
+  s
+}
+
+#[inline(never)]
+fn fmt_param(prefix: &str, count: u64) -> String {
+  let mut s = String::with_capacity(prefix.len() + 12);
+  s.push_str(prefix);
+  s.push_str(&format_count(count));
+  s
+}
+
+#[inline(never)]
+fn fmt_num(prefix: &str, n: u64, suffix: &str) -> String {
+  let mut s = String::with_capacity(prefix.len() + suffix.len() + 10);
+  s.push_str(prefix);
+  push_u64(&mut s, n);
+  s.push_str(suffix);
+  s
+}
+
+/// 从任意 [`ModelBlueprint`] 推导全网多分支张量维流图。
+#[inline(never)]
+pub fn build_blueprint_tensor_graph(
+  bp: &ModelBlueprint,
+  preset: ShapePreset,
+  compact: bool,
+) -> TensorGraph {
+  let mut g = GraphBuilder::new();
+  let d = bp.hidden_size;
+  let v = bp.vocab_size;
+  let seq_d = preset.fmt_seq(d);
+  let seq_v = preset.fmt_seq(v);
+  let mut row: usize = 0;
+
+  g.set_ctx(Some(InspectorFocus::Embedding), None);
+  let mut cur = if let Some(ref diff) = bp.diffusion {
+    let cond_n = diff.components.iter().filter(|c| c.role == "conditioner").count().max(1) as u64;
+    let p_in = g.add(
+      OpKind::Input,
+      &preset.fmt_batch("77"),
+      "prompt",
+      "Prompt Token Input",
+      &fmt_num("Prompt → ", cond_n, " Text Conditioner(s)"),
+      &fmt_param("Conditioner 总参: ", bp.params.embedding),
+      -3,
+      row,
+    );
+    let z_in = g.add(
+      OpKind::Input,
+      &truncate_label(&diff.default_latent_shape, 18),
+      "z_t noise",
+      "Noisy Latent Tensor",
+      &diff.default_latent_shape,
+      &diff.scheduler_summary,
+      3,
+      row,
+    );
+    row += 1;
+    let c_out = g.add(
+      OpKind::Embedding,
+      &seq_d,
+      &fmt_num("×", cond_n, " Enc"),
+      "Text Conditioners Projection",
+      "CLIP / T5 / UMT5 → context_embed",
+      "单次前向编码，跨去噪步复用",
+      -3,
+      row,
+    );
+    let z_out = g.add(
+      OpKind::ConvOrLinear,
+      &seq_d,
+      &truncate_label(&diff.patch_summary, 11),
+      "Latent Patchify / Conv Embed",
+      &diff.patch_summary,
+      &diff.denoiser_kind,
+      3,
+      row,
+    );
+    g.edge(p_in, c_out);
+    g.edge(z_in, z_out);
+    row += 1;
+    g.set_ctx(Some(InspectorFocus::Attention), Some(0));
+    let fused = g.add(
+      OpKind::Merge,
+      &seq_d,
+      "Joint/Cross",
+      "Condition + Latent Stream Fusion",
+      "MMDiT Joint Sequence / Cross-Attn Conditioning",
+      &fmt_num("Backbone: ", bp.num_hidden_layers, " Layers"),
+      0,
+      row,
+    );
+    g.edge(c_out, fused);
+    g.edge(z_out, fused);
+    fused
+  } else if bp.vision.is_some() || bp.audio.is_some() {
+    let mut modal_outs: Vec<usize> = Vec::new();
+    let has_both = bp.vision.is_some() && bp.audio.is_some();
+    let vis_col = if has_both { -5 } else { -3 };
+    let aud_col = if has_both { 0 } else { -3 };
+    let txt_col = if has_both { 5 } else { 3 };
+
+    if let Some(ref vis) = bp.vision {
+      g.set_ctx(Some(InspectorFocus::Vision), None);
+      let img_dim = vis.image_size.unwrap_or(384);
+      let patch = vis.patch_size.unwrap_or(14);
+      let n_p = (img_dim / patch.max(1)).pow(2);
+      let v_in = g.add(
+        OpKind::Input,
+        &preset.fmt_cv(img_dim, img_dim, 3),
+        "RGB",
+        "Vision Image Input",
+        &fmt_num("RGB Image ", img_dim, "px"),
+        &vis.model_type,
+        vis_col,
+        row,
+      );
+      let v_enc = g.add(
+        OpKind::ConvOrLinear,
+        &preset.fmt_batch(&fmt_pair(n_p, "×", vis.hidden_size)),
+        &fmt_num("ViT ×", vis.num_hidden_layers, "L"),
+        "Vision Patchify + ViT Encoder",
+        &fmt_num("Patchify + ", vis.num_hidden_layers, "L ViT"),
+        &fmt_param("视觉塔参数: ", vis.estimated_params),
+        vis_col,
+        row + 1,
+      );
+      let v_proj = g.add_proj(
+        OpKind::AvgPool,
+        &preset.fmt_batch(&fmt_num("N_v×", d, "")),
+        &fmt_pair(vis.hidden_size, "→", d),
+        "Vision Spatial Merger & Projector",
+        vis.hidden_size,
+        d,
+        "对齐至主干隐藏维度",
+        vis_col,
+        row + 2,
+      );
+      g.edge(v_in, v_enc);
+      g.edge(v_enc, v_proj);
+      modal_outs.push(v_proj);
+    }
+
+    if let Some(ref aud) = bp.audio {
+      g.set_ctx(Some(InspectorFocus::Audio), None);
+      let a_in = g.add(
+        OpKind::Input,
+        &preset.fmt_batch_u64(aud.num_mel_bins, "×T"),
+        &fmt_num("", aud.sampling_rate_hz / 1000, "kHz"),
+        "Log-Mel Spectrogram Input",
+        &fmt_num("", aud.num_mel_bins, " Mel Bins"),
+        &aud.model_type,
+        aud_col,
+        row,
+      );
+      let a_enc = g.add(
+        OpKind::ConvOrLinear,
+        &preset.fmt_batch(&fmt_num("T/2×", aud.hidden_size, "")),
+        &fmt_num("Conv ×", aud.num_layers, "L"),
+        "Audio Conv1d Stem + Encoder",
+        &fmt_num("Conv1d(s=2) + ", aud.num_layers, "L Audio Encoder"),
+        &fmt_param("音频塔参数: ", aud.estimated_params),
+        aud_col,
+        row + 1,
+      );
+      let a_proj = g.add_proj(
+        OpKind::AvgPool,
+        &preset.fmt_batch(&fmt_num("T_a×", d, "")),
+        &fmt_pair(aud.hidden_size, "→", d),
+        "Audio Temporal Pool & Projector",
+        aud.hidden_size,
+        d,
+        "映射至语言主干隐空间",
+        aud_col,
+        row + 2,
+      );
+      g.edge(a_in, a_enc);
+      g.edge(a_enc, a_proj);
+      modal_outs.push(a_proj);
+    }
+
+    g.set_ctx(Some(InspectorFocus::Embedding), None);
+    let t_in = g.add(
+      OpKind::Input,
+      preset.seq_prefix(),
+      "int64",
+      "Text input_ids",
+      &fmt_param("Vocab = ", v),
+      "文本 Token 序列输入",
+      txt_col,
+      row,
+    );
+    let t_emb = g.add_proj(
+      OpKind::Embedding,
+      &seq_d,
+      "embed",
+      "Token Embedding Lookup",
+      v,
+      d,
+      &fmt_param("Embedding 参数: ", bp.params.embedding),
+      txt_col,
+      row + 2,
+    );
+    g.edge(t_in, t_emb);
+
+    row += 3;
+    let fused = g.add(
+      OpKind::Merge,
+      &seq_d,
+      "Concat",
+      "Multimodal Token Sequence Concat",
+      "Concat(Modal Tokens, Text Embeds)",
+      "多模态序列统一送入主干层栈",
+      0,
+      row,
+    );
+    for m_idx in modal_outs {
+      g.edge(m_idx, fused);
+    }
+    g.edge(t_emb, fused);
+    fused
+  } else {
+    let t_in = g.add(
+      OpKind::Input,
+      preset.seq_prefix(),
+      "input_ids",
+      "Token IDs Input",
+      &fmt_param("Token IDs · Vocab = ", v),
+      &fmt_num("上下文窗口: ", bp.max_position_embeddings / 1024, "K tokens"),
+      0,
+      row,
+    );
+    row += 1;
+    let t_emb = g.add_proj(
+      OpKind::Embedding,
+      &seq_d,
+      &fmt_pair(v, "→", d),
+      "Token Embedding (embed_tokens)",
+      v,
+      d,
+      &fmt_param("Embedding 参数: ", bp.params.embedding),
+      0,
+      row,
+    );
+    g.edge(t_in, t_emb);
+    t_emb
+  };
+
+  for seg in &bp.segments {
+    row += 1;
+    let seg_start = row;
+    let (next_idx, next_row, min_q, max_q) =
+      append_segment_subgraph(&mut g, bp, seg, cur, row, preset, compact, &seq_d);
+    let mut badge = String::with_capacity(48);
+    badge.push_str(&seg.range_label());
+    badge.push_str(" (×");
+    push_u64(&mut badge, seg.layer_count());
+    badge.push_str(") · ");
+    badge.push_str(&seg.title);
+    g.group(seg_start, next_row, min_q, max_q, badge);
+    cur = next_idx;
+    row = next_row;
+  }
+
+  row += 1;
+  g.set_ctx(Some(InspectorFocus::LmHead), None);
+  if !compact {
+    cur = g.add_norm(
+      cur,
+      row,
+      d,
+      &seq_d,
+      "FinalNorm",
+      "Final RMSNorm / LayerNorm",
+      &fmt_param("参数量: ", d),
+    );
+    row += 1;
+  }
+
+  let has_mtp = bp.num_nextn_predict_layers > 0;
+  let head_col = if has_mtp { -3 } else { 0 };
+
+  match &bp.output_head {
+    OutputHeadSpec::CausalLmHead => {
+      let tied_hint = if bp.tie_word_embeddings {
+        "LM Head 与 Embedding 共享权重".to_string()
+      } else {
+        fmt_param("LM Head 参数: ", bp.params.lm_head)
+      };
+      let lm = g.add_proj(
+        OpKind::FcHead,
+        &seq_v,
+        &fmt_pair(d, "→", v),
+        "Output Projection (lm_head)",
+        d,
+        v,
+        &tied_hint,
+        head_col,
+        row,
+      );
+      g.edge(cur, lm);
+      let sm = g.add(
+        OpKind::Softmax,
+        &seq_v,
+        "probs",
+        "Vocab Softmax / Sampling",
+        "Softmax(logits / T) → Next-Token Distribution",
+        "Top-p / Top-k 采样输出下一 Token",
+        head_col,
+        row + 1,
+      );
+      g.edge(lm, sm);
+
+      if has_mtp {
+        g.set_ctx(Some(InspectorFocus::MtpHead), None);
+        let mtp = g.add_proj(
+          OpKind::MoeRouter,
+          &seq_d,
+          &fmt_num("MTP ×", bp.num_nextn_predict_layers, ""),
+          "Multi-Token Prediction (MTP)",
+          2 * d,
+          d,
+          &fmt_param("MTP 额外参数: +", bp.params.mtp_head),
+          3,
+          row,
+        );
+        let mtp_out = g.add_proj(
+          OpKind::Softmax,
+          &seq_v,
+          "t+2..k",
+          "MTP Shared LM Head Draft",
+          d,
+          v,
+          "推理期多 Token 并行投机验证",
+          3,
+          row + 1,
+        );
+        g.edge_skip(cur, mtp, "MTP");
+        g.edge(mtp, mtp_out);
+      }
+    }
+    OutputHeadSpec::EmbeddingPool { pooling_mode, output_dim, normalize } => {
+      let out_s = preset.fmt_batch_u64(*output_dim, "");
+      let pool = g.add(
+        OpKind::AvgPool,
+        &out_s,
+        &truncate_label(pooling_mode, 10),
+        "Sequence Pooling Head",
+        pooling_mode,
+        "单次前向编码，0 B KV Cache",
+        0,
+        row,
+      );
+      g.edge(cur, pool);
+      if *normalize {
+        let l2 = g.add(
+          OpKind::Softmax,
+          &out_s,
+          "L2 Norm",
+          "L2 Vector Normalization",
+          "v / ||v||_2 → Unit Embedding",
+          "用于余弦相似度向量检索",
+          0,
+          row + 1,
+        );
+        g.edge(pool, l2);
+      }
+    }
+    OutputHeadSpec::SequenceScorer { num_labels } => {
+      let out_s = preset.fmt_batch_u64(*num_labels, "");
+      let cls = g.add_proj(
+        OpKind::FcHead,
+        &out_s,
+        &fmt_pair(d, "→", *num_labels),
+        "Cross-Encoder Scorer Head",
+        d,
+        *num_labels,
+        &fmt_param("Head 参数: ", bp.params.lm_head),
+        0,
+        row,
+      );
+      let sm = g.add(
+        OpKind::Softmax,
+        &out_s,
+        "score",
+        "Relevance Probability Output",
+        "Sigmoid / Softmax → Relevance Scores",
+        "用于 RAG 重排序打分",
+        0,
+        row + 1,
+      );
+      g.edge(cur, cls);
+      g.edge(cls, sm);
+    }
+    OutputHeadSpec::SpeechSynthesizer {
+      codec_summary,
+      num_codebooks,
+      sampling_rate_hz,
+      estimated_params,
+      ..
+    } => {
+      let tk = g.add(
+        OpKind::MoeRouter,
+        &preset.fmt_batch_u64(*num_codebooks, "×T"),
+        &fmt_num("", *num_codebooks, " RVQ"),
+        "Acoustic Codebook Predictor",
+        &fmt_num("Predict ", *num_codebooks, " RVQ Codebooks"),
+        &fmt_param("声学后端参数: ", *estimated_params),
+        0,
+        row,
+      );
+      let voc = g.add(
+        OpKind::FcHead,
+        &preset.fmt_batch("T_wav"),
+        &fmt_num("", sampling_rate_hz / 1000, "kHz"),
+        "Neural Vocoder",
+        codec_summary,
+        "端到端还原高保真音频波形",
+        0,
+        row + 1,
+      );
+      g.edge(cur, tk);
+      g.edge(tk, voc);
+    }
+    OutputHeadSpec::LatentDecoder {
+      vae_class,
+      latent_channels,
+      spatial_compression,
+      is_video,
+      estimated_params,
+      ..
+    } => {
+      let unp = g.add(
+        OpKind::AvgPool,
+        &preset.fmt_batch_u64(*latent_channels, "×h×w"),
+        "Unpatch",
+        "Latent Unpatchify",
+        &fmt_num("Unpatchify · ×", *spatial_compression, " Spatial"),
+        "还原潜空间网格张量",
+        0,
+        row,
+      );
+      let vae = g.add(
+        OpKind::FcHead,
+        &preset.fmt_batch(if *is_video { "F×3×H×W" } else { "3×H×W" }),
+        &truncate_label(vae_class, 11),
+        "Latent VAE Decoder",
+        vae_class,
+        &fmt_param("VAE 参数: ", *estimated_params),
+        0,
+        row + 1,
+      );
+      g.edge(cur, unp);
+      g.edge(unp, vae);
+    }
+  }
+
+  let slug = bp.repo_id.replace('/', "-").to_lowercase();
+  let mut title = String::with_capacity(bp.repo_id.len() + 24);
+  title.push_str(&bp.repo_id);
+  title.push_str(" · 全网张量维流图");
+  let mut subtitle = String::with_capacity(96);
+  subtitle.push_str(bp.family.badge_label());
+  subtitle.push_str(" · ");
+  push_u64(&mut subtitle, bp.num_hidden_layers);
+  subtitle.push_str("L × ");
+  push_u64(&mut subtitle, d);
+  subtitle.push_str("d · 总参 ");
+  subtitle.push_str(&format_count(bp.params.total_params));
+  subtitle.push_str(" (激活 ");
+  subtitle.push_str(&format_count(bp.params.active_params));
+  subtitle.push_str(") · ");
+  subtitle.push_str(preset.label());
+  g.finish(slug, title, subtitle, LegendStyle::LlmOrMultimodal)
+}
+
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn append_segment_subgraph(
+  g: &mut GraphBuilder,
+  bp: &ModelBlueprint,
+  seg: &LayerSegment,
+  prev: usize,
+  start_row: usize,
+  preset: ShapePreset,
+  compact: bool,
+  seq_d: &str,
+) -> (usize, usize, i32, i32) {
+  let d = bp.hidden_size;
+  let layer = seg.start_layer;
+  let mut row = start_row;
+  let mut min_q: i32 = -3;
+  let mut max_q: i32 = 3;
+
+  g.set_ctx(Some(InspectorFocus::Attention), Some(layer));
+  let attn_in = if compact {
+    prev
+  } else {
+    let n = g.add_norm(
+      prev,
+      row,
+      d,
+      seq_d,
+      "Pre-Norm",
+      "input_layernorm (RMSNorm)",
+      &fmt_param("Norm 参数: ", d),
+    );
+    row += 1;
+    n
+  };
+
+  let attn_params = seg.attention.params_per_layer(d);
+  let attn_add = match &seg.attention {
+    AttentionSpec::DeepSeekMla {
+      num_heads,
+      q_lora_rank,
+      kv_lora_rank,
+      qk_nope_head_dim,
+      qk_rope_head_dim,
+      v_head_dim,
+    } => {
+      let qk_dim = qk_nope_head_dim + qk_rope_head_dim;
+      let kv_a_dim = kv_lora_rank + qk_rope_head_dim;
+      let kv_b_head = qk_nope_head_dim + v_head_dim;
+      let o_in = num_heads * v_head_dim;
+
+      let q_leaf = if let Some(qr) = q_lora_rank {
+        let qa = g.add_proj(
+          OpKind::ConvOrLinear,
+          &preset.fmt_seq(*qr),
+          "q_a_proj",
+          "Query Low-Rank Down Proj (q_a_proj)",
+          d,
+          *qr,
+          "Query 潜空间低秩压缩 + RMSNorm",
+          -3,
+          row,
+        );
+        let qb = g.add_proj(
+          OpKind::ConvOrLinear,
+          &preset.fmt_heads(*num_heads, qk_dim),
+          &fmt_num("q_b ", *num_heads, "H"),
+          "Query Up Proj + Decoupled RoPE (q_b_proj)",
+          *qr,
+          num_heads * qk_dim,
+          "Split q_nope + Decoupled RoPE q_pe",
+          -3,
+          row + 1,
+        );
+        g.edge(attn_in, qa);
+        g.edge(qa, qb);
+        qb
+      } else {
+        let qd = g.add_proj(
+          OpKind::ConvOrLinear,
+          &preset.fmt_heads(*num_heads, qk_dim),
+          &fmt_num("q ", *num_heads, "H"),
+          "Direct Query Projection",
+          d,
+          num_heads * qk_dim,
+          "无 Query 低秩压缩",
+          -3,
+          row,
+        );
+        g.edge(attn_in, qd);
+        qd
+      };
+
+      let kva = g.add_proj(
+        OpKind::AvgPool,
+        &preset.fmt_seq(kv_a_dim),
+        &fmt_num("KV ", kv_a_dim, "d"),
+        "Latent KV Compression (kv_a_proj_with_mqa)",
+        d,
+        kv_a_dim,
+        &fmt_num("推理仅缓存 ", kv_a_dim, " elems/tok"),
+        3,
+        row,
+      );
+      let kvb = g.add_proj(
+        OpKind::ConvOrLinear,
+        &preset.fmt_heads(*num_heads, kv_b_head),
+        "kv_b_proj",
+        "Latent KV Up Proj (kv_b_proj, Absorbable)",
+        *kv_lora_rank,
+        num_heads * kv_b_head,
+        "推理期可与 W_Q / W_O 做矩阵吸收免展开",
+        3,
+        row + 1,
+      );
+      g.edge(attn_in, kva);
+      g.edge(kva, kvb);
+      row += 2;
+
+      let mla = g.add(
+        OpKind::Attention,
+        &preset.fmt_seq(o_in),
+        &fmt_num("MLA ", *num_heads, "H"),
+        "Multi-Head Latent Attention (MLA)",
+        "Softmax((q_nope·k_nopeᵀ + q_pe·k_peᵀ)/√d) · V",
+        &fmt_param("本层 Attention 总参: ", attn_params),
+        0,
+        row,
+      );
+      g.edge(q_leaf, mla);
+      g.edge(kvb, mla);
+      row += 1;
+
+      let op = g.add_proj(
+        OpKind::ConvOrLinear,
+        seq_d,
+        "o_proj",
+        "Attention Output Projection (o_proj)",
+        o_in,
+        d,
+        &fmt_param("参数量: ", o_in * d),
+        0,
+        row,
+      );
+      g.edge(mla, op);
+      row += 1;
+
+      g.add_residual(
+        op,
+        prev,
+        row,
+        seq_d,
+        "Residual Skip Add #1 (Attention)",
+        "h_mid = h_in + o_proj(MLA(Norm(h_in)))",
+        "残差恒等跳连汇合",
+      )
+    }
+    AttentionSpec::StandardGqa {
+      num_q_heads,
+      num_kv_heads,
+      head_dim,
+      qk_norm,
+      sliding_window,
+      is_causal,
+      has_cross_attn,
+      ..
+    } => {
+      min_q = min_q.min(-4);
+      max_q = max_q.max(4);
+      let q_out = num_q_heads * head_dim;
+      let kv_out = num_kv_heads * head_dim;
+      let kv_shape = preset.fmt_heads(*num_kv_heads, *head_dim);
+
+      let q = g.add_proj(
+        OpKind::ConvOrLinear,
+        &preset.fmt_heads(*num_q_heads, *head_dim),
+        &fmt_num(if *qk_norm { "q+N " } else { "q " }, *num_q_heads, "H"),
+        "Query Projection (q_proj + RoPE)",
+        d,
+        q_out,
+        &fmt_param("参数量: ", d * q_out),
+        -4,
+        row,
+      );
+      let k = g.add_proj(
+        OpKind::AvgPool,
+        &kv_shape,
+        &fmt_num(if *qk_norm { "k+N " } else { "k " }, *num_kv_heads, "H"),
+        "Key Projection (k_proj → KV Cache)",
+        d,
+        kv_out,
+        &fmt_param("KV elems/tok: ", seg.attention.cached_elements_per_token()),
+        0,
+        row,
+      );
+      let v = g.add_proj(
+        OpKind::AvgPool,
+        &kv_shape,
+        &fmt_num("v ", *num_kv_heads, "H"),
+        "Value Projection (v_proj → KV Cache)",
+        d,
+        kv_out,
+        "与 K 共同构成推理期 KV Cache",
+        4,
+        row,
+      );
+      g.edge(attn_in, q);
+      g.edge(attn_in, k);
+      g.edge(attn_in, v);
+      row += 1;
+
+      let tag = match (sliding_window, is_causal, has_cross_attn) {
+        (Some(w), _, _) => fmt_num("SWA(", *w, ")"),
+        (None, false, _) => "Bi-Attn".to_string(),
+        (None, true, true) => "Self+Cross".to_string(),
+        _ => fmt_pair(*num_q_heads, ":", *num_kv_heads),
+      };
+      let sdpa = g.add(
+        OpKind::Attention,
+        &preset.fmt_seq(q_out),
+        &tag,
+        "Scaled Dot-Product Attention (GQA / FlashAttn)",
+        "Softmax(Q·Kᵀ/√d_k)·V → Concat Heads",
+        &fmt_param("本层 Attention 总参: ", attn_params),
+        0,
+        row,
+      );
+      g.edge(q, sdpa);
+      g.edge(k, sdpa);
+      g.edge(v, sdpa);
+      row += 1;
+
+      let op = g.add_proj(
+        OpKind::ConvOrLinear,
+        seq_d,
+        "o_proj",
+        "Attention Output Projection (o_proj)",
+        q_out,
+        d,
+        &fmt_param("参数量: ", q_out * d),
+        0,
+        row,
+      );
+      g.edge(sdpa, op);
+      row += 1;
+
+      g.add_residual(
+        op,
+        prev,
+        row,
+        seq_d,
+        "Residual Skip Add #1 (Attention)",
+        "h_mid = h_in + o_proj(Attn(Norm(h_in)))",
+        "残差恒等跳连汇合",
+      )
+    }
+    AttentionSpec::LinearRecurrent {
+      kind,
+      num_heads,
+      head_dim,
+      state_dim,
+      conv_kernel,
+      expand_factor,
+    } => {
+      let d_inner = (num_heads * head_dim).max((*expand_factor).max(1) * d);
+      let seq_in = preset.fmt_seq(d_inner);
+      let conv = g.add_proj(
+        OpKind::ConvOrLinear,
+        &seq_in,
+        &fmt_num("Conv k=", *conv_kernel, ""),
+        "Input Proj + Causal Conv1d",
+        d,
+        d_inner,
+        "O(1) 短局部卷积缓存",
+        -3,
+        row,
+      );
+      let ssm = g.add(
+        OpKind::Attention,
+        &seq_in,
+        &fmt_num("state=", *state_dim, "d"),
+        "Recurrent State Update (Linear / SSM)",
+        kind,
+        &fmt_param("固定状态 elems/seq: ", seg.attention.fixed_state_elements_per_seq(d)),
+        -3,
+        row + 1,
+      );
+      let gate = g.add_proj(
+        OpKind::MaxPool,
+        &seq_in,
+        "SiLU Gate",
+        "Parallel Output Gate",
+        d,
+        d_inner,
+        "逐元素门控调制",
+        3,
+        row,
+      );
+      g.edge(attn_in, conv);
+      g.edge(conv, ssm);
+      g.edge(attn_in, gate);
+      row += 2;
+
+      let mul = g.add(
+        OpKind::Merge,
+        &seq_in,
+        "Gate ⊙",
+        "Gated Hadamard Product",
+        "y = SSM(x) ⊙ SiLU(z)",
+        "门控特征融合",
+        0,
+        row,
+      );
+      g.edge(ssm, mul);
+      g.edge(gate, mul);
+      row += 1;
+
+      let op = g.add_proj(
+        OpKind::ConvOrLinear,
+        seq_d,
+        "out_proj",
+        "SSM Output Projection (out_proj)",
+        d_inner,
+        d,
+        &fmt_param("本层 Mixer 总参: ", attn_params),
+        0,
+        row,
+      );
+      g.edge(mul, op);
+      row += 1;
+
+      g.add_residual(
+        op,
+        prev,
+        row,
+        seq_d,
+        "Residual Skip Add #1 (SSM Mixer)",
+        "h_mid = h_in + out_proj(y)",
+        "线性复杂度残差输出",
+      )
+    }
+  };
+
+  let (ffn_tot, ffn_act) = seg.ffn.params_per_layer(d);
+  if matches!(seg.ffn, FfnSpec::DenseGated { intermediate_size: 0, .. }) {
+    return (attn_add, row, min_q, max_q);
+  }
+
+  row += 1;
+  g.set_ctx(Some(InspectorFocus::FfnOrMoe), Some(layer));
+  let ffn_in = if compact {
+    attn_add
+  } else {
+    let n2 = g.add_norm(
+      attn_add,
+      row,
+      d,
+      seq_d,
+      "Post-Norm",
+      "post_attention_layernorm (RMSNorm)",
+      "FFN / MoE 子层入口归一化",
+    );
+    row += 1;
+    n2
+  };
+
+  let ffn_add = match &seg.ffn {
+    FfnSpec::DenseGated { intermediate_size, act_fn, is_gated, .. } => {
+      let seq_i = preset.fmt_seq(*intermediate_size);
+      let p_up = fmt_param("参数量: ", d * intermediate_size);
+      if *is_gated {
+        let mut gate_lbl = String::with_capacity(act_fn.len() + 5);
+        gate_lbl.push_str("gate+");
+        gate_lbl.push_str(act_fn);
+        let gate = g.add_proj(
+          OpKind::ConvOrLinear,
+          &seq_i,
+          &gate_lbl,
+          "Gate Projection + Activation",
+          d,
+          *intermediate_size,
+          &p_up,
+          -3,
+          row,
+        );
+        let up = g.add_proj(
+          OpKind::ConvOrLinear,
+          &seq_i,
+          "up_proj",
+          "Up Projection (up_proj)",
+          d,
+          *intermediate_size,
+          &p_up,
+          3,
+          row,
+        );
+        g.edge(ffn_in, gate);
+        g.edge(ffn_in, up);
+        row += 1;
+
+        let mul = g.add(
+          OpKind::Merge,
+          &seq_i,
+          "Mul ⊙",
+          "SwiGLU / GeGLU Elementwise Multiply",
+          "h_ffn = Act(gate_proj(x)) ⊙ up_proj(x)",
+          "门控双支路哈达玛乘积",
+          0,
+          row,
+        );
+        g.edge(gate, mul);
+        g.edge(up, mul);
+        row += 1;
+
+        let down = g.add_proj(
+          OpKind::ConvOrLinear,
+          seq_d,
+          "down_proj",
+          "Down Projection (down_proj)",
+          *intermediate_size,
+          d,
+          &fmt_param("本层 Dense FFN 总参: ", ffn_tot),
+          0,
+          row,
+        );
+        g.edge(mul, down);
+        row += 1;
+
+        g.add_residual(
+          down,
+          attn_add,
+          row,
+          seq_d,
+          "Residual Skip Add #2 (FFN Output)",
+          "h_out = h_mid + down_proj(h_ffn)",
+          "单层前向传播完成",
+        )
+      } else {
+        let fc1 = g.add_proj(
+          OpKind::ConvOrLinear,
+          &seq_i,
+          "fc1+act",
+          "MLP Up Projection",
+          d,
+          *intermediate_size,
+          &p_up,
+          0,
+          row,
+        );
+        g.edge(ffn_in, fc1);
+        row += 1;
+        let fc2 = g.add_proj(
+          OpKind::ConvOrLinear,
+          seq_d,
+          "fc2",
+          "MLP Down Projection",
+          *intermediate_size,
+          d,
+          &fmt_param("本层 MLP 总参: ", ffn_tot),
+          0,
+          row,
+        );
+        g.edge(fc1, fc2);
+        row += 1;
+        g.add_residual(
+          fc2,
+          attn_add,
+          row,
+          seq_d,
+          "Residual Skip Add #2 (MLP Output)",
+          "h_out = h_mid + fc2(fc1(Norm(h_mid)))",
+          "单层前向传播完成",
+        )
+      }
+    }
+    FfnSpec::SparseMoe {
+      num_routed_experts,
+      top_k,
+      moe_intermediate_size,
+      num_shared_experts,
+      shared_intermediate_size,
+      scoring_func,
+      ..
+    } => {
+      let has_shared = *num_shared_experts > 0 && *shared_intermediate_size > 0;
+      if has_shared {
+        min_q = min_q.min(-4);
+        max_q = max_q.max(4);
+      }
+      let router_col = if has_shared { 0 } else { -3 };
+      let expert_col = if has_shared { 4 } else { 3 };
+
+      let shared_leaf = if has_shared {
+        let su = g.add_proj(
+          OpKind::MoeRouter,
+          &preset.fmt_seq(*shared_intermediate_size),
+          &fmt_num("Shared ×", *num_shared_experts, ""),
+          "Always-On Shared Expert",
+          d,
+          *shared_intermediate_size,
+          "100% Token 直通常驻共享专家",
+          -4,
+          row,
+        );
+        let sd = g.add_proj(
+          OpKind::ConvOrLinear,
+          seq_d,
+          "sh_down",
+          "Shared Expert Down Proj",
+          *shared_intermediate_size,
+          d,
+          "与路由专家结果叠加",
+          -4,
+          row + 1,
+        );
+        g.edge(ffn_in, su);
+        g.edge(su, sd);
+        Some(sd)
+      } else {
+        None
+      };
+
+      let router = g.add_proj(
+        OpKind::MoeRouter,
+        &preset.fmt_seq(*num_routed_experts),
+        &fmt_pair(d, "→", *num_routed_experts),
+        "MoE Router Gate",
+        d,
+        *num_routed_experts,
+        scoring_func,
+        router_col,
+        row,
+      );
+      let mut topk_tag = String::with_capacity(14);
+      topk_tag.push_str("Top-");
+      push_u64(&mut topk_tag, *top_k);
+      topk_tag.push('/');
+      push_u64(&mut topk_tag, *num_routed_experts);
+      let topk = g.add(
+        OpKind::Softmax,
+        &preset.fmt_seq(*top_k),
+        &topk_tag,
+        "Router Scoring & Top-K Dispatch",
+        &fmt_num("Top-", *top_k, " Active Weights g_i"),
+        "仅激活 Top-K 专家，其余 0 FLOPs",
+        router_col,
+        row + 1,
+      );
+      g.edge(ffn_in, router);
+      g.edge(router, topk);
+
+      let mut eu_shape = String::with_capacity(24);
+      push_u64(&mut eu_shape, *top_k);
+      eu_shape.push('×');
+      eu_shape.push_str(&preset.fmt_seq(*moe_intermediate_size));
+      let mut ed_shape = String::with_capacity(24);
+      push_u64(&mut ed_shape, *top_k);
+      ed_shape.push('×');
+      ed_shape.push_str(seq_d);
+      let eu = g.add_proj(
+        OpKind::MoeRouter,
+        &eu_shape,
+        &fmt_num("×", *top_k, " Active"),
+        "Top-K Routed Experts SwiGLU",
+        d,
+        *moe_intermediate_size,
+        &fmt_param("单层总参: ", ffn_tot),
+        expert_col,
+        row,
+      );
+      let ed = g.add_proj(
+        OpKind::ConvOrLinear,
+        &ed_shape,
+        "exp_down",
+        "Routed Experts Down Proj",
+        *moe_intermediate_size,
+        d,
+        "按路由权重 g_i 加权汇总",
+        expert_col,
+        row + 1,
+      );
+      g.edge(ffn_in, eu);
+      g.edge(eu, ed);
+      row += 2;
+
+      let add2 = g.add(
+        OpKind::Merge,
+        seq_d,
+        "Sum + Add",
+        "MoE Weighted Combine + Residual Add #2",
+        if has_shared {
+          "h_out = h_mid + Shared(x) + Σ g_i·Expert_i(x)"
+        } else {
+          "h_out = h_mid + Σ g_i·Expert_i(x)"
+        },
+        &fmt_param("单层稀疏激活: ", ffn_act),
+        0,
+        row,
+      );
+      if let Some(sh) = shared_leaf {
+        g.edge(sh, add2);
+      }
+      g.edge(topk, add2);
+      g.edge(ed, add2);
+      g.edge_skip(attn_add, add2, "Skip");
+      add2
+    }
+  };
+
+  (ffn_add, row, min_q, max_q)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 经典 CV 教学对照（静态只读数据表驱动）
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct StaticCvNode {
+  kind: OpKind,
+  h: u64,
+  w: u64,
+  c: u64,
+  note: &'static str,
+  title: &'static str,
+  formula: &'static str,
+  hint: &'static str,
+  col_q: i32,
+  row: usize,
+}
+
+const INCEPTION_NODES: &[StaticCvNode] = &[
+  StaticCvNode {
+    kind: OpKind::Input,
+    h: 299,
+    w: 299,
+    c: 3,
+    note: "RGB",
+    title: "输入图像 (299×299)",
+    formula: "ImageNet RGB [299×299×3]",
+    hint: "Inception-v3 标准输入",
+    col_q: 0,
+    row: 0,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 149,
+    w: 149,
+    c: 32,
+    note: "3*3 /2",
+    title: "Stem Conv1 (3×3, s=2)",
+    formula: "⌊(299−3)/2⌋+1 = 149 → 32ch",
+    hint: "参数量 864",
+    col_q: 0,
+    row: 1,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 147,
+    w: 147,
+    c: 32,
+    note: "3*3",
+    title: "Stem Conv2 (3×3, valid)",
+    formula: "149−3+1 = 147 → 32ch",
+    hint: "参数量 9.2K",
+    col_q: 0,
+    row: 2,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 147,
+    w: 147,
+    c: 64,
+    note: "3*3 pad",
+    title: "Stem Conv3 (3×3, same)",
+    formula: "Same Padding 通道 32 → 64",
+    hint: "参数量 18.4K",
+    col_q: 0,
+    row: 3,
+  },
+  StaticCvNode {
+    kind: OpKind::MaxPool,
+    h: 73,
+    w: 73,
+    c: 64,
+    note: "3*3 /2",
+    title: "Stem MaxPool1 (3×3, s=2)",
+    formula: "空间下采样 147 → 73",
+    hint: "零参数池化",
+    col_q: 0,
+    row: 4,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 73,
+    w: 73,
+    c: 80,
+    note: "1*1",
+    title: "Stem Conv4 (1×1)",
+    formula: "点卷积通道扩展 64 → 80",
+    hint: "参数量 5.1K",
+    col_q: 0,
+    row: 5,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 71,
+    w: 71,
+    c: 192,
+    note: "3*3",
+    title: "Stem Conv5 (3×3, valid)",
+    formula: "73−3+1 = 71, 通道 80 → 192",
+    hint: "参数量 138.2K",
+    col_q: 0,
+    row: 6,
+  },
+  StaticCvNode {
+    kind: OpKind::MaxPool,
+    h: 35,
+    w: 35,
+    c: 192,
+    note: "3*3 /2",
+    title: "Stem MaxPool2 (3×3, s=2)",
+    formula: "下采样至 35×35×192，进入 4 分支",
+    hint: "Stem 末端特征图",
+    col_q: 0,
+    row: 7,
+  },
+  StaticCvNode {
+    kind: OpKind::AvgPool,
+    h: 35,
+    w: 35,
+    c: 192,
+    note: "3*3",
+    title: "Branch 1: AvgPool (3×3)",
+    formula: "平滑上下文池化 [35×35×192]",
+    hint: "零参数池化支路",
+    col_q: -6,
+    row: 8,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 35,
+    w: 35,
+    c: 32,
+    note: "1*1",
+    title: "Branch 1: 1×1 Conv",
+    formula: "通道压缩 192 → 32",
+    hint: "贡献 32 通道",
+    col_q: -6,
+    row: 9,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 35,
+    w: 35,
+    c: 64,
+    note: "1*1",
+    title: "Branch 2: 1×1 Bottleneck",
+    formula: "降维 192 → 64",
+    hint: "减少双 3×3 计算量",
+    col_q: -2,
+    row: 8,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 35,
+    w: 35,
+    c: 96,
+    note: "3*3",
+    title: "Branch 2: First 3×3 Conv",
+    formula: "中尺度卷积 64 → 96",
+    hint: "参数量 55.3K",
+    col_q: -2,
+    row: 9,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 35,
+    w: 35,
+    c: 96,
+    note: "3*3",
+    title: "Branch 2: Second 3×3 Conv",
+    formula: "双 3×3 等效 5×5 感受野",
+    hint: "贡献 96 通道",
+    col_q: -2,
+    row: 10,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 35,
+    w: 35,
+    c: 48,
+    note: "1*1",
+    title: "Branch 3: 1×1 Bottleneck",
+    formula: "降维 192 → 48",
+    hint: "为 5×5 节省 FLOPs",
+    col_q: 2,
+    row: 8,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 35,
+    w: 35,
+    c: 64,
+    note: "5*5",
+    title: "Branch 3: 5×5 Conv",
+    formula: "大感受野 5×5 卷积 → 64ch",
+    hint: "贡献 64 通道",
+    col_q: 2,
+    row: 9,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 35,
+    w: 35,
+    c: 64,
+    note: "1*1",
+    title: "Branch 4: Direct 1×1 Conv",
+    formula: "点卷积直连分支 192 → 64",
+    hint: "贡献 64 通道",
+    col_q: 6,
+    row: 9,
+  },
+  StaticCvNode {
+    kind: OpKind::Merge,
+    h: 35,
+    w: 35,
+    c: 256,
+    note: "Concat",
+    title: "Inception-A Channel Concat",
+    formula: "Concat(32 + 96 + 64 + 64) = 256ch",
+    hint: "四分支多尺度融合",
+    col_q: 0,
+    row: 11,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 17,
+    w: 17,
+    c: 768,
+    note: "Inc-B ×5",
+    title: "Reduction + Inception-B (×5)",
+    formula: "1×7 & 7×1 非对称分解卷积 → 768ch",
+    hint: "下采样 35 → 17",
+    col_q: 0,
+    row: 12,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 8,
+    w: 8,
+    c: 2048,
+    note: "Inc-C ×3",
+    title: "Reduction + Inception-C (×3)",
+    formula: "高维多分支扩展 → 8×8×2048",
+    hint: "深层语义特征",
+    col_q: 0,
+    row: 13,
+  },
+  StaticCvNode {
+    kind: OpKind::AvgPool,
+    h: 1,
+    w: 1,
+    c: 2048,
+    note: "8*8 GAP",
+    title: "Global Average Pooling",
+    formula: "8×8 全局平均池化 → 2048d",
+    hint: "替代 Flatten 防过拟合",
+    col_q: 0,
+    row: 14,
+  },
+  StaticCvNode {
+    kind: OpKind::Dropout,
+    h: 0,
+    w: 0,
+    c: 2048,
+    note: "p=0.2",
+    title: "Dropout (p = 0.2)",
+    formula: "训练期随机丢弃 20% 通道",
+    hint: "正则化防共适应",
+    col_q: 0,
+    row: 15,
+  },
+  StaticCvNode {
+    kind: OpKind::FcHead,
+    h: 0,
+    w: 0,
+    c: 1000,
+    note: "2048→1K",
+    title: "Fully Connected (FC)",
+    formula: "Linear [2048 → 1000]",
+    hint: "全网总参 23.8M",
+    col_q: 0,
+    row: 16,
+  },
+  StaticCvNode {
+    kind: OpKind::Softmax,
+    h: 0,
+    w: 0,
+    c: 1000,
+    note: "1K cls",
+    title: "Softmax Output",
+    formula: "Softmax(logits) → 1000 类概率",
+    hint: "ImageNet-1K 分类输出",
+    col_q: 0,
+    row: 17,
+  },
+];
+
+const INCEPTION_EDGES: &[(usize, usize, &str, bool)] = &[
+  (0, 1, "", false),
+  (1, 2, "", false),
+  (2, 3, "", false),
+  (3, 4, "", false),
+  (4, 5, "", false),
+  (5, 6, "", false),
+  (6, 7, "", false),
+  (7, 8, "", false),
+  (8, 9, "", false),
+  (7, 10, "", false),
+  (10, 11, "", false),
+  (11, 12, "", false),
+  (7, 13, "", false),
+  (13, 14, "", false),
+  (7, 15, "", false),
+  (9, 16, "", false),
+  (12, 16, "", false),
+  (14, 16, "", false),
+  (15, 16, "", false),
+  (16, 17, "", false),
+  (17, 18, "", false),
+  (18, 19, "", false),
+  (19, 20, "", false),
+  (20, 21, "", false),
+  (21, 22, "", false),
+];
+
+const RESNET_NODES: &[StaticCvNode] = &[
+  StaticCvNode {
+    kind: OpKind::Input,
+    h: 224,
+    w: 224,
+    c: 3,
+    note: "RGB",
+    title: "输入图像 (224×224)",
+    formula: "ImageNet RGB [224×224×3]",
+    hint: "ResNet-50 标准输入",
+    col_q: 0,
+    row: 0,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 112,
+    w: 112,
+    c: 64,
+    note: "7*7 /2",
+    title: "Stem Conv1 (7×7, s=2)",
+    formula: "7×7 卷积 + BN + ReLU → 112×112×64",
+    hint: "参数量 9.4K",
+    col_q: 0,
+    row: 1,
+  },
+  StaticCvNode {
+    kind: OpKind::MaxPool,
+    h: 56,
+    w: 56,
+    c: 64,
+    note: "3*3 /2",
+    title: "Stem MaxPool (3×3, s=2)",
+    formula: "空间下采样至 56×56×64",
+    hint: "进入 Bottleneck 残差块",
+    col_q: 0,
+    row: 2,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 56,
+    w: 56,
+    c: 256,
+    note: "1*1 Skip",
+    title: "Shortcut Projection",
+    formula: "首块 1×1 (64→256)，后续恒等直连",
+    hint: "消除深层梯度消失",
+    col_q: -3,
+    row: 4,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 56,
+    w: 56,
+    c: 64,
+    note: "1*1",
+    title: "Bottleneck 1×1 Reduce",
+    formula: "1×1 压缩通道至 64",
+    hint: "降低 3×3 计算量",
+    col_q: 3,
+    row: 3,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 56,
+    w: 56,
+    c: 64,
+    note: "3*3",
+    title: "Bottleneck 3×3 Conv",
+    formula: "低维 64 通道 3×3 空间卷积",
+    hint: "参数量 36.9K",
+    col_q: 3,
+    row: 4,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 56,
+    w: 56,
+    c: 256,
+    note: "1*1 ×4",
+    title: "Bottleneck 1×1 Expand",
+    formula: "1×1 恢复 4× 通道至 256",
+    hint: "与 Shortcut 对齐",
+    col_q: 3,
+    row: 5,
+  },
+  StaticCvNode {
+    kind: OpKind::Merge,
+    h: 56,
+    w: 56,
+    c: 256,
+    note: "Add (+)",
+    title: "Residual Add + ReLU",
+    formula: "y = ReLU(F(x) + Shortcut(x))",
+    hint: "残差恒等映射核心节点",
+    col_q: 0,
+    row: 6,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 28,
+    w: 28,
+    c: 512,
+    note: "Conv3 ×4",
+    title: "Stage 3 · Conv3_x (×4)",
+    formula: "56→28, 256→512 (4× Bottleneck)",
+    hint: "瓶颈宽度 128",
+    col_q: 0,
+    row: 7,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 14,
+    w: 14,
+    c: 1024,
+    note: "Conv4 ×6",
+    title: "Stage 4 · Conv4_x (×6)",
+    formula: "28→14, 512→1024 (6× Bottleneck)",
+    hint: "瓶颈宽度 256",
+    col_q: 0,
+    row: 8,
+  },
+  StaticCvNode {
+    kind: OpKind::ConvOrLinear,
+    h: 7,
+    w: 7,
+    c: 2048,
+    note: "Conv5 ×3",
+    title: "Stage 5 · Conv5_x (×3)",
+    formula: "14→7, 1024→2048 (3× Bottleneck)",
+    hint: "瓶颈宽度 512",
+    col_q: 0,
+    row: 9,
+  },
+  StaticCvNode {
+    kind: OpKind::AvgPool,
+    h: 1,
+    w: 1,
+    c: 2048,
+    note: "7*7 GAP",
+    title: "Global Average Pooling",
+    formula: "7×7 平均池化 → 2048d",
+    hint: "零参数池化",
+    col_q: 0,
+    row: 10,
+  },
+  StaticCvNode {
+    kind: OpKind::FcHead,
+    h: 0,
+    w: 0,
+    c: 1000,
+    note: "2048→1K",
+    title: "Fully Connected (FC)",
+    formula: "Linear [2048 → 1000]",
+    hint: "ResNet-50 总参 25.6M",
+    col_q: 0,
+    row: 11,
+  },
+  StaticCvNode {
+    kind: OpKind::Softmax,
+    h: 0,
+    w: 0,
+    c: 1000,
+    note: "1K cls",
+    title: "Softmax Output",
+    formula: "Softmax(logits) → 1000 类概率",
+    hint: "ImageNet 分类输出",
+    col_q: 0,
+    row: 12,
+  },
+];
+
+const RESNET_EDGES: &[(usize, usize, &str, bool)] = &[
+  (0, 1, "", false),
+  (1, 2, "", false),
+  (2, 3, "Skip", true),
+  (2, 4, "", false),
+  (4, 5, "", false),
+  (5, 6, "", false),
+  (3, 7, "", false),
+  (6, 7, "", false),
+  (7, 8, "", false),
+  (8, 9, "", false),
+  (9, 10, "", false),
+  (10, 11, "", false),
+  (11, 12, "", false),
+  (12, 13, "", false),
+];
+
+#[inline(never)]
+fn build_static_cv_graph(
+  slug: &str,
+  title: &str,
+  subtitle_prefix: &str,
+  raw_nodes: &[StaticCvNode],
+  raw_edges: &[(usize, usize, &'static str, bool)],
+  group_spec: (usize, usize, i32, i32, &str),
+  preset: ShapePreset,
+) -> TensorGraph {
+  let mut g = GraphBuilder::new();
+  for n in raw_nodes {
+    let sh = preset.fmt_cv(n.h, n.w, n.c);
+    g.add(n.kind, &sh, n.note, n.title, n.formula, n.hint, n.col_q, n.row);
+  }
+  for &(from, to, label, dashed) in raw_edges {
+    g.edges.push(TensorEdge { from, to, label, dashed });
+  }
+  g.group(group_spec.0, group_spec.1, group_spec.2, group_spec.3, group_spec.4.to_string());
+  let mut sub = String::with_capacity(subtitle_prefix.len() + 20);
+  sub.push_str(subtitle_prefix);
+  sub.push_str(" · ");
+  sub.push_str(preset.label());
+  g.finish(slug.to_string(), title.to_string(), sub, LegendStyle::ClassicCnn)
+}
+
+pub fn build_inception_v3_graph(preset: ShapePreset) -> TensorGraph {
+  build_static_cv_graph(
+    "inception-v3",
+    "Inception-v3 · 经典多分支 CNN 张量维流图",
+    "23.8M Params · 4-Branch Inception-A · 8 类经典算子色块",
+    INCEPTION_NODES,
+    INCEPTION_EDGES,
+    (8, 11, -6, 6, "Inception-A 4-Branch Block (×3)"),
+    preset,
+  )
+}
+
+pub fn build_resnet50_graph(preset: ShapePreset) -> TensorGraph {
+  build_static_cv_graph(
+    "resnet-50",
+    "ResNet-50 · 经典残差瓶颈 CNN 张量维流图",
+    "25.6M Params · Bottleneck 1×1→3×3→1×1 + Shortcut",
+    RESNET_NODES,
+    RESNET_EDGES,
+    (3, 6, -3, 3, "Bottleneck Residual Block · Conv2_x (×3)"),
+    preset,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 确定性整数网格布局 + 统一 SVG 渲染器（页面与高清导出 100% 共享）
+// ─────────────────────────────────────────────────────────────────────────────
+
+const NODE_W: i32 = 158;
+const NODE_H: i32 = 34;
+const COL_Q_STEP: i32 = 59;
+const ROW_STEP: i32 = 74;
+const TOP_PAD: i32 = 52;
+const LEFT_RAIL_PAD: i32 = 68;
+const LEGEND_W: i32 = 210;
+const LEGEND_GAP: i32 = 30;
+const RIGHT_PAD: i32 = 24;
+const BOTTOM_PAD: i32 = 36;
+
+struct LayoutMetrics {
+  canvas_w: i32,
+  canvas_h: i32,
+  graph_origin_x: i32,
+  skip_rail_x: i32,
+  legend_x: i32,
+  legend_y: i32,
+  coords: Vec<(i32, i32)>,
+}
+
+#[inline(never)]
+fn compute_layout(graph: &TensorGraph, legend_len: usize) -> LayoutMetrics {
+  let mut min_q = 0i32;
+  let mut max_q = 0i32;
+  for n in &graph.nodes {
+    min_q = min_q.min(n.col_q);
+    max_q = max_q.max(n.col_q);
+  }
+  let span_q = (max_q - min_q).max(5);
+  let graph_inner_w = span_q * COL_Q_STEP + NODE_W + 84;
+  let graph_origin_x = LEFT_RAIL_PAD - min_q * COL_Q_STEP + NODE_W / 2;
+  let skip_rail_x = (graph_origin_x + min_q * COL_Q_STEP - NODE_W / 2 - 26).max(20);
+  let legend_x = LEFT_RAIL_PAD + graph_inner_w + LEGEND_GAP;
+  let canvas_w = legend_x + LEGEND_W + RIGHT_PAD;
+
+  let legend_h = 34 + (legend_len as i32) * 28 + 16;
+  let nodes_h = TOP_PAD + (graph.total_rows as i32) * ROW_STEP + BOTTOM_PAD;
+  let canvas_h = nodes_h.max(TOP_PAD + legend_h + BOTTOM_PAD);
+
+  let mut coords = Vec::with_capacity(graph.nodes.len());
+  for n in &graph.nodes {
+    coords.push((
+      graph_origin_x + n.col_q * COL_Q_STEP,
+      TOP_PAD + (n.row as i32) * ROW_STEP + NODE_H / 2,
+    ));
+  }
+
+  LayoutMetrics {
+    canvas_w,
+    canvas_h,
+    graph_origin_x,
+    skip_rail_x,
+    legend_x,
+    legend_y: TOP_PAD,
+    coords,
+  }
+}
+
+#[inline(never)]
+fn truncate_label(s: &str, max_chars: usize) -> String {
+  if s.chars().count() <= max_chars {
+    s.to_string()
+  } else {
+    let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
+  }
+}
+
+fn write_xml_escaped(out: &mut String, s: &str) {
+  for ch in s.chars() {
+    match ch {
+      '&' => out.push_str("&amp;"),
+      '<' => out.push_str("&lt;"),
+      '>' => out.push_str("&gt;"),
+      '"' => out.push_str("&quot;"),
+      '\'' => out.push_str("&apos;"),
+      _ => out.push(ch),
+    }
+  }
+}
+
+struct SvgTheme {
+  grid_g: &'static str,
+  grp_rect: &'static str,
+  grp_txt: &'static str,
+  edge_solid_stroke: &'static str,
+  edge_solid_fill: &'static str,
+  edge_solid_txt: &'static str,
+  edge_dash_stroke: &'static str,
+  edge_dash_fill: &'static str,
+  edge_dash_txt: &'static str,
+  leg_bg: &'static str,
+  leg_title: &'static str,
+  leg_line: &'static str,
+  leg_lbl: &'static str,
+  note_txt: &'static str,
+}
+
+const SVG_STANDALONE: SvgTheme = SvgTheme {
+  grid_g: "stroke=\"#e2e8f0\"",
+  grp_rect: "fill=\"#f8fafc\" fill-opacity=\"0.7\" stroke=\"#94a3b8\"",
+  grp_txt: "font-weight=\"700\" fill=\"#334155\"",
+  edge_solid_stroke: "stroke=\"#334155\"",
+  edge_solid_fill: "fill=\"#334155\"",
+  edge_solid_txt: "fill=\"#334155\" font-weight=\"700\"",
+  edge_dash_stroke: "stroke=\"#6366f1\"",
+  edge_dash_fill: "fill=\"#6366f1\"",
+  edge_dash_txt: "fill=\"#6366f1\" font-weight=\"700\"",
+  leg_bg: "fill=\"#fff\" stroke=\"#cbd5e1\"",
+  leg_title: "font-weight=\"700\" fill=\"#0f172a\"",
+  leg_line: "stroke=\"#e2e8f0\"",
+  leg_lbl: "font-weight=\"600\" fill=\"#1e293b\"",
+  note_txt: "font-weight=\"600\" fill=\"#334155\"",
+};
+
+const SVG_THEMED: SvgTheme = SvgTheme {
+  grid_g: "class=\"stroke-slate-200/80 dark:stroke-slate-800/80\"",
+  grp_rect:
+    "class=\"fill-slate-50/70 dark:fill-slate-900/50 stroke-slate-400 dark:stroke-slate-600\"",
+  grp_txt: "class=\"fill-slate-700 dark:fill-slate-300 font-bold\"",
+  edge_solid_stroke: "class=\"stroke-slate-700 dark:stroke-slate-400\"",
+  edge_solid_fill: "class=\"fill-slate-700 dark:fill-slate-400\"",
+  edge_solid_txt: "class=\"fill-slate-700 dark:fill-slate-300 font-bold\"",
+  edge_dash_stroke: "class=\"stroke-indigo-500 dark:stroke-indigo-400\"",
+  edge_dash_fill: "class=\"fill-indigo-500 dark:fill-indigo-400\"",
+  edge_dash_txt: "class=\"fill-indigo-600 dark:fill-indigo-400 font-bold\"",
+  leg_bg: "class=\"fill-white/95 dark:fill-slate-900/95 stroke-slate-300 dark:stroke-slate-700\"",
+  leg_title: "class=\"fill-slate-900 dark:fill-slate-100 font-bold\"",
+  leg_line: "class=\"stroke-slate-200 dark:stroke-slate-800\"",
+  leg_lbl: "class=\"fill-slate-800 dark:fill-slate-200 font-semibold\"",
+  note_txt: "class=\"fill-slate-700 dark:fill-slate-300 font-semibold\"",
+};
+
+#[inline(never)]
+fn push_attr_i32(out: &mut String, k: &str, v: i32) {
+  out.push(' ');
+  out.push_str(k);
+  out.push_str("=\"");
+  push_i32(out, v);
+  out.push('"');
+}
+
+#[inline(never)]
+fn push_rect(out: &mut String, x: i32, y: i32, w: i32, h: i32, rx: i32, tail: &str) {
+  out.push_str("<rect");
+  push_attr_i32(out, "x", x);
+  push_attr_i32(out, "y", y);
+  push_attr_i32(out, "width", w);
+  push_attr_i32(out, "height", h);
+  push_attr_i32(out, "rx", rx);
+  out.push(' ');
+  out.push_str(tail);
+  out.push_str("/>");
+}
+
+#[inline(never)]
+fn push_line(out: &mut String, x1: i32, y1: i32, x2: i32, y2: i32, tail: &str) {
+  out.push_str("<line");
+  push_attr_i32(out, "x1", x1);
+  push_attr_i32(out, "y1", y1);
+  push_attr_i32(out, "x2", x2);
+  push_attr_i32(out, "y2", y2);
+  if !tail.is_empty() {
+    out.push(' ');
+    out.push_str(tail);
+  }
+  out.push_str("/>");
+}
+
+#[inline(never)]
+fn push_pt(out: &mut String, x: i32, y: i32) {
+  push_i32(out, x);
+  out.push(',');
+  push_i32(out, y);
+}
+
+#[inline(never)]
+fn write_node_svg(
+  out: &mut String,
+  n: &TensorNode,
+  cx: i32,
+  cy: i32,
+  selected: bool,
+  th: &SvgTheme,
+) {
+  let (fill, stroke, tc) = n.kind.palette();
+  let rx = cx - NODE_W / 2;
+  let ry = cy - NODE_H / 2;
+  if selected {
+    push_rect(
+      out,
+      rx - 4,
+      ry - 4,
+      NODE_W + 8,
+      NODE_H + 8,
+      8,
+      "fill=\"none\" class=\"stroke-indigo-600 dark:stroke-amber-400\" stroke-width=\"2.2\"",
+    );
+  }
+  out.push_str("<rect");
+  push_attr_i32(out, "x", rx);
+  push_attr_i32(out, "y", ry);
+  push_attr_i32(out, "width", NODE_W);
+  push_attr_i32(out, "height", NODE_H);
+  out.push_str(" rx=\"5\" fill=\"");
+  out.push_str(fill);
+  out.push_str("\" stroke=\"");
+  out.push_str(stroke);
+  out.push_str("\" stroke-width=\"1.2\"/><text");
+  push_attr_i32(out, "x", cx);
+  push_attr_i32(out, "y", cy + 4);
+  out.push_str(" text-anchor=\"middle\" font-size=\"11.5\" font-weight=\"700\" fill=\"");
+  out.push_str(tc);
+  out.push_str("\">");
+  write_xml_escaped(out, &truncate_label(&n.shape, 20));
+  out.push_str("</text>");
+  if !n.side_note.is_empty() {
+    out.push_str("<text");
+    push_attr_i32(out, "x", rx + NODE_W + 8);
+    push_attr_i32(out, "y", cy + 4);
+    out.push_str(" font-size=\"10.5\" ");
+    out.push_str(th.note_txt);
+    out.push('>');
+    write_xml_escaped(out, &truncate_label(&n.side_note, 13));
+    out.push_str("</text>");
+  }
+}
+
+#[inline(never)]
+fn write_static_svg_layers(
+  out: &mut String,
+  graph: &TensorGraph,
+  layout: &LayoutMetrics,
+  legend: &[(OpKind, &'static str)],
+  th: &SvgTheme,
+) {
+  out.push_str("<g ");
+  out.push_str(th.grid_g);
+  out.push_str(" stroke-width=\"0.75\">");
+  let mut gx = 32;
+  while gx < layout.canvas_w {
+    push_line(out, gx, 0, gx, layout.canvas_h, "");
+    gx += 32;
+  }
+  let mut gy = 32;
+  while gy < layout.canvas_h {
+    push_line(out, 0, gy, layout.canvas_w, gy, "");
+    gy += 32;
+  }
+  out.push_str("</g>");
+
+  for grp in &graph.groups {
+    let x = layout.graph_origin_x + grp.min_col_q * COL_Q_STEP - NODE_W / 2 - 16;
+    let right_x = layout.graph_origin_x + grp.max_col_q * COL_Q_STEP + NODE_W / 2 + 78;
+    let y = TOP_PAD + (grp.row_start as i32) * ROW_STEP - 14;
+    let h = ((grp.row_end - grp.row_start) as i32) * ROW_STEP + NODE_H + 24;
+    let w = (right_x - x).max(NODE_W + 40);
+    out.push_str("<rect");
+    push_attr_i32(out, "x", x);
+    push_attr_i32(out, "y", y);
+    push_attr_i32(out, "width", w);
+    push_attr_i32(out, "height", h);
+    out.push_str(" rx=\"10\" ");
+    out.push_str(th.grp_rect);
+    out.push_str(" stroke-width=\"1.2\" stroke-dasharray=\"5 4\"/><text");
+    push_attr_i32(out, "x", x + 10);
+    push_attr_i32(out, "y", y - 5);
+    out.push_str(" font-size=\"10.5\" ");
+    out.push_str(th.grp_txt);
+    out.push('>');
+    write_xml_escaped(out, &grp.badge);
+    out.push_str("</text>");
+  }
+
+  for &edge in &graph.edges {
+    if let (Some(&(x1, y1_c)), Some(&(x2, y2_c)), Some(fn_n), Some(tn_n)) = (
+      layout.coords.get(edge.from),
+      layout.coords.get(edge.to),
+      graph.nodes.get(edge.from),
+      graph.nodes.get(edge.to),
+    ) {
+      let (stroke_attr, fill_attr, text_attr) = if edge.dashed {
+        (th.edge_dash_stroke, th.edge_dash_fill, th.edge_dash_txt)
+      } else {
+        (th.edge_solid_stroke, th.edge_solid_fill, th.edge_solid_txt)
+      };
+
+      if edge.dashed && tn_n.row > fn_n.row + 1 {
+        let sx = x1 - NODE_W / 2;
+        let ex = x2 - NODE_W / 2;
+        let rx = layout.skip_rail_x;
+        out.push_str("<path d=\"M ");
+        push_i32(out, sx);
+        out.push(' ');
+        push_i32(out, y1_c);
+        out.push_str(" L ");
+        push_i32(out, rx);
+        out.push(' ');
+        push_i32(out, y1_c);
+        out.push_str(" L ");
+        push_i32(out, rx);
+        out.push(' ');
+        push_i32(out, y2_c);
+        out.push_str(" L ");
+        push_i32(out, ex - 7);
+        out.push(' ');
+        push_i32(out, y2_c);
+        out.push_str("\" fill=\"none\" ");
+        out.push_str(stroke_attr);
+        out.push_str(" stroke-width=\"1.5\" stroke-dasharray=\"4 3\"/><polygon points=\"");
+        push_pt(out, ex, y2_c);
+        out.push(' ');
+        push_pt(out, ex - 8, y2_c - 4);
+        out.push(' ');
+        push_pt(out, ex - 8, y2_c + 4);
+        out.push_str("\" ");
+        out.push_str(fill_attr);
+        out.push_str("/>");
+        if !edge.label.is_empty() {
+          out.push_str("<text");
+          push_attr_i32(out, "x", rx + 6);
+          push_attr_i32(out, "y", (y1_c + y2_c) / 2);
+          out.push_str(" font-size=\"9.5\" ");
+          out.push_str(text_attr);
+          out.push('>');
+          out.push_str(edge.label);
+          out.push_str("</text>");
+        }
+      } else {
+        let y1 = y1_c + NODE_H / 2;
+        let y2 = y2_c - NODE_H / 2;
+        let dx = (x2 - x1) as f64;
+        let dy = ((y2 - y1).max(1)) as f64;
+        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+        let ux = dx / len;
+        let uy = dy / len;
+        let bx = (x2 as f64 - ux * 8.5).round() as i32;
+        let by = (y2 as f64 - uy * 8.5).round() as i32;
+        let px = (-uy * 4.2).round() as i32;
+        let py = (ux * 4.2).round() as i32;
+        out.push_str("<path d=\"M ");
+        push_i32(out, x1);
+        out.push(' ');
+        push_i32(out, y1);
+        out.push_str(" L ");
+        push_i32(out, bx);
+        out.push(' ');
+        push_i32(out, by);
+        out.push_str("\" fill=\"none\" ");
+        out.push_str(stroke_attr);
+        out.push_str(" stroke-width=\"1.5\"");
+        if edge.dashed {
+          out.push_str(" stroke-dasharray=\"4 3\"");
+        }
+        out.push_str("/><polygon points=\"");
+        push_pt(out, x2, y2);
+        out.push(' ');
+        push_pt(out, bx + px, by + py);
+        out.push(' ');
+        push_pt(out, bx - px, by - py);
+        out.push_str("\" ");
+        out.push_str(fill_attr);
+        out.push_str("/>");
+        if !edge.label.is_empty() {
+          out.push_str("<text");
+          push_attr_i32(out, "x", (x1 + x2) / 2 + 8);
+          push_attr_i32(out, "y", (y1 + y2) / 2);
+          out.push_str(" font-size=\"9.5\" ");
+          out.push_str(text_attr);
+          out.push('>');
+          out.push_str(edge.label);
+          out.push_str("</text>");
+        }
+      }
+    }
+  }
+
+  let lx = layout.legend_x;
+  let ly = layout.legend_y;
+  let lh = 30 + (legend.len() as i32) * 28;
+  out.push_str("<rect");
+  push_attr_i32(out, "x", lx);
+  push_attr_i32(out, "y", ly);
+  push_attr_i32(out, "width", LEGEND_W);
+  push_attr_i32(out, "height", lh);
+  out.push_str(" rx=\"6\" ");
+  out.push_str(th.leg_bg);
+  out.push_str(" stroke-width=\"1.2\"/><text");
+  push_attr_i32(out, "x", lx + 12);
+  push_attr_i32(out, "y", ly + 20);
+  out.push_str(" font-size=\"11\" ");
+  out.push_str(th.leg_title);
+  out.push_str(">算子色块图例 (Legend)</text>");
+  for (i, &(kind, lbl)) in legend.iter().enumerate() {
+    let ry = ly + 30 + (i as i32) * 28;
+    let (fill, stroke, _) = kind.palette();
+    push_line(out, lx, ry, lx + LEGEND_W, ry, th.leg_line);
+    out.push_str("<rect");
+    push_attr_i32(out, "x", lx + 10);
+    push_attr_i32(out, "y", ry + 5);
+    out.push_str(" width=\"48\" height=\"18\" rx=\"3\" fill=\"");
+    out.push_str(fill);
+    out.push_str("\" stroke=\"");
+    out.push_str(stroke);
+    out.push_str("\" stroke-width=\"1\"/><text");
+    push_attr_i32(out, "x", lx + 68);
+    push_attr_i32(out, "y", ry + 18);
+    out.push_str(" font-size=\"11\" ");
+    out.push_str(th.leg_lbl);
+    out.push('>');
+    out.push_str(lbl);
+    out.push_str("</text>");
+  }
+}
+
+#[inline(never)]
+fn percent_encode_svg(svg: &str) -> String {
+  let mut out = String::with_capacity(svg.len() + svg.len() / 4);
+  for b in svg.bytes() {
+    match b {
+      b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+      _ => {
+        out.push('%');
+        let hex = |v: u8| if v < 10 { (b'0' + v) as char } else { (b'A' + v - 10) as char };
+        out.push(hex(b >> 4));
+        out.push(hex(b & 0x0f));
+      }
+    }
+  }
+  out
+}
+
+/// 生成独立可下载的高清 `.svg` 矢量文件源码。
+#[inline(never)]
+pub fn export_standalone_svg(graph: &TensorGraph) -> String {
+  let legend = graph.active_legend();
+  let layout = compute_layout(graph, legend.len());
+  let mut out = String::with_capacity(10_240);
+  out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 ");
+  push_i32(&mut out, layout.canvas_w);
+  out.push(' ');
+  push_i32(&mut out, layout.canvas_h);
+  out.push('"');
+  push_attr_i32(&mut out, "width", layout.canvas_w);
+  push_attr_i32(&mut out, "height", layout.canvas_h);
+  out.push_str(
+    " style=\"background:#fff;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace\">",
+  );
+  write_static_svg_layers(&mut out, graph, &layout, &legend, &SVG_STANDALONE);
+  out.push_str("<text x=\"24\" y=\"28\" font-size=\"14\" font-weight=\"700\" fill=\"#0f172a\">");
+  write_xml_escaped(&mut out, &graph.title);
+  out.push_str("</text>");
+  for (idx, n) in graph.nodes.iter().enumerate() {
+    if let Some(&(cx, cy)) = layout.coords.get(idx) {
+      write_node_svg(&mut out, n, cx, cy, false, &SVG_STANDALONE);
+    }
+  }
+  out.push_str("</svg>");
+  out
+}
+
+const SOURCES: &[(u8, &str)] =
+  &[(0, "当前模型"), (1, "Inception-v3 (经典 CNN)"), (2, "ResNet-50 (残差 CNN)")];
+
+const SHAPE_PRESETS: &[ShapePreset] =
+  &[ShapePreset::Symbolic, ShapePreset::Decode1, ShapePreset::Prefill512, ShapePreset::Batch4K];
+
+/// 交互式「全网张量维流图（Tensor Flow DAG）」组件。
+#[component]
+pub fn TensorFlowGraphView(
+  blueprint: ModelBlueprint,
+  on_drill_to_workbench: EventHandler<(Option<u64>, InspectorFocus)>,
+) -> Element {
+  // 复用全局已单态化的基础类型 Signal（u8 / bool / usize），避免为私有枚举额外膨胀 WASM 体积。
+  let mut source_id: Signal<u8> = use_signal(|| 0u8);
+  let mut preset_id: Signal<u8> = use_signal(|| 0u8);
+  let mut compact = use_signal(|| false);
+  let mut selected_idx: Signal<usize> = use_signal(|| usize::MAX);
+
+  let cur_preset =
+    SHAPE_PRESETS.get(preset_id() as usize).copied().unwrap_or(ShapePreset::Symbolic);
+  let graph = match source_id() {
+    1 => build_inception_v3_graph(cur_preset),
+    2 => build_resnet50_graph(cur_preset),
+    _ => build_blueprint_tensor_graph(&blueprint, cur_preset, compact()),
+  };
+
+  let legend = graph.active_legend();
+  let layout = compute_layout(&graph, legend.len());
+
+  let mut static_layers = String::with_capacity(8192);
+  write_static_svg_layers(&mut static_layers, &graph, &layout, &legend, &SVG_THEMED);
+
+  let raw_sel = selected_idx();
+  let active_idx = if raw_sel < graph.nodes.len() {
+    raw_sel
+  } else {
+    graph
+      .nodes
+      .iter()
+      .position(|n| matches!(n.kind, OpKind::Attention | OpKind::Merge))
+      .unwrap_or(0)
+  };
+  let active_node = graph.nodes.get(active_idx).cloned();
+
+  let mut node_svgs = Vec::with_capacity(graph.nodes.len());
+  for (idx, n) in graph.nodes.iter().enumerate() {
+    let mut buf = String::with_capacity(256);
+    if let Some(&(cx, cy)) = layout.coords.get(idx) {
+      write_node_svg(&mut buf, n, cx, cy, idx == active_idx, &SVG_THEMED);
+    }
+    node_svgs.push((idx, buf));
+  }
+
+  let standalone_svg = export_standalone_svg(&graph);
+  let mut svg_data_uri = String::with_capacity(standalone_svg.len() + 48);
+  svg_data_uri.push_str("data:image/svg+xml;charset=utf-8,");
+  svg_data_uri.push_str(&percent_encode_svg(&standalone_svg));
+  let mut download_filename = String::with_capacity(graph.file_slug.len() + 18);
+  download_filename.push_str(&graph.file_slug);
+  download_filename.push_str("-tensor-graph.svg");
+
+  rsx! {
+    div { class: card_class("p-4 sm:p-5 bg-white dark:bg-slate-900/70 space-y-4"),
+      div { class: "flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-slate-200 dark:border-slate-800",
+        div { class: "flex flex-wrap items-center gap-2",
+          span { class: "text-xs font-bold text-slate-500 dark:text-slate-400", "网络拓扑:" }
+          for &(src_opt, src_lbl) in SOURCES {
+            button {
+              key: "{src_lbl}",
+              r#type: "button",
+              class: if source_id() == src_opt {
+                "px-2.5 py-1 rounded-md text-xs font-bold bg-indigo-600 text-white shadow-2xs cursor-pointer"
+              } else {
+                "px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+              },
+              onclick: move |_| {
+                source_id.set(src_opt);
+                selected_idx.set(usize::MAX);
+              },
+              "{src_lbl}"
+            }
+          }
+        }
+
+        div { class: "flex flex-wrap items-center gap-2",
+          div { class: "inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 p-0.5",
+            for (p_idx, &preset_opt) in SHAPE_PRESETS.iter().enumerate() {
+              button {
+                key: "{preset_opt.label()}",
+                r#type: "button",
+                class: if preset_id() == p_idx as u8 {
+                  "px-2 py-1 rounded-md text-[11px] font-mono font-bold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer"
+                } else {
+                  "px-2 py-1 rounded-md text-[11px] font-mono font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                },
+                onclick: move |_| preset_id.set(p_idx as u8),
+                "{preset_opt.label()}"
+              }
+            }
+          }
+
+          if source_id() == 0 {
+            button {
+              r#type: "button",
+              class: "px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:border-indigo-400 cursor-pointer",
+              onclick: move |_| compact.set(!compact()),
+              if compact() { "展开 Norm 节点" } else { "紧凑主干流" }
+            }
+          }
+
+          a {
+            href: "{svg_data_uri}",
+            download: "{download_filename}",
+            class: "inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-950/70 transition-colors",
+            "导出高清 SVG ↓"
+          }
+        }
+      }
+
+      div { class: "flex flex-wrap items-baseline justify-between gap-2",
+        div {
+          h3 { class: "text-sm sm:text-[15px] font-bold text-slate-900 dark:text-white", "{graph.title}" }
+          p { class: "text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono", "{graph.subtitle}" }
+        }
+        span { class: "text-xs text-slate-500 dark:text-slate-400",
+          "共 {graph.nodes.len()} 个张量算子节点 · 点击任意色块查看精确变换公式"
+        }
+      }
+
+      div { class: "w-full overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/90 p-2 sm:p-3",
+        svg {
+          view_box: "0 0 {layout.canvas_w} {layout.canvas_h}",
+          class: "w-full min-w-[780px] h-auto font-mono select-none",
+          role: "img",
+          "aria-label": "{graph.title}",
+
+          g { dangerous_inner_html: "{static_layers}" }
+
+          for (idx, node_svg) in node_svgs {
+            g {
+              key: "n-{idx}",
+              class: "cursor-pointer",
+              onclick: move |_| selected_idx.set(idx),
+              dangerous_inner_html: "{node_svg}",
+            }
+          }
+        }
+      }
+
+      if let Some(node) = active_node {
+        {
+          let (fill, _, tc) = node.kind.palette();
+          let mut badge_style = String::with_capacity(48);
+          badge_style.push_str("background-color:");
+          badge_style.push_str(fill);
+          badge_style.push_str(";color:");
+          badge_style.push_str(tc);
+          badge_style.push(';');
+          let kind_lbl = node.kind.legend_label(graph.legend_style);
+          let drill_focus = node.focus_target;
+          let drill_layer = node.layer_target;
+          rsx! {
+            div { class: "rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/60 p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3",
+              div { class: "space-y-1 min-w-0",
+                div { class: "flex flex-wrap items-center gap-2",
+                  span {
+                    class: "px-2 py-0.5 rounded text-[11px] font-bold shrink-0",
+                    style: "{badge_style}",
+                    "{kind_lbl}"
+                  }
+                  span { class: "text-[13px] font-bold text-slate-900 dark:text-white", "{node.op_title}" }
+                  span { class: "px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400", "{node.shape}" }
+                  if !node.side_note.is_empty() {
+                    span { class: "text-xs font-mono text-slate-500 dark:text-slate-400", "({node.side_note})" }
+                  }
+                }
+                div { class: "text-[13px] font-mono text-slate-700 dark:text-slate-300", "{node.formula}" }
+                if !node.params_hint.is_empty() {
+                  div { class: "text-xs text-slate-500 dark:text-slate-400", "{node.params_hint}" }
+                }
+              }
+
+              if let Some(target_focus) = drill_focus {
+                button {
+                  r#type: "button",
+                  class: "shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition-colors cursor-pointer",
+                  onclick: move |_| on_drill_to_workbench.call((drill_layer, target_focus)),
+                  "切回分层工作台查看该算子 →"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::arch::{load_builtin_preset, BUILTIN_PRESETS};
+
+  #[test]
+  fn builds_valid_tensor_graphs_for_all_builtin_presets_and_classic_cnns() {
+    for meta in BUILTIN_PRESETS {
+      let slug = meta.id;
+      let bp = load_builtin_preset(slug).expect("builtin preset");
+      for preset in [ShapePreset::Symbolic, ShapePreset::Prefill512] {
+        let graph = build_blueprint_tensor_graph(&bp, preset, false);
+        assert!(graph.nodes.len() >= 6, "{slug} should have >= 6 nodes");
+        assert!(!graph.edges.is_empty(), "{slug} should have edges");
+        assert!(!graph.active_legend().is_empty(), "{slug} should have legend items");
+
+        for e in &graph.edges {
+          assert!(e.from < graph.nodes.len(), "{slug}: invalid edge from {}", e.from);
+          assert!(e.to < graph.nodes.len(), "{slug}: invalid edge to {}", e.to);
+        }
+
+        let svg = export_standalone_svg(&graph);
+        assert!(svg.starts_with("<svg "));
+        assert!(svg.contains("算子色块图例 (Legend)"));
+      }
+    }
+
+    let ds = load_builtin_preset("deepseek-v3").expect("deepseek-v3");
+    let ds_g = build_blueprint_tensor_graph(&ds, ShapePreset::Prefill512, false);
+    assert_eq!(ds_g.groups.len(), 2);
+    assert!(ds_g.nodes.iter().any(|n| n.shape.contains("1×512×7168")));
+    assert!(ds_g.nodes.iter().any(|n| n.shape.contains("1×512×576")));
+    assert!(ds_g.nodes.iter().any(|n| n.side_note.contains("Top-8/256")));
+
+    let inc = build_inception_v3_graph(ShapePreset::Symbolic);
+    assert_eq!(inc.active_legend().len(), 8);
+    assert!(inc.nodes.iter().any(|n| n.shape == "299*299*3"));
+    assert!(inc.nodes.iter().any(|n| n.shape == "35*35*192"));
+    assert!(inc.nodes.iter().any(|n| n.shape == "35*35*256"));
+    let inc_svg = export_standalone_svg(&inc);
+    assert!(inc_svg.contains("输入图像"));
+    assert!(inc_svg.contains("平均池化层"));
+    assert!(inc_svg.contains("最大池化层"));
+    assert!(inc_svg.contains("Dropout"));
+
+    let res = build_resnet50_graph(ShapePreset::Symbolic);
+    assert!(res.nodes.iter().any(|n| n.shape == "224*224*3"));
+    assert!(res.nodes.iter().any(|n| n.shape == "56*56*256"));
+  }
+}

@@ -19,6 +19,7 @@ pub mod math_labs;
 pub mod math_labs_m2;
 pub mod safetensors_meta;
 pub mod server;
+pub mod tensor_graph;
 pub mod visualizer;
 
 use app_core::i18n::Language;
