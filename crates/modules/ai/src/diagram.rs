@@ -27,6 +27,7 @@ pub fn MacroArchitectureFlow(
   blueprint: ModelBlueprint,
   selected_layer: u64,
   focus: InspectorFocus,
+  #[props(default = true)] initial_compact: bool,
   on_select_layer: EventHandler<u64>,
   on_select_focus: EventHandler<InspectorFocus>,
 ) -> Element {
@@ -37,21 +38,39 @@ pub fn MacroArchitectureFlow(
     .position(|s| selected_layer >= s.start_layer && selected_layer <= s.end_layer)
     .unwrap_or_else(|| seg_count.saturating_sub(1));
 
-  // 各可折叠区块的独立状态
-  let mut preset_mode = use_signal(|| FlowDensityPreset::Standard);
+  // 各可折叠区块的独立状态（默认「紧凑总览」先看清端到端全貌，点击任意层块或模块后按需钻取）
+  let mut preset_mode = use_signal(|| {
+    if initial_compact {
+      FlowDensityPreset::Compact
+    } else {
+      FlowDensityPreset::Standard
+    }
+  });
   let mut expand_vision = use_signal(|| false);
   let mut expand_audio = use_signal(|| false);
-  let mut expand_conditioners = use_signal(|| true);
-  let mut expanded_segments =
-    use_signal(|| (0..seg_count).map(|idx| idx == default_active_idx).collect::<Vec<bool>>());
-  let mut expand_inline_attn = use_signal(|| false);
-  let mut expand_inline_ffn = use_signal(|| false);
-  let mut expand_moe_cluster = use_signal(|| true);
-  let mut expand_output_stage = use_signal(|| true);
+  let mut expand_conditioners = use_signal(|| !initial_compact);
+  let mut expanded_segments = use_signal(|| {
+    if initial_compact {
+      vec![false; seg_count]
+    } else {
+      (0..seg_count).map(|idx| idx == default_active_idx).collect::<Vec<bool>>()
+    }
+  });
+  let mut expand_inline_attn = use_signal(|| vec![false; seg_count]);
+  let mut expand_inline_ffn = use_signal(|| vec![false; seg_count]);
+  let mut expand_moe_cluster = use_signal(|| !initial_compact);
+  let mut expand_output_stage = use_signal(|| !initial_compact);
 
   // 防御性对齐 segments 长度（切换不同模型时若未重建组件也可安全索引）
   if expanded_segments.read().len() != seg_count {
-    expanded_segments.set((0..seg_count).map(|idx| idx == default_active_idx).collect());
+    let is_compact = preset_mode() == FlowDensityPreset::Compact;
+    expanded_segments.set(if is_compact {
+      vec![false; seg_count]
+    } else {
+      (0..seg_count).map(|idx| idx == default_active_idx).collect()
+    });
+    expand_inline_attn.set(vec![false; seg_count]);
+    expand_inline_ffn.set(vec![false; seg_count]);
   }
 
   let mut apply_preset = move |mode: FlowDensityPreset| {
@@ -62,18 +81,19 @@ pub fn MacroArchitectureFlow(
         expand_audio.set(false);
         expand_conditioners.set(false);
         expanded_segments.set(vec![false; seg_count]);
-        expand_inline_attn.set(false);
-        expand_inline_ffn.set(false);
+        expand_inline_attn.set(vec![false; seg_count]);
+        expand_inline_ffn.set(vec![false; seg_count]);
         expand_moe_cluster.set(false);
         expand_output_stage.set(false);
+        on_select_focus.call(InspectorFocus::Overview);
       }
       FlowDensityPreset::Standard => {
         expand_vision.set(false);
         expand_audio.set(false);
         expand_conditioners.set(true);
         expanded_segments.set((0..seg_count).map(|i| i == default_active_idx).collect());
-        expand_inline_attn.set(false);
-        expand_inline_ffn.set(false);
+        expand_inline_attn.set(vec![false; seg_count]);
+        expand_inline_ffn.set(vec![false; seg_count]);
         expand_moe_cluster.set(true);
         expand_output_stage.set(true);
       }
@@ -82,8 +102,8 @@ pub fn MacroArchitectureFlow(
         expand_audio.set(true);
         expand_conditioners.set(true);
         expanded_segments.set(vec![true; seg_count]);
-        expand_inline_attn.set(true);
-        expand_inline_ffn.set(true);
+        expand_inline_attn.set(vec![true; seg_count]);
+        expand_inline_ffn.set(vec![true; seg_count]);
         expand_moe_cluster.set(true);
         expand_output_stage.set(true);
       }
@@ -109,8 +129,8 @@ pub fn MacroArchitectureFlow(
   rsx! {
     div { class: "flex flex-col items-center select-none",
       // 顶部多尺度折叠/展开控制栏
-      div { class: "w-full mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-950/60 px-2.5 py-1.5",
-        span { class: "text-[11px] font-semibold text-slate-500 dark:text-slate-400",
+      div { class: "w-full mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-950/60 px-3 py-2",
+        span { class: "text-xs font-semibold text-slate-600 dark:text-slate-300",
           "视图粒度："
         }
         div { class: "inline-flex rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-0.5 gap-0.5",
@@ -122,9 +142,9 @@ pub fn MacroArchitectureFlow(
             {
               let active = preset_mode() == m;
               let cls = if active {
-                "px-2 py-0.5 rounded-md text-[11px] font-semibold bg-indigo-600 text-white cursor-pointer transition-colors"
+                "px-2.5 py-1 rounded-md text-xs font-semibold bg-indigo-600 text-white cursor-pointer transition-colors"
               } else {
-                "px-2 py-0.5 rounded-md text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors"
+                "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors"
               };
               rsx! {
                 button {
@@ -368,7 +388,11 @@ pub fn MacroArchitectureFlow(
       for (seg_idx, seg) in blueprint.segments.iter().cloned().enumerate() {
         {
           let is_expanded = expanded_segments.read().get(seg_idx).copied().unwrap_or(false);
+          let is_attn_expanded = expand_inline_attn.read().get(seg_idx).copied().unwrap_or(false);
+          let is_ffn_expanded = expand_inline_ffn.read().get(seg_idx).copied().unwrap_or(false);
           let is_selected_seg = selected_layer >= seg.start_layer && selected_layer <= seg.end_layer;
+          let is_focused_seg = is_selected_seg && focus.is_layer_scoped();
+          let recommended_seg_focus = blueprint.recommended_focus_for_segment(seg_idx);
           let n_layers = seg.layer_count();
           let attn_p = seg.attention.params_per_layer(d);
           let (ffn_tot, ffn_act) = seg.ffn.params_per_layer(d);
@@ -384,33 +408,45 @@ pub fn MacroArchitectureFlow(
               }
 
               if !is_expanded {
-                // ── 折叠态：高信息密度层段摘要卡（一键展开） ──
+                // ── 折叠态：高信息密度层段摘要卡（点击手风琴展开并自动钻取右侧算子子图） ──
                 div {
-                  class: if is_selected_seg {
-                    "w-full rounded-2xl border-2 border-indigo-400 dark:border-indigo-600 bg-indigo-50/40 dark:bg-indigo-950/30 p-3 transition-all"
+                  class: if is_focused_seg {
+                    "w-full rounded-2xl border-2 border-indigo-400 dark:border-indigo-600 bg-indigo-50/40 dark:bg-indigo-950/30 p-3.5 transition-all"
                   } else {
-                    "w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/50 p-3 hover:border-indigo-300 dark:hover:border-indigo-700 transition-all"
+                    "w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/50 p-3.5 hover:border-indigo-300 dark:hover:border-indigo-700 transition-all"
                   },
                   div { class: "flex items-center justify-between gap-2",
                     button {
                       r#type: "button",
-                      class: "flex items-center gap-1.5 text-left cursor-pointer",
+                      class: "flex items-center gap-2 text-left cursor-pointer min-w-0",
                       onclick: move |_| {
-                        expanded_segments.with_mut(|v| {
-                          if let Some(slot) = v.get_mut(seg_idx) {
-                            *slot = true;
-                          }
-                        });
-                        if !is_selected_seg {
-                          on_select_layer.call(start_l);
+                        if preset_mode() != FlowDensityPreset::Expanded {
+                          preset_mode.set(FlowDensityPreset::Standard);
+                          expanded_segments
+                            .set((0..seg_count).map(|idx| idx == seg_idx).collect());
+                        } else {
+                          expanded_segments.with_mut(|v| {
+                            if let Some(slot) = v.get_mut(seg_idx) {
+                              *slot = true;
+                            }
+                          });
+                        }
+                        on_select_layer.call(start_l);
+                        if !focus.is_layer_scoped() {
+                          on_select_focus.call(recommended_seg_focus);
                         }
                       },
-                      span { class: "text-xs font-mono text-indigo-600 dark:text-indigo-400 font-bold", "▸" }
-                      div {
-                        div { class: "text-xs font-bold text-slate-900 dark:text-white",
-                          "{seg.range_label()} · {seg.title}"
+                      span { class: "text-xs font-mono text-indigo-600 dark:text-indigo-400 font-bold shrink-0", "▸" }
+                      div { class: "min-w-0",
+                        div { class: "text-[13px] font-bold text-slate-900 dark:text-white flex flex-wrap items-center gap-1.5",
+                          span { "{seg.range_label()} · {seg.title}" }
+                          if is_focused_seg {
+                            span { class: "px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-mono",
+                              "观测中"
+                            }
+                          }
                         }
-                        div { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                        div { class: "mt-0.5 text-xs font-mono text-slate-500 dark:text-slate-400",
                           if seg_tot_params != seg_act_params {
                             "本段参数: {format_count(seg_tot_params)} (激活 {format_count(seg_act_params)})"
                           } else {
@@ -421,22 +457,29 @@ pub fn MacroArchitectureFlow(
                     }
                     button {
                       r#type: "button",
-                      class: "shrink-0 px-2 py-1 rounded-lg text-[11px] font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 hover:border-indigo-400 cursor-pointer",
+                      class: "shrink-0 px-2.5 py-1 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 hover:border-indigo-400 cursor-pointer transition-colors",
                       onclick: move |_| {
-                        expanded_segments.with_mut(|v| {
-                          if let Some(slot) = v.get_mut(seg_idx) {
-                            *slot = true;
-                          }
-                        });
-                        if !is_selected_seg {
-                          on_select_layer.call(start_l);
+                        if preset_mode() != FlowDensityPreset::Expanded {
+                          preset_mode.set(FlowDensityPreset::Standard);
+                          expanded_segments
+                            .set((0..seg_count).map(|idx| idx == seg_idx).collect());
+                        } else {
+                          expanded_segments.with_mut(|v| {
+                            if let Some(slot) = v.get_mut(seg_idx) {
+                              *slot = true;
+                            }
+                          });
+                        }
+                        on_select_layer.call(start_l);
+                        if !focus.is_layer_scoped() {
+                          on_select_focus.call(recommended_seg_focus);
                         }
                       },
                       "展开层块"
                     }
                   }
 
-                  div { class: "mt-2 flex flex-wrap gap-1.5 text-[10px] font-mono",
+                  div { class: "mt-2.5 flex flex-wrap gap-1.5 text-[11px] font-mono",
                     span { class: "px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-700 dark:text-indigo-300",
                       "{seg.attention.short_label()}"
                     }
@@ -448,7 +491,7 @@ pub fn MacroArchitectureFlow(
               } else {
                 // ── 展开态：完整双残差回路 + 可选内联算子图 + 专家簇折叠 ──
                 div {
-                  class: if is_selected_seg {
+                  class: if is_focused_seg {
                     "w-full rounded-2xl border-2 border-dashed border-indigo-400/90 dark:border-indigo-600/80 bg-slate-50/70 dark:bg-slate-900/40 p-3.5"
                   } else {
                     "w-full rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/40 p-3.5"
@@ -459,7 +502,7 @@ pub fn MacroArchitectureFlow(
                       div { class: "flex items-center gap-1.5",
                         button {
                           r#type: "button",
-                          class: "text-xs font-bold text-slate-800 dark:text-slate-100 hover:text-indigo-600 dark:hover:text-indigo-400 cursor-pointer flex items-center gap-1",
+                          class: "text-[13px] font-bold text-slate-800 dark:text-slate-100 hover:text-indigo-600 dark:hover:text-indigo-400 cursor-pointer flex items-center gap-1",
                           onclick: move |_| {
                             expanded_segments.with_mut(|v| {
                               if let Some(slot) = v.get_mut(seg_idx) {
@@ -471,7 +514,7 @@ pub fn MacroArchitectureFlow(
                           span { "{seg.title}" }
                         }
                       }
-                      div { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                      div { class: "text-xs font-mono text-slate-500 dark:text-slate-400",
                         if is_selected_seg {
                           "{seg.range_label()} · 当前观测 Layer #{selected_layer}"
                         } else {
@@ -509,15 +552,20 @@ pub fn MacroArchitectureFlow(
                       } else if !is_selected_seg {
                         button {
                           r#type: "button",
-                          class: "px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-600 text-white cursor-pointer",
-                          onclick: move |_| on_select_layer.call(start_l),
+                          class: "px-2 py-0.5 rounded text-[11px] font-semibold bg-indigo-600 text-white cursor-pointer",
+                          onclick: move |_| {
+                            on_select_layer.call(start_l);
+                            if !focus.is_layer_scoped() {
+                              on_select_focus.call(recommended_seg_focus);
+                            }
+                          },
                           "定位此段"
                         }
                       }
 
                       button {
                         r#type: "button",
-                        class: "px-2 py-0.5 rounded text-[10px] font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-400 cursor-pointer",
+                        class: "px-2 py-0.5 rounded text-[11px] font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-400 cursor-pointer",
                         onclick: move |_| {
                           expanded_segments.with_mut(|v| {
                             if let Some(slot) = v.get_mut(seg_idx) {
@@ -532,17 +580,17 @@ pub fn MacroArchitectureFlow(
 
                   // 若存在混合注意力调度（如 Gemma-3 5:1 SWA 或 Llama-4 3:1 iRoPE），展示提示条
                   if let Some(ref note) = seg.schedule_note {
-                    div { class: "mb-2.5 rounded-lg border border-indigo-200/80 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/40 px-2.5 py-1.5 text-[11px] text-indigo-800 dark:text-indigo-200",
+                    div { class: "mb-2.5 rounded-lg border border-indigo-200/80 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/40 px-2.5 py-1.5 text-xs text-indigo-800 dark:text-indigo-200",
                       "⟳ {note}"
                     }
                   }
 
                   // 第一残差子块：Pre-Attn Norm + Self-Attention / MLA (+ 可选 Post-Attn Norm)
                   div { class: "relative pl-5 border-l-2 border-indigo-400/70 dark:border-indigo-500/60 space-y-2 py-1",
-                    span { class: "absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-indigo-100 dark:bg-indigo-950 border border-indigo-400 text-[9px] flex items-center justify-center font-mono text-indigo-700 dark:text-indigo-300",
+                    span { class: "absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-indigo-100 dark:bg-indigo-950 border border-indigo-400 text-[10px] flex items-center justify-center font-mono text-indigo-700 dark:text-indigo-300",
                       "x"
                     }
-                    span { class: "text-[10px] font-mono text-indigo-500 dark:text-indigo-400 block -mt-1",
+                    span { class: "text-[11px] font-mono text-indigo-500 dark:text-indigo-400 block -mt-1",
                       "Residual Skip #1"
                     }
 
@@ -553,7 +601,7 @@ pub fn MacroArchitectureFlow(
                         on_select_layer.call(if is_selected_seg { selected_layer } else { start_l });
                         on_select_focus.call(InspectorFocus::NormAndResidual);
                       },
-                      div { class: "flex items-center justify-between text-xs",
+                      div { class: "flex items-center justify-between text-[13px]",
                         span { class: "font-semibold text-slate-700 dark:text-slate-200 font-mono",
                           if blueprint.is_diffusion_pipeline() {
                             "AdaLN-Zero Norm #1 (t_emb)"
@@ -561,7 +609,7 @@ pub fn MacroArchitectureFlow(
                             "input_layernorm (RMSNorm)"
                           }
                         }
-                        span { class: "font-mono text-[11px] text-slate-400", "[{d}]" }
+                        span { class: "font-mono text-xs text-slate-400", "[{d}]" }
                       }
                     }
 
@@ -589,7 +637,7 @@ pub fn MacroArchitectureFlow(
                             }
                           }
                           div { class: "flex items-center gap-1.5",
-                            span { class: "px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 text-[10px] font-mono font-semibold",
+                            span { class: "px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 text-[11px] font-mono font-semibold",
                               {
                                 if blueprint.is_diffusion_pipeline() {
                                   "0 KV (Iterative)".to_string()
@@ -604,25 +652,29 @@ pub fn MacroArchitectureFlow(
                             }
                             button {
                               r#type: "button",
-                              class: "px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-[10px] font-medium text-slate-600 dark:text-slate-300 cursor-pointer",
+                              class: "px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-[11px] font-medium text-slate-600 dark:text-slate-300 cursor-pointer",
                               onclick: move |evt| {
                                 evt.stop_propagation();
-                                expand_inline_attn.set(!expand_inline_attn());
+                                expand_inline_attn.with_mut(|v| {
+                                  if let Some(slot) = v.get_mut(seg_idx) {
+                                    *slot = !*slot;
+                                  }
+                                });
                               },
-                              if expand_inline_attn() { "▴ 收起算子" } else { "▾ 展开算子" }
+                              if is_attn_expanded { "▴ 收起算子" } else { "▾ 展开算子" }
                             }
                           }
                         }
-                        div { class: "mt-1 text-xs font-semibold text-slate-900 dark:text-white font-mono",
+                        div { class: "mt-1 text-[13px] font-semibold text-slate-900 dark:text-white font-mono",
                           "{seg.attention.short_label()}"
                         }
-                        div { class: "mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 font-mono",
+                        div { class: "mt-0.5 text-xs text-slate-500 dark:text-slate-400 font-mono",
                           "{blueprint.rope_summary} · {format_count(attn_p)}/layer"
                         }
                       }
 
-                      // L2 内联展开：Attention 内部算子矩阵拆解
-                      if expand_inline_attn() {
+                      // L2 内联展开：Attention 内部算子矩阵拆解（按层段独立开关）
+                      if is_attn_expanded {
                         InlineAttentionDetail {
                           hidden_size: d,
                           attention: seg.attention.clone(),
@@ -631,7 +683,7 @@ pub fn MacroArchitectureFlow(
                     }
 
                     if has_post_norms {
-                      div { class: "rounded-lg border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/70 px-2.5 py-1.5 flex items-center justify-between text-[11px] font-mono text-slate-600 dark:text-slate-300",
+                      div { class: "rounded-lg border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/70 px-2.5 py-1.5 flex items-center justify-between text-xs font-mono text-slate-600 dark:text-slate-300",
                         span { "post_attention_layernorm (Post-Attn Norm)" }
                         span { class: "text-slate-400", "[{d}]" }
                       }
@@ -641,7 +693,7 @@ pub fn MacroArchitectureFlow(
                       span { class: "inline-flex items-center justify-center w-5 h-5 rounded-full bg-indigo-600 text-white text-xs font-bold shadow-xs",
                         "+"
                       }
-                      span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                      span { class: "text-xs font-mono text-slate-500 dark:text-slate-400",
                         "h_mid = x + Mixer(Norm(x)) : [B, S, {d}]"
                       }
                     }
@@ -652,10 +704,10 @@ pub fn MacroArchitectureFlow(
 
                     // 第二残差子块：Pre-FFN Norm + Dense FFN / Sparse MoE (+ 可选 Post-FFN Norm)
                     div { class: "relative pl-5 border-l-2 border-amber-400/80 dark:border-amber-500/60 space-y-2 py-1",
-                      span { class: "absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-amber-100 dark:bg-amber-950 border border-amber-400 text-[9px] flex items-center justify-center font-mono text-amber-700 dark:text-amber-300",
+                      span { class: "absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-amber-100 dark:bg-amber-950 border border-amber-400 text-[10px] flex items-center justify-center font-mono text-amber-700 dark:text-amber-300",
                         "h"
                       }
-                      span { class: "text-[10px] font-mono text-amber-600 dark:text-amber-400 block -mt-1",
+                      span { class: "text-[11px] font-mono text-amber-600 dark:text-amber-400 block -mt-1",
                         "Residual Skip #2"
                       }
 
@@ -666,7 +718,7 @@ pub fn MacroArchitectureFlow(
                           on_select_layer.call(if is_selected_seg { selected_layer } else { start_l });
                           on_select_focus.call(InspectorFocus::NormAndResidual);
                         },
-                        div { class: "flex items-center justify-between text-xs",
+                        div { class: "flex items-center justify-between text-[13px]",
                           span { class: "font-semibold text-slate-700 dark:text-slate-200 font-mono",
                             if has_post_norms {
                               "pre_feedforward_layernorm (RMSNorm)"
@@ -674,7 +726,7 @@ pub fn MacroArchitectureFlow(
                               "post_attention_layernorm (RMSNorm)"
                             }
                           }
-                          span { class: "font-mono text-[11px] text-slate-400", "[{d}]" }
+                          span { class: "font-mono text-xs text-slate-400", "[{d}]" }
                         }
                       }
 
@@ -703,7 +755,7 @@ pub fn MacroArchitectureFlow(
                                   }
                                 }
                                 div { class: "flex items-center gap-1.5",
-                                  span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                                  span { class: "text-xs font-mono text-slate-500 dark:text-slate-400",
                                     if ffn_tot != ffn_act {
                                       "{format_count(ffn_act)} / {format_count(ffn_tot)}"
                                     } else {
@@ -712,16 +764,20 @@ pub fn MacroArchitectureFlow(
                                   }
                                   button {
                                     r#type: "button",
-                                    class: "px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-[10px] font-medium text-slate-600 dark:text-slate-300 cursor-pointer",
+                                    class: "px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-[11px] font-medium text-slate-600 dark:text-slate-300 cursor-pointer",
                                     onclick: move |evt| {
                                       evt.stop_propagation();
-                                      expand_inline_ffn.set(!expand_inline_ffn());
+                                      expand_inline_ffn.with_mut(|v| {
+                                        if let Some(slot) = v.get_mut(seg_idx) {
+                                          *slot = !*slot;
+                                        }
+                                      });
                                     },
-                                    if expand_inline_ffn() { "▴ 收起算子" } else { "▾ 展开算子" }
+                                    if is_ffn_expanded { "▴ 收起算子" } else { "▾ 展开算子" }
                                   }
                                 }
                               }
-                              div { class: "mt-1 text-xs font-semibold text-slate-900 dark:text-white font-mono",
+                              div { class: "mt-1 text-[13px] font-semibold text-slate-900 dark:text-white font-mono",
                                 "{seg.ffn.short_label()}"
                               }
                             }
@@ -740,7 +796,7 @@ pub fn MacroArchitectureFlow(
                               div { class: "mt-2 pt-2 border-t border-slate-200/80 dark:border-slate-800",
                                 button {
                                   r#type: "button",
-                                  class: "w-full flex items-center justify-between text-[11px] font-mono text-amber-700 dark:text-amber-300 cursor-pointer",
+                                  class: "w-full flex items-center justify-between text-xs font-mono text-amber-700 dark:text-amber-300 cursor-pointer",
                                   onclick: move |evt| {
                                     evt.stop_propagation();
                                     expand_moe_cluster.set(!expand_moe_cluster());
@@ -748,13 +804,13 @@ pub fn MacroArchitectureFlow(
                                   span {
                                     if expand_moe_cluster() { "▾ 专家路由阵列 (Router + Experts)" } else { "▸ 展开专家路由阵列 ({top_k}/{num_routed_experts} Active)" }
                                   }
-                                  span { class: "text-[10px] text-slate-400",
+                                  span { class: "text-[11px] text-slate-400",
                                     if expand_moe_cluster() { "收起" } else { "展开" }
                                   }
                                 }
 
                                 if expand_moe_cluster() {
-                                  div { class: "mt-2 space-y-1.5 text-[11px] font-mono",
+                                  div { class: "mt-2 space-y-1.5 text-xs font-mono",
                                     div { class: "rounded-lg bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/60 px-2.5 py-1.5 text-amber-900 dark:text-amber-200",
                                       "Router [{d} → {num_routed_experts}] · {scoring_func}"
                                       if let Some((ng, tg)) = router_groups {
@@ -766,7 +822,7 @@ pub fn MacroArchitectureFlow(
                                         div { class: "font-bold text-amber-800 dark:text-amber-300",
                                           "★ Active ×{top_k}"
                                         }
-                                        div { class: "text-[10px] text-slate-600 dark:text-slate-300",
+                                        div { class: "text-[11px] text-slate-600 dark:text-slate-300",
                                           "I={moe_intermediate_size} (参与计算)"
                                         }
                                       }
@@ -774,7 +830,7 @@ pub fn MacroArchitectureFlow(
                                         div { class: "font-semibold text-slate-500 dark:text-slate-400",
                                           "Idle ×{num_routed_experts.saturating_sub(top_k)}"
                                         }
-                                        div { class: "text-[10px] text-slate-400",
+                                        div { class: "text-[11px] text-slate-400",
                                           "0 FLOPs (驻留显存)"
                                         }
                                       }
@@ -789,8 +845,8 @@ pub fn MacroArchitectureFlow(
                               }
                             }
 
-                            // L2 内联展开：FFN / MoE 矩阵维度流
-                            if expand_inline_ffn() {
+                            // L2 内联展开：FFN / MoE 矩阵维度流（按层段独立开关）
+                            if is_ffn_expanded {
                               InlineFfnDetail {
                                 hidden_size: d,
                                 ffn: seg.ffn.clone(),
@@ -801,7 +857,7 @@ pub fn MacroArchitectureFlow(
                       }
 
                       if has_post_norms {
-                        div { class: "rounded-lg border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/70 px-2.5 py-1.5 flex items-center justify-between text-[11px] font-mono text-slate-600 dark:text-slate-300",
+                        div { class: "rounded-lg border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/70 px-2.5 py-1.5 flex items-center justify-between text-xs font-mono text-slate-600 dark:text-slate-300",
                           span { "post_feedforward_layernorm (Post-FFN Norm)" }
                           span { class: "text-slate-400", "[{d}]" }
                         }
@@ -811,13 +867,13 @@ pub fn MacroArchitectureFlow(
                         span { class: "inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-500 text-white text-xs font-bold shadow-xs",
                           "+"
                         }
-                        span { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                        span { class: "text-xs font-mono text-slate-500 dark:text-slate-400",
                           "h_out = h_mid + FFN(Norm(h_mid)) : [B, S, {d}]"
                         }
                       }
                     }
                   } else {
-                    div { class: "mt-2 rounded-lg border border-dashed border-slate-200 dark:border-slate-800 px-2.5 py-1.5 text-[10px] font-mono text-slate-500 dark:text-slate-400",
+                    div { class: "mt-2 rounded-lg border border-dashed border-slate-200 dark:border-slate-800 px-2.5 py-1.5 text-[11px] font-mono text-slate-500 dark:text-slate-400",
                       "纯 SSM 块已内嵌门控通道扩展 (expand×D)，无独立第二残差 MLP 子层"
                     }
                   }
@@ -920,25 +976,31 @@ pub fn MacroArchitectureFlow(
 
         if !expand_output_stage() {
           rsx! {
-            div { class: "w-full rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/40 dark:bg-rose-950/20 p-3 flex items-center justify-between gap-2",
+            div { class: "w-full rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/40 dark:bg-rose-950/20 p-3.5 flex items-center justify-between gap-2",
               button {
                 r#type: "button",
-                class: "flex items-center gap-1.5 text-left cursor-pointer",
-                onclick: move |_| expand_output_stage.set(true),
-                span { class: "text-xs font-mono font-bold text-rose-600 dark:text-rose-400", "▸" }
-                div {
-                  div { class: "text-xs font-bold text-slate-900 dark:text-white",
+                class: "flex items-center gap-2 text-left cursor-pointer min-w-0",
+                onclick: move |_| {
+                  expand_output_stage.set(true);
+                  on_select_focus.call(InspectorFocus::LmHead);
+                },
+                span { class: "text-xs font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0", "▸" }
+                div { class: "min-w-0",
+                  div { class: "text-[13px] font-bold text-slate-900 dark:text-white",
                     "{stage_short_title}"
                   }
-                  div { class: "text-[11px] font-mono text-slate-500 dark:text-slate-400",
+                  div { class: "mt-0.5 text-xs font-mono text-slate-500 dark:text-slate-400 truncate",
                     "{stage_main_formula} → {output_pill_text}"
                   }
                 }
               }
               button {
                 r#type: "button",
-                class: "px-2 py-0.5 rounded text-[10px] font-semibold bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 cursor-pointer",
-                onclick: move |_| expand_output_stage.set(true),
+                class: "shrink-0 px-2.5 py-1 rounded-lg text-xs font-semibold bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:border-rose-400 cursor-pointer",
+                onclick: move |_| {
+                  expand_output_stage.set(true);
+                  on_select_focus.call(InspectorFocus::LmHead);
+                },
                 "展开输出层"
               }
             }
@@ -1226,18 +1288,28 @@ fn VerticalArrow(label: String) -> Element {
 // 右侧算子级内部子图（SVG）
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 根据用户点击选中的 [`InspectorFocus`] 与当前激活层段，绘制精确带维度标注的内部算子拓扑 SVG。
+/// 根据用户点击选中的 [`InspectorFocus`] 与当前激活层段，绘制全模型总体架构图或算子级内部拓扑 SVG。
 #[component]
 pub fn MicroSubgraphDiagram(
   blueprint: ModelBlueprint,
   selected_layer: u64,
   focus: InspectorFocus,
+  #[props(default)] on_select_layer: Option<EventHandler<u64>>,
+  #[props(default)] on_select_focus: Option<EventHandler<InspectorFocus>>,
 ) -> Element {
   let seg_opt: Option<LayerSegment> = blueprint.segment_for_layer(selected_layer).cloned();
   let d = blueprint.hidden_size;
   let v = blueprint.vocab_size;
 
   match focus {
+    InspectorFocus::Overview => rsx! {
+      OverallArchitectureView {
+        blueprint,
+        selected_layer,
+        on_select_layer,
+        on_select_focus,
+      }
+    },
     InspectorFocus::Vision => match blueprint.vision {
       Some(vis) => rsx! {
         VisionSubgraphSvg { vision: vis, text_hidden: d }
@@ -1408,6 +1480,620 @@ fn EmptyDiagramNote() -> Element {
   rsx! {
     div { class: "p-6 text-center text-sm text-slate-500 dark:text-slate-400",
       "当前模型未包含标准 Transformer 层参数，请通过下方 Safetensors 权重树检视真实张量分布。"
+    }
+  }
+}
+
+fn truncate_svg_text(s: &str, max_chars: usize) -> String {
+  let count = s.chars().count();
+  if count <= max_chars {
+    return s.to_string();
+  }
+  let keep = max_chars.saturating_sub(1);
+  let mut out: String = s.chars().take(keep).collect();
+  out.push('…');
+  out
+}
+
+/// 全模型端到端「总体架构」总览视图：纯 Rust 动态全景 SVG + 异构层段对比速览与一键算子钻取。
+#[component]
+fn OverallArchitectureView(
+  blueprint: ModelBlueprint,
+  selected_layer: u64,
+  on_select_layer: Option<EventHandler<u64>>,
+  on_select_focus: Option<EventHandler<InspectorFocus>>,
+) -> Element {
+  let d = blueprint.hidden_size;
+  let v = blueprint.vocab_size;
+  let seg_count = blueprint.segments.len();
+
+  // 判断是否存在前置多模态编码器 / 扩散文本条件编码器
+  let has_top_branch = blueprint.vision.is_some()
+    || blueprint.audio.is_some()
+    || blueprint
+      .diffusion
+      .as_ref()
+      .is_some_and(|diff| diff.components.iter().any(|c| c.role == "conditioner"));
+
+  // 计算各区域纵向 Y 坐标，确保零重叠
+  let y_branch = 14i32;
+  let y_embed = if has_top_branch { 84 } else { 16 };
+  let y_band = y_embed + 74;
+  let band_inner_h: i32 = match seg_count {
+    0 => 64,
+    1 => 92,
+    2 => 104,
+    n => (n as i32) * 58 + ((n as i32).saturating_sub(1)) * 12,
+  };
+  let band_h = 34 + band_inner_h + 14;
+  let y_out = y_band + band_h + 30;
+  let svg_h = y_out + 68;
+
+  // 输入与 Embedding 节点文案
+  let (embed_title, embed_sub) = if let Some(ref diff) = blueprint.diffusion {
+    (
+      format!("Latent Noise & Patchify Stem ({})", diff.patch_summary),
+      format!("z_T {} → [B, S_lat, {d}] · {}", diff.default_latent_shape, diff.scheduler_summary),
+    )
+  } else {
+    (
+      format!("Token Embedding · embed_tokens [{v}, {d}]"),
+      format!(
+        "input_ids [B, S] → h_0 : [B, S, {d}] · {}",
+        format_count(blueprint.params.embedding)
+      ),
+    )
+  };
+
+  // 末端输出节点文案
+  let (out_title, out_sub) = match &blueprint.output_head {
+    OutputHeadSpec::CausalLmHead => {
+      let tied_tag = if blueprint.tie_word_embeddings {
+        "Tied w/ Embed".to_string()
+      } else {
+        format_count(blueprint.params.lm_head)
+      };
+      (
+        format!("Final Norm → LM Head [{d} → {v}] ({tied_tag})"),
+        format!("Output: logits [B, S, {v}]"),
+      )
+    }
+    OutputHeadSpec::EmbeddingPool { pooling_mode, output_dim, normalize } => {
+      let norm_tag = if *normalize { " + L2 Norm" } else { "" };
+      (
+        format!("Final Norm → {pooling_mode} Pooling{norm_tag}"),
+        format!("Output: Dense Vector [B, {output_dim}] · 0 B KV Cache"),
+      )
+    }
+    OutputHeadSpec::SequenceScorer { num_labels } => (
+      format!("Final Norm → Cross-Encoder Scorer [{d} → {num_labels}]"),
+      format!("Output: Relevance Logits [B, {num_labels}]"),
+    ),
+    OutputHeadSpec::SpeechSynthesizer { codec_summary, sampling_rate_hz, .. } => (
+      format!("Speech Synthesizer → {codec_summary}"),
+      format!("Output: Waveform PCM @ {} kHz", sampling_rate_hz / 1000),
+    ),
+    OutputHeadSpec::LatentDecoder {
+      vae_class,
+      latent_channels,
+      spatial_compression,
+      temporal_compression,
+      is_video,
+      ..
+    } => {
+      let comp = if *is_video && *temporal_compression > 1 {
+        format!("×{temporal_compression}T×{spatial_compression}H×{spatial_compression}W")
+      } else {
+        format!("×{spatial_compression}H×{spatial_compression}W")
+      };
+      (
+        format!("Unpatchify → {vae_class} ({latent_channels}ch, {comp})"),
+        if *is_video {
+          "Output: RGB Video [B, F, 3, H, W]".to_string()
+        } else {
+          "Output: RGB Image [B, 3, H, W]".to_string()
+        },
+      )
+    }
+  };
+
+  let backbone_header = if blueprint.is_diffusion_pipeline() {
+    format!("DENOISING BACKBONE · {}L × {d}d · ITERATIVE ODE/SDE", blueprint.num_hidden_layers)
+  } else {
+    format!(
+      "TRANSFORMER BACKBONE · {}L × {d}d · {}",
+      blueprint.num_hidden_layers, blueprint.rope_summary
+    )
+  };
+
+  let has_mtp = blueprint.num_nextn_predict_layers > 0;
+
+  // 预计算每个层段的展示摘要，供 SVG 与下方速览卡共用
+  let seg_summaries: Vec<(usize, LayerSegment, u64, u64)> = blueprint
+    .segments
+    .iter()
+    .cloned()
+    .enumerate()
+    .map(|(idx, seg)| {
+      let n_layers = seg.layer_count();
+      let attn_p = seg.attention.params_per_layer(d);
+      let (ffn_tot, ffn_act) = seg.ffn.params_per_layer(d);
+      let norm_p = seg.norms_per_layer.max(2) * d;
+      let tot = n_layers * (attn_p + ffn_tot + norm_p);
+      let act = n_layers * (attn_p + ffn_act + norm_p);
+      (idx, seg, tot, act)
+    })
+    .collect();
+
+  rsx! {
+    div { class: "space-y-4",
+      // 1. 纯 Rust 全模型端到端全景 SVG
+      div { class: "w-full overflow-x-auto rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40 p-2 sm:p-3",
+        svg {
+          view_box: "0 0 700 {svg_h}",
+          class: "w-full min-w-[520px] h-auto font-mono",
+          role: "img",
+          "aria-label": "End-to-end macro model architecture overview diagram",
+
+          // 1A. 可选多模态前置支路（Vision / Audio / Diffusion Conditioners）
+          if let Some(ref vis) = blueprint.vision {
+            if let Some(ref aud) = blueprint.audio {
+              // Vision + Audio 双支路并列
+              rect { x: "50", y: "{y_branch}", width: "285", height: "44", rx: "9", class: "fill-fuchsia-50 dark:fill-fuchsia-950/60 stroke-fuchsia-500", stroke_width: "1.5" }
+              text { x: "192", y: "{y_branch + 18}", text_anchor: "middle", font_size: "11", class: "fill-fuchsia-700 dark:fill-fuchsia-300 font-bold",
+                {truncate_svg_text(&format!("Vision: {} ({}L×{}d)", vis.model_type, vis.num_hidden_layers, vis.hidden_size), 34)}
+              }
+              text { x: "192", y: "{y_branch + 34}", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+                "Projector [{vis.hidden_size} → {d}] · {format_count(vis.estimated_params)}"
+              }
+              rect { x: "365", y: "{y_branch}", width: "285", height: "44", rx: "9", class: "fill-cyan-50 dark:fill-cyan-950/60 stroke-cyan-500", stroke_width: "1.5" }
+              text { x: "507", y: "{y_branch + 18}", text_anchor: "middle", font_size: "11", class: "fill-cyan-700 dark:fill-cyan-300 font-bold",
+                {truncate_svg_text(&format!("Audio: {} ({}L×{}d)", aud.model_type, aud.num_layers, aud.hidden_size), 34)}
+              }
+              text { x: "507", y: "{y_branch + 34}", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+                "{aud.num_mel_bins}Mel → [{d}] · {format_count(aud.estimated_params)}"
+              }
+              path { d: "M 192 {y_branch + 44} L 192 {y_branch + 57} L 350 {y_branch + 57} L 350 {y_embed} M 507 {y_branch + 44} L 507 {y_branch + 57} L 350 {y_branch + 57}", class: "stroke-slate-400 dark:stroke-slate-500", stroke_width: "1.5", fill: "none" }
+            } else {
+              rect { x: "130", y: "{y_branch}", width: "440", height: "44", rx: "9", class: "fill-fuchsia-50 dark:fill-fuchsia-950/60 stroke-fuchsia-500", stroke_width: "1.5" }
+              text { x: "350", y: "{y_branch + 18}", text_anchor: "middle", font_size: "11.5", class: "fill-fuchsia-700 dark:fill-fuchsia-300 font-bold",
+                {truncate_svg_text(&format!("Vision Tower: {} ({}L × {}d)", vis.model_type, vis.num_hidden_layers, vis.hidden_size), 48)}
+              }
+              text { x: "350", y: "{y_branch + 34}", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+                "Patchify + ViT + Projector [{vis.hidden_size} → {d}] · {format_count(vis.estimated_params)}"
+              }
+              line { x1: "350", y1: "{y_branch + 44}", x2: "350", y2: "{y_embed}", class: "stroke-fuchsia-400", stroke_width: "1.5" }
+            }
+          } else if let Some(ref aud) = blueprint.audio {
+            rect { x: "130", y: "{y_branch}", width: "440", height: "44", rx: "9", class: "fill-cyan-50 dark:fill-cyan-950/60 stroke-cyan-500", stroke_width: "1.5" }
+            text { x: "350", y: "{y_branch + 18}", text_anchor: "middle", font_size: "11.5", class: "fill-cyan-700 dark:fill-cyan-300 font-bold",
+              {truncate_svg_text(&format!("Audio Tower: {} ({}L × {}d)", aud.model_type, aud.num_layers, aud.hidden_size), 48)}
+            }
+            text { x: "350", y: "{y_branch + 34}", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+              {format!("{}Mel@{}kHz + Conv1D + Encoder → [{d}] · {}", aud.num_mel_bins, aud.sampling_rate_hz / 1000, format_count(aud.estimated_params))}
+            }
+            line { x1: "350", y1: "{y_branch + 44}", x2: "350", y2: "{y_embed}", class: "stroke-cyan-400", stroke_width: "1.5" }
+          } else if let Some(ref diff) = blueprint.diffusion {
+            {
+              let cond_names: Vec<&str> = diff
+                .components
+                .iter()
+                .filter(|c| c.role == "conditioner")
+                .map(|c| c.class_name.as_str())
+                .collect();
+              if !cond_names.is_empty() {
+                let cond_txt = truncate_svg_text(&cond_names.join(" + "), 48);
+                rsx! {
+                  rect { x: "115", y: "{y_branch}", width: "470", height: "44", rx: "9", class: "fill-emerald-50 dark:fill-emerald-950/60 stroke-emerald-500", stroke_width: "1.5" }
+                  text { x: "350", y: "{y_branch + 18}", text_anchor: "middle", font_size: "11.5", class: "fill-emerald-700 dark:fill-emerald-300 font-bold",
+                    "Prompt Conditioners (×{cond_names.len()}): {cond_txt}"
+                  }
+                  text { x: "350", y: "{y_branch + 34}", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+                    "Single-Pass Text Conditioning · {format_count(blueprint.params.embedding)}"
+                  }
+                  line { x1: "350", y1: "{y_branch + 44}", x2: "350", y2: "{y_embed}", class: "stroke-emerald-400", stroke_width: "1.5" }
+                }
+              } else {
+                rsx! {}
+              }
+            }
+          }
+
+          // 1B. 输入与 Embedding / Latent Stem
+          rect {
+            x: "95",
+            y: "{y_embed}",
+            width: "510",
+            height: "46",
+            rx: "10",
+            class: if blueprint.is_diffusion_pipeline() {
+              "fill-indigo-50 dark:fill-indigo-950/60 stroke-indigo-500"
+            } else {
+              "fill-emerald-50 dark:fill-emerald-950/50 stroke-emerald-500"
+            },
+            stroke_width: "1.6",
+          }
+          text {
+            x: "350",
+            y: "{y_embed + 19}",
+            text_anchor: "middle",
+            font_size: "11.5",
+            class: if blueprint.is_diffusion_pipeline() {
+              "fill-indigo-700 dark:fill-indigo-300 font-bold"
+            } else {
+              "fill-emerald-800 dark:fill-emerald-300 font-bold"
+            },
+            {truncate_svg_text(&embed_title, 58)}
+          }
+          text {
+            x: "350",
+            y: "{y_embed + 36}",
+            text_anchor: "middle",
+            font_size: "10",
+            class: "fill-slate-600 dark:fill-slate-300",
+            {truncate_svg_text(&embed_sub, 68)}
+          }
+
+          // 连接箭头：Embed → Backbone
+          line { x1: "350", y1: "{y_embed + 46}", x2: "350", y2: "{y_band - 2}", class: "stroke-slate-400 dark:stroke-slate-500", stroke_width: "1.6" }
+          polygon { points: "345,{y_band - 6} 355,{y_band - 6} 350,{y_band}", class: "fill-slate-400 dark:fill-slate-500" }
+          text { x: "362", y: "{y_embed + 63}", font_size: "9.5", class: "fill-slate-400 dark:fill-slate-500",
+            "h_0 [B, S, {d}]"
+          }
+
+          // 1C. 主干层栈外框（含单段 / 双段异构串联 / 多段纵向排布）
+          rect {
+            x: "24",
+            y: "{y_band}",
+            width: "652",
+            height: "{band_h}",
+            rx: "14",
+            class: "fill-white/80 dark:fill-slate-900/70 stroke-indigo-400/80 dark:stroke-indigo-600/80",
+            stroke_dasharray: "6 4",
+            stroke_width: "1.6",
+          }
+          text {
+            x: "42",
+            y: "{y_band + 21}",
+            font_size: "10.5",
+            class: "fill-indigo-600 dark:fill-indigo-400 font-bold",
+            {truncate_svg_text(&backbone_header, 72)}
+          }
+
+          if seg_count == 1 {
+            {
+              let (_, seg, tot, act) = &seg_summaries[0];
+              let is_moe = matches!(seg.ffn, FfnSpec::SparseMoe { .. });
+              let box_y = y_band + 32;
+              let param_txt = if tot != act {
+                format!("参数 {} · 单 Token 激活 {}", format_count(*tot), format_count(*act))
+              } else {
+                format!("参数 {} (100% Dense)", format_count(*tot))
+              };
+              let seg_title_txt =
+                truncate_svg_text(&format!("{} · {}", seg.range_label(), seg.title), 56);
+              let seg_attn_txt =
+                truncate_svg_text(&format!("Attn: {}", seg.attention.short_label()), 66);
+              let seg_ffn_txt =
+                truncate_svg_text(&format!("FFN: {}", seg.ffn.short_label()), 66);
+              rsx! {
+                rect {
+                  x: "56",
+                  y: "{box_y}",
+                  width: "588",
+                  height: "90",
+                  rx: "10",
+                  class: if is_moe {
+                    "fill-amber-50/70 dark:fill-amber-950/35 stroke-amber-500"
+                  } else {
+                    "fill-indigo-50/70 dark:fill-indigo-950/40 stroke-indigo-500"
+                  },
+                  stroke_width: "1.6",
+                }
+                text { x: "350", y: "{box_y + 22}", text_anchor: "middle", font_size: "12", class: "fill-slate-900 dark:fill-white font-bold",
+                  "{seg_title_txt}"
+                }
+                text { x: "350", y: "{box_y + 42}", text_anchor: "middle", font_size: "10.5", class: "fill-indigo-700 dark:fill-indigo-300 font-semibold",
+                  "{seg_attn_txt}"
+                }
+                text { x: "350", y: "{box_y + 60}", text_anchor: "middle", font_size: "10.5", class: "fill-amber-700 dark:fill-amber-300 font-semibold",
+                  "{seg_ffn_txt}"
+                }
+                text { x: "350", y: "{box_y + 78}", text_anchor: "middle", font_size: "10", class: "fill-slate-500 dark:fill-slate-400",
+                  "{param_txt}"
+                }
+              }
+            }
+          } else if seg_count == 2 {
+            // 双段异构串联（如 DeepSeek-V3: Layers 0-2 Dense SwiGLU → Layers 3-60 Sparse MoE）
+            {
+              let (_, seg0, tot0, act0) = &seg_summaries[0];
+              let (_, seg1, tot1, act1) = &seg_summaries[1];
+              let box_y = y_band + 32;
+              let p0 = if tot0 != act0 {
+                format!("{} (激活 {})", format_count(*tot0), format_count(*act0))
+              } else {
+                format!("{} (100% Dense)", format_count(*tot0))
+              };
+              let p1 = if tot1 != act1 {
+                format!("{} (激活 {})", format_count(*tot1), format_count(*act1))
+              } else {
+                format!("{} (100% Dense)", format_count(*tot1))
+              };
+              let is_moe0 = matches!(seg0.ffn, FfnSpec::SparseMoe { .. });
+              let is_moe1 = matches!(seg1.ffn, FfnSpec::SparseMoe { .. });
+              let t0 = truncate_svg_text(&seg0.title, 24);
+              let a0 = truncate_svg_text(&format!("Attn: {}", seg0.attention.short_label()), 32);
+              let f0 = truncate_svg_text(&format!("FFN: {}", seg0.ffn.short_label()), 32);
+              let t1 = truncate_svg_text(&seg1.title, 24);
+              let a1 = truncate_svg_text(&format!("Attn: {}", seg1.attention.short_label()), 32);
+              let f1 = truncate_svg_text(&format!("FFN: {}", seg1.ffn.short_label()), 32);
+              rsx! {
+                // 左段卡
+                rect {
+                  x: "40",
+                  y: "{box_y}",
+                  width: "288",
+                  height: "102",
+                  rx: "10",
+                  class: if is_moe0 {
+                    "fill-amber-50/70 dark:fill-amber-950/35 stroke-amber-500"
+                  } else {
+                    "fill-sky-50/75 dark:fill-sky-950/40 stroke-sky-500"
+                  },
+                  stroke_width: "1.6",
+                }
+                text { x: "184", y: "{box_y + 20}", text_anchor: "middle", font_size: "11.5", class: "fill-slate-900 dark:fill-white font-bold",
+                  "{seg0.range_label()}"
+                }
+                text { x: "184", y: "{box_y + 37}", text_anchor: "middle", font_size: "10.5", class: "fill-slate-700 dark:fill-slate-200 font-semibold",
+                  "{t0}"
+                }
+                text { x: "184", y: "{box_y + 56}", text_anchor: "middle", font_size: "9.5", class: "fill-indigo-700 dark:fill-indigo-300",
+                  "{a0}"
+                }
+                text { x: "184", y: "{box_y + 72}", text_anchor: "middle", font_size: "9.5", class: "fill-amber-700 dark:fill-amber-300",
+                  "{f0}"
+                }
+                text { x: "184", y: "{box_y + 90}", text_anchor: "middle", font_size: "9.5", class: "fill-slate-500 dark:fill-slate-400",
+                  "{p0}"
+                }
+
+                // 横向串联箭头
+                line { x1: "328", y1: "{box_y + 51}", x2: "366", y2: "{box_y + 51}", class: "stroke-indigo-500", stroke_width: "2" }
+                polygon { points: "364,{box_y + 46} 372,{box_y + 51} 364,{box_y + 56}", class: "fill-indigo-500" }
+                text { x: "350", y: "{box_y + 40}", text_anchor: "middle", font_size: "9", class: "fill-slate-400",
+                  "h_{seg1.start_layer}"
+                }
+
+                // 右段卡
+                rect {
+                  x: "372",
+                  y: "{box_y}",
+                  width: "288",
+                  height: "102",
+                  rx: "10",
+                  class: if is_moe1 {
+                    "fill-amber-50/75 dark:fill-amber-950/40 stroke-amber-500"
+                  } else {
+                    "fill-indigo-50/70 dark:fill-indigo-950/40 stroke-indigo-500"
+                  },
+                  stroke_width: "1.6",
+                }
+                text { x: "516", y: "{box_y + 20}", text_anchor: "middle", font_size: "11.5", class: "fill-slate-900 dark:fill-white font-bold",
+                  "{seg1.range_label()}"
+                }
+                text { x: "516", y: "{box_y + 37}", text_anchor: "middle", font_size: "10.5", class: "fill-slate-700 dark:fill-slate-200 font-semibold",
+                  "{t1}"
+                }
+                text { x: "516", y: "{box_y + 56}", text_anchor: "middle", font_size: "9.5", class: "fill-indigo-700 dark:fill-indigo-300",
+                  "{a1}"
+                }
+                text { x: "516", y: "{box_y + 72}", text_anchor: "middle", font_size: "9.5", class: "fill-amber-700 dark:fill-amber-300",
+                  "{f1}"
+                }
+                text { x: "516", y: "{box_y + 90}", text_anchor: "middle", font_size: "9.5", class: "fill-slate-500 dark:fill-slate-400",
+                  "{p1}"
+                }
+              }
+            }
+          } else {
+            // 3+ 异构层段纵向串联
+            for (idx, seg, tot, act) in seg_summaries.iter() {
+              {
+                let item_y = y_band + 32 + (*idx as i32) * 70;
+                let is_moe = matches!(seg.ffn, FfnSpec::SparseMoe { .. });
+                let p_lbl = if tot != act {
+                  format!("{} (激活 {})", format_count(*tot), format_count(*act))
+                } else {
+                  format_count(*tot)
+                };
+                let row_title =
+                  truncate_svg_text(&format!("{} · {}", seg.range_label(), seg.title), 46);
+                let row_sub = truncate_svg_text(
+                  &format!("Attn: {}  |  FFN: {}", seg.attention.short_label(), seg.ffn.short_label()),
+                  74,
+                );
+                rsx! {
+                  if *idx > 0 {
+                    line { x1: "350", y1: "{item_y - 12}", x2: "350", y2: "{item_y}", class: "stroke-indigo-400", stroke_width: "1.5" }
+                  }
+                  rect {
+                    x: "44",
+                    y: "{item_y}",
+                    width: "612",
+                    height: "56",
+                    rx: "9",
+                    class: if is_moe {
+                      "fill-amber-50/70 dark:fill-amber-950/35 stroke-amber-500"
+                    } else {
+                      "fill-indigo-50/60 dark:fill-indigo-950/35 stroke-indigo-500"
+                    },
+                    stroke_width: "1.4",
+                  }
+                  text { x: "58", y: "{item_y + 21}", font_size: "11", class: "fill-slate-900 dark:fill-white font-bold",
+                    "{row_title}"
+                  }
+                  text { x: "642", y: "{item_y + 21}", text_anchor: "end", font_size: "10", class: "fill-slate-500 dark:fill-slate-400",
+                    "{p_lbl}"
+                  }
+                  text { x: "58", y: "{item_y + 41}", font_size: "10", class: "fill-indigo-700 dark:fill-indigo-300",
+                    "{row_sub}"
+                  }
+                }
+              }
+            }
+          }
+
+          // 连接箭头：Backbone → Output (+ 可选 MTP 旁路)
+          if has_mtp {
+            path {
+              d: "M 350 {y_band + band_h} L 350 {y_out - 15} M 225 {y_out - 15} L 548 {y_out - 15} M 225 {y_out - 15} L 225 {y_out - 2} M 548 {y_out - 15} L 548 {y_out - 2}",
+              class: "stroke-slate-400 dark:stroke-slate-500",
+              stroke_width: "1.5",
+              fill: "none",
+            }
+            polygon { points: "220,{y_out - 6} 230,{y_out - 6} 225,{y_out}", class: "fill-rose-500" }
+            polygon { points: "543,{y_out - 6} 553,{y_out - 6} 548,{y_out}", class: "fill-purple-500" }
+            text { x: "362", y: "{y_band + band_h + 12}", font_size: "9.5", class: "fill-slate-400 dark:fill-slate-500",
+              "h_final [B, S, {d}]"
+            }
+
+            rect { x: "40", y: "{y_out}", width: "372", height: "54", rx: "10", class: "fill-rose-50 dark:fill-rose-950/50 stroke-rose-500", stroke_width: "1.6" }
+            text { x: "226", y: "{y_out + 22}", text_anchor: "middle", font_size: "11", class: "fill-rose-700 dark:fill-rose-300 font-bold",
+              "{truncate_svg_text(&out_title, 42)}"
+            }
+            text { x: "226", y: "{y_out + 40}", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+              "{truncate_svg_text(&out_sub, 44)}"
+            }
+
+            rect { x: "436", y: "{y_out}", width: "224", height: "54", rx: "10", class: "fill-purple-50 dark:fill-purple-950/50 stroke-purple-500", stroke_dasharray: "5 3", stroke_width: "1.6" }
+            text { x: "548", y: "{y_out + 22}", text_anchor: "middle", font_size: "11", class: "fill-purple-700 dark:fill-purple-300 font-bold",
+              "MTP ×{blueprint.num_nextn_predict_layers} Speculative"
+            }
+            text { x: "548", y: "{y_out + 40}", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+              "+{format_count(blueprint.params.mtp_head)} · Draft Head"
+            }
+          } else {
+            line { x1: "350", y1: "{y_band + band_h}", x2: "350", y2: "{y_out - 2}", class: "stroke-slate-400 dark:stroke-slate-500", stroke_width: "1.6" }
+            polygon { points: "345,{y_out - 6} 355,{y_out - 6} 350,{y_out}", class: "fill-rose-500" }
+            text { x: "362", y: "{y_band + band_h + 18}", font_size: "9.5", class: "fill-slate-400 dark:fill-slate-500",
+              "h_final [B, S, {d}]"
+            }
+
+            rect { x: "95", y: "{y_out}", width: "510", height: "54", rx: "10", class: "fill-rose-50 dark:fill-rose-950/50 stroke-rose-500", stroke_width: "1.6" }
+            text { x: "350", y: "{y_out + 22}", text_anchor: "middle", font_size: "11.5", class: "fill-rose-700 dark:fill-rose-300 font-bold",
+              "{truncate_svg_text(&out_title, 58)}"
+            }
+            text { x: "350", y: "{y_out + 40}", text_anchor: "middle", font_size: "10", class: "fill-slate-600 dark:fill-slate-300",
+              "{truncate_svg_text(&out_sub, 62)}"
+            }
+          }
+        }
+      }
+
+      // 2. 分层架构速览卡片 + 一键算子钻取入口
+      div { class: "space-y-2.5",
+        div { class: "flex flex-wrap items-center justify-between gap-2",
+          span { class: "text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300",
+            if seg_count > 1 {
+              "异构层段架构对照 ({seg_count} 段) · 点击钻取单层算子细节"
+            } else {
+              "主干层块结构速览 · 点击钻取算子细节"
+            }
+          }
+          span { class: "text-xs text-slate-500 dark:text-slate-400",
+            "也可直接点击左侧拓扑图任意模块"
+          }
+        }
+
+        div { class: if seg_count > 1 { "grid grid-cols-1 md:grid-cols-2 gap-3" } else { "grid grid-cols-1 gap-3" },
+          for (_idx, seg, tot, act) in seg_summaries.iter() {
+            {
+              let start_l = seg.start_layer;
+              let is_moe = matches!(seg.ffn, FfnSpec::SparseMoe { .. });
+              let is_cur_layer_in_seg =
+                selected_layer >= seg.start_layer && selected_layer <= seg.end_layer;
+              let on_l_attn = on_select_layer;
+              let on_f_attn = on_select_focus;
+              let on_l_ffn = on_select_layer;
+              let on_f_ffn = on_select_focus;
+              rsx! {
+                div {
+                  key: "ov-seg-{seg.start_layer}-{seg.end_layer}",
+                  class: if is_cur_layer_in_seg && seg_count > 1 {
+                    "rounded-xl border border-indigo-200 dark:border-indigo-900/70 bg-indigo-50/30 dark:bg-indigo-950/20 p-3.5 space-y-2.5"
+                  } else {
+                    "rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-3.5 space-y-2.5"
+                  },
+                  div { class: "flex flex-wrap items-center justify-between gap-2",
+                    div { class: "min-w-0",
+                      div { class: "text-[13px] font-bold text-slate-900 dark:text-white",
+                        "{seg.range_label()} · {seg.title}"
+                      }
+                      div { class: "mt-0.5 text-xs font-mono text-slate-500 dark:text-slate-400",
+                        if tot != act {
+                          "总参 {format_count(*tot)} · 单 Token 激活 {format_count(*act)}"
+                        } else {
+                          "总参 {format_count(*tot)} (100% Dense)"
+                        }
+                      }
+                    }
+                  }
+
+                  div { class: "flex flex-wrap gap-1.5 text-xs font-mono",
+                    span { class: "px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-700 dark:text-indigo-300",
+                      "{seg.attention.short_label()}"
+                    }
+                    span { class: if is_moe {
+                      "px-2 py-0.5 rounded bg-amber-500/15 text-amber-800 dark:text-amber-300"
+                    } else {
+                      "px-2 py-0.5 rounded bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                    },
+                      "{seg.ffn.short_label()}"
+                    }
+                  }
+
+                  div { class: "pt-1 flex flex-wrap items-center gap-2",
+                    button {
+                      r#type: "button",
+                      class: "px-2.5 py-1 rounded-lg text-xs font-semibold border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 hover:border-indigo-400 hover:bg-indigo-50/70 dark:hover:bg-indigo-950/40 cursor-pointer transition-colors",
+                      onclick: move |_| {
+                        if let Some(cb) = on_l_attn {
+                          cb.call(start_l);
+                        }
+                        if let Some(cb) = on_f_attn {
+                          cb.call(InspectorFocus::Attention);
+                        }
+                      },
+                      "钻取 Attention →"
+                    }
+                    if !matches!(seg.ffn, FfnSpec::DenseGated { intermediate_size: 0, .. }) {
+                      button {
+                        r#type: "button",
+                        class: if is_moe {
+                          "px-2.5 py-1 rounded-lg text-xs font-semibold border border-amber-200 dark:border-amber-800 bg-white dark:bg-slate-900 text-amber-800 dark:text-amber-300 hover:border-amber-400 hover:bg-amber-50/70 dark:hover:bg-amber-950/40 cursor-pointer transition-colors"
+                        } else {
+                          "px-2.5 py-1 rounded-lg text-xs font-semibold border border-sky-200 dark:border-sky-800 bg-white dark:bg-slate-900 text-sky-700 dark:text-sky-300 hover:border-sky-400 hover:bg-sky-50/70 dark:hover:bg-sky-950/40 cursor-pointer transition-colors"
+                        },
+                        onclick: move |_| {
+                          if let Some(cb) = on_l_ffn {
+                            cb.call(start_l);
+                          }
+                          if let Some(cb) = on_f_ffn {
+                            cb.call(InspectorFocus::FfnOrMoe);
+                          }
+                        },
+                        if is_moe { "钻取 Sparse MoE →" } else { "钻取 Dense FFN →" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

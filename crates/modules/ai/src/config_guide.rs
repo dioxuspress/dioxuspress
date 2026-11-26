@@ -3001,6 +3001,7 @@ pub fn build_config_guide_payload() -> ConfigGuidePayload {
 #[cfg(feature = "server")]
 fn focus_code(f: InspectorFocus) -> &'static str {
   match f {
+    InspectorFocus::Overview => "o",
     InspectorFocus::Vision => "v",
     InspectorFocus::Audio => "a",
     InspectorFocus::Embedding => "e",
@@ -3014,6 +3015,7 @@ fn focus_code(f: InspectorFocus) -> &'static str {
 
 fn focus_from_code(s: &str) -> Option<InspectorFocus> {
   match s {
+    "o" => Some(InspectorFocus::Overview),
     "v" => Some(InspectorFocus::Vision),
     "a" => Some(InspectorFocus::Audio),
     "e" => Some(InspectorFocus::Embedding),

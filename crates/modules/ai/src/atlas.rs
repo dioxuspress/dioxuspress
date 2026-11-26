@@ -941,28 +941,28 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
         h2 { class: "text-lg font-extrabold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors",
           "{model.name}"
         }
-        div { class: "mt-0.5 text-[11px] font-mono text-slate-400 dark:text-slate-500 truncate",
+        div { class: "mt-0.5 text-xs font-mono text-slate-400 dark:text-slate-500 truncate",
           "{model.hf_repo}"
           if !model.release_date.is_empty() {
             " · {model.release_date}"
           }
         }
 
-        p { class: "mt-2.5 text-xs text-slate-600 dark:text-slate-400 line-clamp-2 leading-relaxed",
+        p { class: "mt-2.5 text-[13px] text-slate-600 dark:text-slate-400 line-clamp-2 leading-relaxed",
           "{model.localized_summary(lang)}"
         }
 
         // 4 宫格硬核指标矩阵
-        div { class: "mt-3.5 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-slate-200/70 dark:border-slate-800/80 p-2.5 font-mono",
+        div { class: "mt-3.5 grid grid-cols-2 gap-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-slate-200/70 dark:border-slate-800/80 p-3 font-mono",
           div {
-            div { class: "text-[10px] text-slate-400",
+            div { class: "text-[11px] text-slate-500 dark:text-slate-400",
               if model.modality == ModelModality::Diffusion {
                 {lang.pick("全管线 / 去噪主干", "Pipeline / Denoiser")}
               } else {
                 {lang.pick("总参数 / 激活", "Total / Active")}
               }
             }
-            div { class: "text-xs font-bold text-slate-900 dark:text-white tabular-nums",
+            div { class: "text-[13px] font-bold text-slate-900 dark:text-white tabular-nums",
               if is_sparse {
                 "{format_count(model.total_params)} / "
                 span { class: "text-amber-600 dark:text-amber-400",
@@ -974,15 +974,15 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
             }
           }
           div {
-            div { class: "text-[10px] text-slate-400",
+            div { class: "text-[11px] text-slate-500 dark:text-slate-400",
               {lang.pick("层栈 × 隐藏维", "Layers × Hidden")}
             }
-            div { class: "text-xs font-bold text-slate-900 dark:text-white tabular-nums",
+            div { class: "text-[13px] font-bold text-slate-900 dark:text-white tabular-nums",
               "{model.num_layers}L × {model.hidden_size}d"
             }
           }
           div {
-            div { class: "text-[10px] text-slate-400",
+            div { class: "text-[11px] text-slate-500 dark:text-slate-400",
               if model.modality == ModelModality::Diffusion {
                 {lang.pick("去噪状态模式", "Denoising Mode")}
               } else if model.modality == ModelModality::Embedding {
@@ -991,7 +991,7 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
                 {lang.pick("KV 压缩效率", "KV Compression")}
               }
             }
-            div { class: "text-xs font-bold text-indigo-600 dark:text-indigo-400 tabular-nums",
+            div { class: "text-[13px] font-bold text-indigo-600 dark:text-indigo-400 tabular-nums",
               if model.modality == ModelModality::Diffusion {
                 "0 KV (Latent ODE)"
               } else if model.modality == ModelModality::Embedding {
@@ -1004,31 +1004,31 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
             }
           }
           div {
-            div { class: "text-[10px] text-slate-400",
+            div { class: "text-[11px] text-slate-500 dark:text-slate-400",
               {lang.pick("FP8 预估显存", "Est. FP8 VRAM")}
             }
-            div { class: "text-xs font-bold text-slate-800 dark:text-slate-200 tabular-nums",
+            div { class: "text-[13px] font-bold text-slate-800 dark:text-slate-200 tabular-nums",
               "{format_bytes_iec(model.fp8_vram_bytes)}"
             }
           }
         }
 
         // 注意力与前馈简明签名
-        div { class: "mt-3 space-y-1 text-[11px] font-mono",
-          div { class: "truncate text-indigo-700 dark:text-indigo-300 bg-indigo-50/70 dark:bg-indigo-950/40 px-2 py-0.5 rounded",
+        div { class: "mt-3 space-y-1.5 text-xs font-mono",
+          div { class: "truncate text-indigo-700 dark:text-indigo-300 bg-indigo-50/70 dark:bg-indigo-950/40 px-2.5 py-1 rounded",
             "Attn: {model.attention_short}"
           }
-          div { class: "truncate text-amber-800 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-950/40 px-2 py-0.5 rounded",
+          div { class: "truncate text-amber-800 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-950/40 px-2.5 py-1 rounded",
             "FFN:  {model.ffn_short}"
           }
         }
       }
 
       // 卡片底栏
-      div { class: "mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs",
+      div { class: "mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[13px]",
         div { class: "flex flex-wrap gap-1",
           for tag in model.tags.iter().take(3) {
-            span { key: "{tag}", class: "px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] font-mono text-slate-500 dark:text-slate-400",
+            span { key: "{tag}", class: "px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[11px] font-mono text-slate-500 dark:text-slate-400",
               "#{tag}"
             }
           }
@@ -1048,7 +1048,7 @@ fn CuratedModelCard(model: CuratedModelSummary, show_origin: bool) -> Element {
 #[component]
 pub fn ModelDetailPage(slug: String) -> Element {
   rsx! {
-    section { class: "py-8 sm:py-10 min-h-screen bg-white dark:bg-slate-950",
+    section { class: "py-6 sm:py-8 min-h-screen bg-white dark:bg-slate-950",
       div { class: "max-w-7xl mx-auto px-4 sm:px-6",
         SuspenseBoundary {
           fallback: |_| rsx! {
@@ -1288,9 +1288,9 @@ fn ModelDetailLoaded(slug: String) -> Element {
       path: format!("/models/{}", meta.slug),
     }
 
-    div { class: "space-y-6",
+    div { class: "space-y-4",
       // 1. 顶部面包屑 + 指定模型横向一键切换导航条
-      div { class: "flex flex-col gap-3",
+      div { class: "flex flex-col gap-2.5",
         div { class: "flex flex-wrap items-center justify-between gap-2 text-xs",
           div { class: "inline-flex items-center gap-2 font-semibold text-indigo-600 dark:text-indigo-400",
             Link { to: "/models", class: "hover:underline",
@@ -1359,34 +1359,34 @@ fn ModelDetailLoaded(slug: String) -> Element {
 
       {admin_edit_modal_el}
 
-      // 2. 模型核心架构导读与工程看点卡
-      div { class: card_class("p-5 sm:p-6 bg-linear-to-r from-indigo-50/60 via-white to-slate-50/70 dark:from-indigo-950/30 dark:via-slate-900 dark:to-slate-900"),
+      // 2. 模型核心架构导读与工程看点卡（收紧高度让下方交互拓扑图在桌面首屏直接呈现）
+      div { class: card_class("p-4 sm:p-5 bg-linear-to-r from-indigo-50/60 via-white to-slate-50/70 dark:from-indigo-950/30 dark:via-slate-900 dark:to-slate-900"),
         div { class: "flex flex-wrap items-baseline justify-between gap-2",
           div { class: "flex flex-wrap items-center gap-2",
             h1 { class: "text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white",
               "{meta.name}"
             }
-            span { class: format!("px-2 py-0.5 rounded-md text-[11px] font-semibold {}", modality_badge_style(meta.modality)),
+            span { class: format!("px-2 py-0.5 rounded-md text-xs font-semibold {}", modality_badge_style(meta.modality)),
               "{meta.modality.label(lang)}"
             }
           }
           span { class: "text-xs font-mono text-slate-500 dark:text-slate-400",
             {lang.pick(
-              "提示：左侧拓扑图支持「紧凑总览 / 标准观察 / 全展开+算子」及单个模块独立收起与展开",
-              "Tip: Collapse or expand any layer segment, vision branch, or operator table on the left graph"
+              "交互路径：先看总体架构，点击左侧任意层块/模块即可在右侧钻取算子子图与权重",
+              "Flow: Start with the end-to-end overview, then click any stage on the left to inspect operator subgraphs"
             )}
           }
         }
-        p { class: "mt-2 text-sm text-slate-700 dark:text-slate-300 leading-relaxed",
+        p { class: "mt-2 text-[15px] text-slate-700 dark:text-slate-300 leading-relaxed",
           "{meta.localized_summary(lang)}"
         }
 
         if !highlights.is_empty() {
-          div { class: "mt-4 grid grid-cols-1 md:grid-cols-3 gap-2.5",
+          div { class: "mt-3.5 grid grid-cols-1 md:grid-cols-3 gap-2.5",
             for (idx, point) in highlights.iter().enumerate() {
               div {
                 key: "{idx}",
-                class: "rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white/90 dark:bg-slate-950/60 px-3.5 py-2.5 text-xs text-slate-700 dark:text-slate-300 leading-relaxed",
+                class: "rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white/90 dark:bg-slate-950/60 px-3.5 py-2.5 text-[13px] text-slate-700 dark:text-slate-300 leading-relaxed",
                 span { class: "font-mono font-bold text-indigo-600 dark:text-indigo-400 mr-1.5",
                   "0{idx + 1}."
                 }
@@ -1397,12 +1397,13 @@ fn ModelDetailLoaded(slug: String) -> Element {
         }
       }
 
-      // 3. 完整交互式架构可视化工作台（带多层级收起/展开拓扑图 + 算子放大镜 + 显存精算器）
+      // 3. 完整交互式架构可视化工作台（默认先整体架构，点击左侧按需钻取算子子图 + 显存精算器）
       ModelVisualizerWorkbench {
         key: "atlas-{meta.slug}-{detail.blueprint.source_label}",
         blueprint: detail.blueprint.clone(),
         initial_focus: None,
         embedded: false,
+        hide_identity_header: true,
       }
 
       // 4. 可选深度架构解读文档（若 `models/<slug>/README.md` 或数据库 `readme_md` 存在）

@@ -357,11 +357,12 @@ pub fn infer_math_lab_by_slug(slug: &str, mode_override: &str) -> (MathLabKind, 
 
 /// 为 `/models/:slug` 与 `/ai/visualizer` 算子检视面板推荐对应的底层数学公理推导直通链接（仅指向框架内置标杆 slug 以兼容 `basic` 档位）。
 pub fn recommended_math_links(
-  _bp: &ModelBlueprint,
+  bp: &ModelBlueprint,
   focus: InspectorFocus,
   lang: Language,
 ) -> Vec<(&'static str, &'static str, &'static str)> {
   match focus {
+    InspectorFocus::Overview => recommended_math_links(bp, bp.primary_operator_focus(), lang),
     InspectorFocus::Attention => vec![(
       "/ai/math/svd-eckart-young-pseudoinverse",
       "SVD & Low-Rank Proof",
