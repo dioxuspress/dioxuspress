@@ -299,6 +299,8 @@ fn main() {
   app_core::engines::doc_source::register_doc_source(module_ai::components_atlas::search_docs);
   #[cfg(all(feature = "server", feature = "ai"))]
   app_core::engines::doc_source::register_doc_source(module_ai::math_atlas::search_docs);
+  #[cfg(all(feature = "server", feature = "ai"))]
+  app_core::engines::doc_source::register_doc_source(module_ai::ml_atlas::search_docs);
 
   // 论文解读在数据库里，异步取。
   #[cfg(all(feature = "server", feature = "papers"))]

@@ -621,19 +621,20 @@ fn model_matches_math(model: &CuratedModelSummary, math: &StoredMathEntry) -> bo
 }
 
 #[get("/api/ai/math")]
-pub async fn list_ai_math_entries() -> Result<Vec<MathSummary>, ServerFnError> {
-  Ok(load_all_math_entries().iter().map(|e| e.meta.clone()).collect())
+pub async fn list_ai_math_entries() -> Result<String, ServerFnError> {
+  let list: Vec<MathSummary> = load_all_math_entries().iter().map(|e| e.meta.clone()).collect();
+  serde_json::to_string(&list).map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 #[get("/api/ai/math/:slug")]
-pub async fn get_ai_math_detail(slug: String) -> Result<Option<MathDetail>, ServerFnError> {
+pub async fn get_ai_math_detail(slug: String) -> Result<String, ServerFnError> {
   let clean = slug.trim();
   if !app_core::utils::is_safe_slug(clean) {
-    return Ok(None);
+    return Ok(String::new());
   }
   let all = load_all_math_entries();
   let Some(found) = all.iter().find(|e| e.meta.slug == clean) else {
-    return Ok(None);
+    return Ok(String::new());
   };
 
   let siblings: Vec<SiblingMathLink> = all
@@ -690,13 +691,14 @@ pub async fn get_ai_math_detail(slug: String) -> Result<Option<MathDetail>, Serv
     })
     .collect();
 
-  Ok(Some(MathDetail {
+  let detail = MathDetail {
     meta: found.meta.clone(),
     body_md: found.body_md.clone(),
     related_components,
     related_models,
     siblings,
-  }))
+  };
+  serde_json::to_string(&detail).map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -741,8 +743,8 @@ pub fn AiMathAtlasPage() -> Element {
 fn AiMathLoaded(title: String, desc: String) -> Element {
   let lang = current_lang();
   let res = use_server_future(list_ai_math_entries)?;
-  let items = match res() {
-    Some(Ok(list)) => list,
+  let items: Vec<MathSummary> = match res() {
+    Some(Ok(raw)) => serde_json::from_slice(raw.as_bytes()).unwrap_or_default(),
     Some(Err(_)) => {
       return rsx! {
         widgets::LoadFailed {
@@ -1012,9 +1014,18 @@ fn AiMathDetailLoaded(slug: String) -> Element {
   let lang = current_lang();
   let res = use_server_future(use_reactive!(|slug| async move { get_ai_math_detail(slug).await }))?;
 
-  let detail = match res() {
-    Some(Ok(Some(d))) => d,
-    Some(Ok(None)) => {
+  let detail: MathDetail = match res() {
+    Some(Ok(raw)) if !raw.is_empty() => match serde_json::from_slice(raw.as_bytes()) {
+      Ok(d) => d,
+      Err(_) => {
+        return rsx! {
+          widgets::LoadFailed {
+            message: lang.pick("加载数学推导详情失败", "Failed to load math proof detail").to_string(),
+          }
+        };
+      }
+    },
+    Some(Ok(_)) => {
       return rsx! {
         widgets::NotFound {
           message: lang.pick("未找到该数学推导词条", "Math proof entry not found").to_string(),

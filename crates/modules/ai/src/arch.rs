@@ -1040,8 +1040,8 @@ pub fn build_model_blueprint_with_aux(
   aux: AuxConfigFiles<'_>,
   safetensors: Option<SafetensorsSummary>,
 ) -> Result<ModelBlueprint, String> {
-  let root: Value =
-    serde_json::from_str(config_json).map_err(|e| format!("解析 config.json 失败: {e}"))?;
+  let root: Value = serde_json::from_slice(config_json.as_bytes())
+    .map_err(|e| format!("解析 config.json 失败: {e}"))?;
   let Some(root_obj) = root.as_object() else {
     return Err("config.json 根节点必须是 JSON 对象".to_string());
   };
@@ -1735,7 +1735,7 @@ mod multimodal_parsers {
     let Some(s) = raw else {
       return PreprocessorHints::default();
     };
-    let Ok(val) = serde_json::from_str::<Value>(s) else {
+    let Ok(val) = serde_json::from_slice::<Value>(s.as_bytes()) else {
       return PreprocessorHints::default();
     };
     let Some(obj) = val.as_object() else {
@@ -1756,7 +1756,7 @@ mod multimodal_parsers {
 
   pub(super) fn parse_pooling_meta(raw: Option<&str>) -> Option<(String, u64)> {
     let s = raw?;
-    let val = serde_json::from_str::<Value>(s).ok()?;
+    let val = serde_json::from_slice::<Value>(s.as_bytes()).ok()?;
     let obj = val.as_object()?;
     let dim = u64_any(obj, &["word_embedding_dimension"]).unwrap_or(0);
     let mode = if obj.get("pooling_mode_lasttoken").and_then(Value::as_bool) == Some(true) {

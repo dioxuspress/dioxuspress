@@ -28,6 +28,7 @@ nav.ai.agent = Agents
 nav.ai.rust_ai = Rust AI
 nav.ai.components = Operators Lab
 nav.ai.math = Math Foundations
+nav.ai.ml = Classic ML Atlas
 nav.ai.visualizer = Arch Visualizer
 nav.papers = Papers
 mega.col.domains = Domains

@@ -25,6 +25,7 @@ use crate::arch::{AttentionSpec, FfnSpec, OutputHeadSpec, PrecisionPreset};
 #[cfg(any(feature = "server", test))]
 use crate::atlas::CuratedModelDetail;
 #[cfg(any(feature = "server", feature = "accounts", test))]
+#[cfg(feature = "server")]
 use crate::atlas::CuratedModelSummary;
 
 /// 模型所属主模态分类（支撑 `/models` 顶部模态筛选 Tab）。
@@ -1221,14 +1222,14 @@ pub async fn polish_draft_via_llm(
 // 管理员专属 Server Functions（拉取草稿 / AI 润色 / 保存发布 / 删除，仅 `accounts` 档位启用）
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 管理员按 `owner/model` 从 HuggingFace / ModelScope 拉取蓝图并自动生成图鉴草稿。
+/// 管理员按 `owner/model` 从 HuggingFace / ModelScope 拉取蓝图并自动生成图鉴草稿（JSON 字符串，避免 CBOR 重复单态化 `ModelBlueprint`）。
 #[cfg(feature = "accounts")]
 #[post("/api/ai/models/fetch-draft")]
 pub async fn admin_fetch_model_draft(
   repo: String,
   source: String,
   revision: String,
-) -> Result<CuratedModelUpsertInput, ServerFnError> {
+) -> Result<String, ServerFnError> {
   #[cfg(feature = "server")]
   {
     let _ = app_core::session::require_admin().await?;
@@ -1258,7 +1259,7 @@ pub async fn admin_fetch_model_draft(
       draft.highlights_en = ex.meta.highlights_en;
       draft.readme_md = ex.readme_md;
     }
-    Ok(draft)
+    serde_json::to_string(&draft).map_err(|e| ServerFnError::new(e.to_string()))
   }
   #[cfg(not(feature = "server"))]
   {
@@ -1270,27 +1271,26 @@ pub async fn admin_fetch_model_draft(
 /// 管理员调用服务端配置的 LLM（OpenAI/Anthropic 兼容协议），严格基于真实架构数值润色双语简介与核心亮点。
 #[cfg(feature = "accounts")]
 #[post("/api/ai/models/ai-polish")]
-pub async fn admin_ai_polish_model_draft(
-  draft: CuratedModelUpsertInput,
-) -> Result<CuratedModelAiPolish, ServerFnError> {
+pub async fn admin_ai_polish_model_draft(draft_json: String) -> Result<String, ServerFnError> {
   #[cfg(feature = "server")]
   {
     let _ = app_core::session::require_admin().await?;
-    polish_draft_via_llm(&draft).await.map_err(ServerFnError::new)
+    let draft: CuratedModelUpsertInput = serde_json::from_slice(draft_json.as_bytes())
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    let polished = polish_draft_via_llm(&draft).await.map_err(ServerFnError::new)?;
+    serde_json::to_string(&polished).map_err(|e| ServerFnError::new(e.to_string()))
   }
   #[cfg(not(feature = "server"))]
   {
-    let _ = draft;
+    let _ = draft_json;
     Err(ServerFnError::new("server only"))
   }
 }
 
-/// 管理员保存（新增或更新）指定模型至 PostgreSQL `curated_models` 表并即时刷新全站缓存。
+/// 管理员保存（新增或更新）指定模型至 PostgreSQL `curated_models` 表并即时刷新全站缓存，返回保存成功的 `slug`。
 #[cfg(feature = "accounts")]
 #[post("/api/ai/models/save")]
-pub async fn admin_save_curated_model(
-  input: CuratedModelUpsertInput,
-) -> Result<CuratedModelSummary, ServerFnError> {
+pub async fn admin_save_curated_model(input_json: String) -> Result<String, ServerFnError> {
   #[cfg(feature = "server")]
   {
     use app_core::entities::curated_model;
@@ -1298,6 +1298,8 @@ pub async fn admin_save_curated_model(
     use sea_orm::{EntityTrait, Set};
 
     let admin = app_core::session::require_admin().await?;
+    let input: CuratedModelUpsertInput = serde_json::from_slice(input_json.as_bytes())
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
     let clean = validate_upsert_input(input).map_err(ServerFnError::new)?;
     let db = app_core::db::get_or_init_pool()
       .await
@@ -1366,33 +1368,11 @@ pub async fn admin_save_curated_model(
 
     invalidate_db_models_cache();
 
-    let is_override =
-      crate::atlas::load_curated_models_full().iter().any(|b| b.meta.slug == clean.slug);
-    let origin = if is_override { RecordOrigin::Override } else { RecordOrigin::Database };
-
-    Ok(build_curated_summary(
-      clean.slug,
-      clean.name,
-      clean.vendor,
-      Some(clean.modality),
-      clean.series,
-      clean.release_date,
-      clean.hf_repo,
-      clean.ms_repo,
-      clean.featured,
-      clean.order,
-      clean.summary,
-      clean.summary_en,
-      clean.tags,
-      clean.highlights,
-      clean.highlights_en,
-      &clean.blueprint,
-      origin,
-    ))
+    Ok(clean.slug)
   }
   #[cfg(not(feature = "server"))]
   {
-    let _ = input;
+    let _ = input_json;
     Err(ServerFnError::new("server only"))
   }
 }

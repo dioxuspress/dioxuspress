@@ -692,21 +692,20 @@ fn model_matches_component(model: &CuratedModelSummary, comp: &StoredComponentEn
 }
 
 #[get("/api/ai/components")]
-pub async fn list_ai_components() -> Result<Vec<ComponentSummary>, ServerFnError> {
-  Ok(load_all_components().iter().map(|e| e.meta.clone()).collect())
+pub async fn list_ai_components() -> Result<String, ServerFnError> {
+  let list: Vec<ComponentSummary> = load_all_components().iter().map(|e| e.meta.clone()).collect();
+  serde_json::to_string(&list).map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 #[get("/api/ai/components/:slug")]
-pub async fn get_ai_component_detail(
-  slug: String,
-) -> Result<Option<ComponentDetail>, ServerFnError> {
+pub async fn get_ai_component_detail(slug: String) -> Result<String, ServerFnError> {
   let clean = slug.trim();
   if !app_core::utils::is_safe_slug(clean) {
-    return Ok(None);
+    return Ok(String::new());
   }
   let all = load_all_components();
   let Some(found) = all.iter().find(|e| e.meta.slug == clean) else {
-    return Ok(None);
+    return Ok(String::new());
   };
   let siblings: Vec<SiblingComponentLink> = all
     .iter()
@@ -730,12 +729,13 @@ pub async fn get_ai_component_detail(
     })
     .collect();
 
-  Ok(Some(ComponentDetail {
+  let detail = ComponentDetail {
     meta: found.meta.clone(),
     body_md: found.body_md.clone(),
     related_models,
     siblings,
-  }))
+  };
+  serde_json::to_string(&detail).map_err(|e| ServerFnError::new(e.to_string()))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -780,8 +780,8 @@ pub fn AiComponentsAtlasPage() -> Element {
 fn AiComponentsLoaded(title: String, desc: String) -> Element {
   let lang = current_lang();
   let res = use_server_future(list_ai_components)?;
-  let items = match res() {
-    Some(Ok(list)) => list,
+  let items: Vec<ComponentSummary> = match res() {
+    Some(Ok(raw)) => serde_json::from_slice(raw.as_bytes()).unwrap_or_default(),
     Some(Err(_)) => {
       return rsx! {
         widgets::LoadFailed {
@@ -1024,9 +1024,18 @@ fn AiComponentDetailLoaded(slug: String) -> Element {
   let res =
     use_server_future(use_reactive!(|slug| async move { get_ai_component_detail(slug).await }))?;
 
-  let detail = match res() {
-    Some(Ok(Some(d))) => d,
-    Some(Ok(None)) => {
+  let detail: ComponentDetail = match res() {
+    Some(Ok(raw)) if !raw.is_empty() => match serde_json::from_slice(raw.as_bytes()) {
+      Ok(d) => d,
+      Err(_) => {
+        return rsx! {
+          widgets::LoadFailed {
+            message: lang.pick("加载组件详情失败", "Failed to load component detail").to_string(),
+          }
+        };
+      }
+    },
+    Some(Ok(_)) => {
       return rsx! {
         widgets::NotFound {
           message: lang.pick("未找到该算子或组件词条", "Component entry not found").to_string(),
