@@ -595,6 +595,9 @@ pub fn ModelVisualizerWorkbench(
                   "{blueprint.repo_id}"
                 }
               }
+              span { class: "px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 text-xs font-semibold",
+                "{blueprint.modality_badge_label()}"
+              }
               span { class: badge_class(BadgeVariant::Default, "text-xs"),
                 "{blueprint.family_badge_label()}"
               }

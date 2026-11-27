@@ -808,6 +808,45 @@ fn contains_ascii_ci(hay: &str, needle: &[u8]) -> bool {
 }
 
 impl ModelBlueprint {
+  /// 返回与主干架构正交的模态徽章（清晰区分图文多模态 VLM、纯文本 LLM、2D 生图、3D 视频、语音与向量重排）。
+  pub fn modality_badge_label(&self) -> &'static str {
+    if self.is_diffusion_pipeline() {
+      if self.diffusion.as_ref().is_some_and(|d| d.is_video) {
+        return "Video 视频生成";
+      }
+      return "Image 图像生成";
+    }
+    match self.family {
+      ArchFamily::SpeechTtsOmni => {
+        if self.vision.is_some() {
+          "Omni 全模态"
+        } else {
+          "TTS 语音合成"
+        }
+      }
+      ArchFamily::AudioAsr => "Audio ASR 语音",
+      ArchFamily::EncoderEmbedding => {
+        if matches!(self.output_head, OutputHeadSpec::SequenceScorer { .. }) {
+          "Reranker 重排"
+        } else {
+          "Embedding 向量"
+        }
+      }
+      ArchFamily::DeclarativeGraph => "经典 / CV 图谱",
+      _ => {
+        if self.vision.is_some() && self.audio.is_some() {
+          "Omni 多模态"
+        } else if self.vision.is_some() {
+          "VLM 图文多模态"
+        } else if self.audio.is_some() {
+          "Audio-LLM 语音"
+        } else {
+          "LLM 语言模型"
+        }
+      }
+    }
+  }
+
   /// 返回去厂商误标的准确架构徽章（避免将非 DeepSeek 的 MLA 模型标成 DeepSeek、或将非 Qwen 的 MoE 标成 Qwen）。
   pub fn family_badge_label(&self) -> &'static str {
     let mt = self.model_type.as_str();
@@ -4116,6 +4155,24 @@ mod diffusion_parser {
     build_diffusion_pipeline_blueprint(repo_id, source_label, &synth_index, &comps, safetensors)
   }
 
+  /// 严格词边界匹配 `"3d"` 令牌（要求前面不是字母或数字，避免将 `MiniMaxH3DiTModel` 中的 `h3d` 误判为 3D 视频模型）。
+  fn contains_3d_token(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() < 2 {
+      return false;
+    }
+    for i in 0..=(bytes.len() - 2) {
+      if bytes[i] == b'3' && bytes[i + 1].eq_ignore_ascii_case(&b'd') {
+        let prev_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        let next_ok = i + 2 >= bytes.len() || !bytes[i + 2].is_ascii_lowercase();
+        if prev_ok && next_ok {
+          return true;
+        }
+      }
+    }
+    false
+  }
+
   fn parse_conditioner_component(
     slot: &str,
     class_name: &str,
@@ -4128,6 +4185,16 @@ mod diffusion_parser {
       let layers = u64_any(sub, &["num_hidden_layers", "num_layers"]).unwrap_or(12);
       let vocab = u64_any(sub, &["vocab_size"]).unwrap_or(49_408);
       let ffn = u64_any(sub, &["intermediate_size", "d_ff"]).unwrap_or(d * 4);
+      let heads = u64_any(sub, &["num_attention_heads", "num_heads"]).unwrap_or(0);
+      let kv_heads = u64_any(sub, &["num_key_value_heads", "num_kv_heads"]).unwrap_or(heads);
+      let head_dim = u64_any(sub, &["head_dim"]).unwrap_or(if heads > 0 { d / heads } else { 0 });
+      let attn_per_layer = if heads > 0 && head_dim > 0 {
+        let q_out = heads * head_dim;
+        let kv_out = kv_heads.max(1) * head_dim;
+        2 * d * q_out + 2 * d * kv_out
+      } else {
+        4 * d * d
+      };
       let is_gated = sub.get("is_gated_act").and_then(Value::as_bool).unwrap_or(false)
         || sub
           .get("feed_forward_proj")
@@ -4138,12 +4205,35 @@ mod diffusion_parser {
         || cl.contains("gemma")
         || cl.contains("mistral");
       let ffn_mats = if is_gated { 3 } else { 2 };
-      let est = vocab * d + layers * (4 * d * d + ffn_mats * d * ffn);
+      let untied_head = if c
+        .get("tie_word_embeddings")
+        .or_else(|| sub.get("tie_word_embeddings"))
+        .and_then(Value::as_bool)
+        == Some(false)
+      {
+        vocab * d
+      } else {
+        0
+      };
+      let vision_params = c
+        .get("vision_config")
+        .and_then(Value::as_object)
+        .and_then(|vc| parse_vision_spec(vc, d, &PreprocessorHints::default()))
+        .map(|v| v.estimated_params)
+        .unwrap_or(0);
+      let est = vocab * d
+        + untied_head
+        + vision_params
+        + layers * (attn_per_layer + ffn_mats * d * ffn);
       return PipelineComponentSpec {
         slot: slot.to_string(),
         class_name: class_name.to_string(),
         role: "conditioner".to_string(),
-        spec_summary: format!("{layers}L × {d}d (FFN={ffn})"),
+        spec_summary: if vision_params > 0 {
+          format!("{layers}L × {d}d + Vision (FFN={ffn})")
+        } else {
+          format!("{layers}L × {d}d (FFN={ffn})")
+        },
         estimated_params: est,
       };
     }
@@ -4205,12 +4295,15 @@ mod diffusion_parser {
     is_video_hint: bool,
   ) -> (PipelineComponentSpec, u64, u64, u64) {
     let cl = class_name.to_ascii_lowercase();
-    let is_3d = is_video_hint
-      || cl.contains("wan")
-      || cl.contains("hunyuan")
-      || cl.contains("cogvideo")
-      || cl.contains("video")
-      || cl.contains("3d");
+    let explicit_2d =
+      cl.contains("image") || cfg_opt.and_then(|c| c.get("vit_decoder_2d")).and_then(Value::as_bool) == Some(true);
+    let is_3d = !explicit_2d
+      && (is_video_hint
+        || cl.contains("wan")
+        || cl.contains("hunyuan")
+        || cl.contains("cogvideo")
+        || cl.contains("video")
+        || contains_3d_token(class_name));
 
     let latent_ch = cfg_opt
       .and_then(|c| u64_any(c, &["latent_channels", "z_dim"]))
@@ -4226,9 +4319,21 @@ mod diffusion_parser {
     } else {
       1
     };
-    let est = if is_3d { 127_000_000 } else { 83_800_000 };
+    let vit_dec_params = cfg_opt
+      .and_then(|c| c.get("vit_decoder_kwargs").and_then(Value::as_object))
+      .map(|vk| {
+        let vl = u64_any(vk, &["num_layers", "depth"]).unwrap_or(24);
+        let vh = u64_any(vk, &["heads", "num_heads"]).unwrap_or(16);
+        let vdh = u64_any(vk, &["dim_head", "head_dim"]).unwrap_or(64);
+        let vd = (vh * vdh).max(256);
+        // ViT Decoder 块（Attention 4d² + FFN ~8d²）+ 对称/卷积 Encoder 估算
+        vl * 12 * vd * vd + 280_000_000
+      });
+    let est = vit_dec_params.unwrap_or(if is_3d { 127_000_000 } else { 83_800_000 });
     let summary = if is_3d {
       format!("{latent_ch}ch 3D Causal Latent ({temporal_comp}×{spatial_comp}×{spatial_comp})")
+    } else if vit_dec_params.is_some() {
+      format!("{latent_ch}ch 2D ViT Latent ({spatial_comp}×{spatial_comp} Spatial)")
     } else {
       format!("{latent_ch}ch 2D Latent ({spatial_comp}×{spatial_comp} Spatial)")
     };
@@ -4255,6 +4360,7 @@ mod diffusion_parser {
     safetensors: Option<SafetensorsSummary>,
   ) -> Result<ModelBlueprint, String> {
     let (pipeline_class, slots) = extract_diffusion_slots(model_index_json)?;
+    let index_root_val = serde_json::from_str::<Value>(model_index_json).ok();
     let mut parsed_cfgs: std::collections::HashMap<String, Value> =
       std::collections::HashMap::new();
     for (slot, raw) in component_configs {
@@ -4264,12 +4370,25 @@ mod diffusion_parser {
     }
 
     let pipe_lc = format!("{} {}", pipeline_class, repo_id).to_ascii_lowercase();
-    let mut is_video = pipe_lc.contains("video")
-      || pipe_lc.contains("wan")
-      || pipe_lc.contains("t2v")
-      || pipe_lc.contains("i2v")
-      || pipe_lc.contains("cogvideo")
-      || pipe_lc.contains("ltx");
+    let explicit_image_pipe = (pipe_lc.contains("image") && !pipe_lc.contains("video"))
+      || index_root_val
+        .as_ref()
+        .and_then(Value::as_object)
+        .is_some_and(|obj| {
+          obj.values().any(|v| {
+            v.as_object()
+              .and_then(|m| m.get("partition"))
+              .and_then(Value::as_str)
+              .is_some_and(|p| p.eq_ignore_ascii_case("image"))
+          })
+        });
+    let mut is_video = !explicit_image_pipe
+      && (pipe_lc.contains("video")
+        || pipe_lc.contains("wan")
+        || pipe_lc.contains("t2v")
+        || pipe_lc.contains("i2v")
+        || pipe_lc.contains("cogvideo")
+        || pipe_lc.contains("ltx"));
 
     let mut components: Vec<PipelineComponentSpec> = Vec::new();
     let mut conditioner_params = 0u64;
@@ -4278,7 +4397,9 @@ mod diffusion_parser {
     let mut vae_slot_cls: Option<(String, String)> = None;
 
     for (slot, cls) in &slots {
-      if cls.to_ascii_lowercase().contains("3d") || cls.to_ascii_lowercase().contains("video") {
+      if !explicit_image_pipe
+        && (contains_3d_token(cls) || cls.to_ascii_lowercase().contains("video"))
+      {
         is_video = true;
       }
       match diffusion_slot_role(slot, cls) {
@@ -4319,7 +4440,9 @@ mod diffusion_parser {
     });
     let den_obj = parsed_cfgs.get(&den_slot).and_then(Value::as_object);
     let den_lc = den_cls.to_ascii_lowercase();
-    if den_lc.contains("3d") || den_lc.contains("wan") || den_lc.contains("hunyuanvideo") {
+    if !explicit_image_pipe
+      && (contains_3d_token(&den_cls) || den_lc.contains("wan") || den_lc.contains("hunyuanvideo"))
+    {
       is_video = true;
     }
 
@@ -4479,7 +4602,11 @@ mod diffusion_parser {
           let dims: Vec<String> =
             arr.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect();
           if !dims.is_empty() {
-            patch_summary = format!("[{}] 3D Patchify", dims.join("×"));
+            patch_summary = if is_video {
+              format!("[{}] 3D Patchify", dims.join("×"))
+            } else {
+              format!("[{}] 2D Patchify", dims.join("×"))
+            };
           }
         } else if let Some(p) = u64_any(c, &["patch_size"]) {
           if let Some(pt) = u64_any(c, &["patch_size_t"]) {
@@ -4622,21 +4749,69 @@ mod diffusion_parser {
           "Diffusion Transformer (DiT)".to_string()
         };
         let ffn_dim = den_obj
-          .and_then(|c| u64_any(c, &["ffn_dim", "intermediate_size"]))
+          .and_then(|c| u64_any(c, &["ffn_dim", "ffn_hidden_size", "intermediate_size"]))
           .unwrap_or(hidden_size * 4);
-        let has_cross = den_obj.is_none_or(|c| {
-          c.contains_key("text_dim") || c.contains_key("cross_attention_dim") || is_video
+        let attn_dim = (heads * head_dim).max(hidden_size);
+        let refiner_layers =
+          den_obj.and_then(|c| u64_any(c, &["token_refiner_num_layers"])).unwrap_or(0);
+        let l2_has_separate_cross = safetensors.as_ref().is_some_and(|st| {
+          st.patterns.iter().any(|p| {
+            p.example_name.contains("attn2")
+              || p.example_name.contains("cross_attn")
+              || p.example_name.contains("encoder_attn")
+          })
         });
+        let l2_has_single_qkv = safetensors.as_ref().is_some_and(|st| {
+          st.patterns.iter().any(|p| p.example_name.contains("attn.qkv_proj"))
+        });
+        let has_cross = if l2_has_separate_cross {
+          true
+        } else if l2_has_single_qkv || refiner_layers > 0 {
+          false
+        } else {
+          den_obj.is_none_or(|c| {
+            c.contains_key("text_dim") || c.contains_key("cross_attention_dim") || is_video
+          })
+        };
+        let l2_gated_ffn = safetensors.as_ref().is_some_and(|st| {
+          st.patterns.iter().any(|p| {
+            (p.example_name.contains("mlp.fc1.") || p.example_name.contains("gate_proj"))
+              && p.shape.as_ref().and_then(|s| s.first().copied()) == Some(ffn_dim * 2)
+          })
+        });
+        let is_gated_dit_ffn = l2_gated_ffn
+          || den_obj.is_some_and(|c| {
+            c.get("ffn_use_gated").and_then(Value::as_bool) == Some(true)
+              || (c.contains_key("ffn_hidden_size") && c.contains_key("adaln_out_features"))
+          });
+        let ffn_mats = if is_gated_dit_ffn { 3 } else { 2 };
         let attn_mats = if has_cross { 8 } else { 4 };
+        let total_dit_blocks = double_layers + refiner_layers;
         let d2 = hidden_size * hidden_size;
-        denoiser_attn_params = double_layers * attn_mats * d2;
-        denoiser_ffn_params = double_layers * 2 * hidden_size * ffn_dim;
-        denoiser_mod_params = double_layers * 6 * hidden_size * 256 + 8 * d2;
+        denoiser_attn_params = total_dit_blocks * attn_mats * hidden_size * attn_dim;
+        denoiser_ffn_params = total_dit_blocks * ffn_mats * hidden_size * ffn_dim;
+        let adaln_out = den_obj.and_then(|c| u64_any(c, &["adaln_out_features"])).unwrap_or(0);
+        denoiser_mod_params = if adaln_out > 0 {
+          let mod_in = den_obj
+            .and_then(|c| u64_any(c, &["time_embed_dim", "time_embed_hidden_size"]))
+            .unwrap_or(hidden_size);
+          let final_adaln =
+            den_obj.and_then(|c| u64_any(c, &["final_adaln_out_features"])).unwrap_or(2 * hidden_size);
+          let text_d = den_obj.and_then(|c| u64_any(c, &["text_dim"])).unwrap_or(hidden_size);
+          double_layers * adaln_out * mod_in
+            + final_adaln * mod_in
+            + hidden_size * mod_in
+            + hidden_size * text_d
+        } else {
+          double_layers * 6 * hidden_size * 256 + 8 * d2
+        };
         segments = vec![LayerSegment {
           start_layer: 0,
           end_layer: double_layers - 1,
           title: if is_video {
             format!("3D 时空视频去噪层栈 (3D Full-Attn + CrossAttn ×{double_layers})")
+          } else if refiner_layers > 0 {
+            format!("DiT 2D 空间去噪层栈 (DiT ×{double_layers} + Refiner ×{refiner_layers})")
           } else {
             format!("DiT 空间去噪层栈 (DiT Blocks ×{double_layers})")
           },
@@ -4655,10 +4830,10 @@ mod diffusion_parser {
           },
           ffn: FfnSpec::DenseGated {
             intermediate_size: ffn_dim,
-            act_fn: "gelu_tanh".to_string(),
-            bias: true,
-            fused_gate_up: false,
-            is_gated: false,
+            act_fn: if is_gated_dit_ffn { "swiglu".to_string() } else { "gelu_tanh".to_string() },
+            bias: !is_gated_dit_ffn,
+            fused_gate_up: is_gated_dit_ffn,
+            is_gated: is_gated_dit_ffn,
           },
           norms_per_layer: 2,
           schedule_note: Some(if is_video {
@@ -5821,5 +5996,140 @@ mod tests {
     assert_eq!(l2_bp.segments.len(), 2);
     assert_eq!(l2_bp.segments[0].layer_count(), 24);
     assert_eq!(l2_bp.segments[1].layer_count(), 8);
+  }
+
+  #[test]
+  fn parses_minimax_h3_image_2d_dit_accurately_and_separates_modalities() {
+    let model_index = r#"{
+      "_class_name": "MiniMaxH3ImagePipeline",
+      "_minimax_h3": { "partition": "image", "tasks": ["t2i", "edit"] },
+      "text_encoder": ["transformers", "Qwen3VLForConditionalGeneration"],
+      "transformer": ["diffusers", "MiniMaxH3DiTModel"],
+      "vae": ["diffusers", "MiniMaxH3ImageVAE"]
+    }"#;
+    let comps = vec![
+      (
+        "transformer".to_string(),
+        r#"{
+          "_class_name": "MiniMaxH3DiTModel",
+          "hidden_size": 5376,
+          "num_layers": 50,
+          "token_refiner_num_layers": 2,
+          "num_attention_heads": 56,
+          "attention_head_dim": 128,
+          "ffn_hidden_size": 14336,
+          "latents_dim": 24,
+          "patch_size": [1, 2, 2],
+          "text_dim": 5120,
+          "time_embed_hidden_size": 5376,
+          "time_embed_dim": 2688,
+          "adaln_out_features": 96768,
+          "final_adaln_out_features": 10752
+        }"#
+        .to_string(),
+      ),
+      (
+        "text_encoder".to_string(),
+        r#"{
+          "architectures": ["Qwen3VLForConditionalGeneration"],
+          "model_type": "qwen3_vl",
+          "tie_word_embeddings": false,
+          "text_config": {
+            "hidden_size": 5120,
+            "intermediate_size": 25600,
+            "num_hidden_layers": 64,
+            "num_attention_heads": 64,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "vocab_size": 151936
+          },
+          "vision_config": {
+            "depth": 27,
+            "hidden_size": 1152,
+            "intermediate_size": 4304,
+            "num_heads": 16,
+            "patch_size": 16,
+            "spatial_merge_size": 2
+          }
+        }"#
+        .to_string(),
+      ),
+      (
+        "vae".to_string(),
+        r#"{
+          "_class_name": "MiniMaxH3ImageVAE",
+          "latent_channels": 24,
+          "vit_decoder_2d": true,
+          "vit_decoder_kwargs": {
+            "dim_head": 64,
+            "heads": 16,
+            "num_layers": 24,
+            "ffn_use_gated": true
+          }
+        }"#
+        .to_string(),
+      ),
+    ];
+
+    let ok_st = SafetensorsSummary {
+      l2_estimated_params: Some(33_140_000_000),
+      ..SafetensorsSummary::default()
+    };
+    let bp = build_diffusion_pipeline_blueprint(
+      "MiniMax/MiniMax-H3-Image",
+      "ModelScope",
+      model_index,
+      &comps,
+      Some(ok_st),
+    )
+    .expect("minimax h3 image");
+
+    let diff = bp.diffusion.as_ref().expect("diffusion spec");
+    assert!(!diff.is_video, "MiniMaxH3DiTModel must NOT be misclassified as 3D video");
+    assert_eq!(bp.modality_badge_label(), "Image 图像生成");
+    assert!(diff.patch_summary.contains("2D Patchify"));
+    // Real DiT = 33.14B, real Qwen3-VL TE = 33.36B, real VAE = 584M -> total ~67.1B
+    assert!(
+      bp.params.active_params > 32_000_000_000 && bp.params.active_params < 34_200_000_000,
+      "DiT active_params should match ~33.14B, got {}",
+      bp.params.active_params
+    );
+    assert!(
+      bp.params.total_params > 65_500_000_000 && bp.params.total_params < 68_500_000_000,
+      "Pipeline total_params should match ~67.08B, got {}",
+      bp.params.total_params
+    );
+    assert!(bp.parse_warning.is_none(), "unexpected warning: {:?}", bp.parse_warning);
+
+    // 红灯验证：若去噪主干 L2 与 L1 偏差 > 20%，Diffusers 管线也必须触发告警
+    let bad_st = SafetensorsSummary {
+      l2_estimated_params: Some(15_000_000_000),
+      ..SafetensorsSummary::default()
+    };
+    let bp_bad = build_diffusion_pipeline_blueprint(
+      "MiniMax/MiniMax-H3-Image",
+      "ModelScope",
+      model_index,
+      &comps,
+      Some(bad_st),
+    )
+    .expect("minimax h3 mismatch");
+    assert!(
+      bp_bad.parse_warning.as_deref().is_some_and(|w| w.contains("去噪主干参数量偏差较大")),
+      "expected diffusers L1/L2 warning, got {:?}",
+      bp_bad.parse_warning
+    );
+
+    // 校验正交模态标签区分 LLM vs VLM
+    let llm_bp = load_builtin_preset("llama-3.1-8b").unwrap();
+    assert_eq!(llm_bp.modality_badge_label(), "LLM 语言模型");
+    let vlm_cfg = r#"{
+      "architectures": ["Qwen2_5_VLForConditionalGeneration"],
+      "model_type": "qwen2_5_vl",
+      "vision_config": { "hidden_size": 1280, "depth": 32, "num_heads": 16, "intermediate_size": 3420 },
+      "text_config": { "hidden_size": 3584, "num_hidden_layers": 28, "num_attention_heads": 28, "num_key_value_heads": 4, "intermediate_size": 18944, "vocab_size": 152064 }
+    }"#;
+    let vlm_bp = build_model_blueprint("Qwen/Qwen2.5-VL-7B", "HF", vlm_cfg, None, None, None).unwrap();
+    assert_eq!(vlm_bp.modality_badge_label(), "VLM 图文多模态");
   }
 }
