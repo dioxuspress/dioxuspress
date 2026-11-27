@@ -2,8 +2,8 @@
 //!
 //! 核心保障（杜绝静默传播错误知识）：
 //! 1. **存量巡检安全闸门**：重跑已收录模型时，若新校验结果退化为 `Partial` / `Unverified`，
-//!    **绝不覆盖线上已通过核验的 `blueprint_json`**，仅写入 `model_audit_queue` 报警；
-//! 2. **热门新模型自动分流**：拉取 HuggingFace Trending 开源模型，过滤纯量化转码仓（GGUF/AWQ/EXL2 等），
+//!    **绝不覆盖线上已通过核验的 `blueprint_json`**，仅写入 `model_audit_queue` 报警；支持 `hf_repo` 与 `ms_repo` 双源回退；
+//! 2. **热门新模型自动分流**：拉取 HuggingFace Trending 与 ModelScope 热门开源模型，过滤纯量化转码仓（GGUF/AWQ/EXL2 等）并跨源去重，
 //!    🟢 全绿进入 `verified_candidate`，🟡/🔴 一律拦截进 `pending_review` 并附上 `modeling_*.py` 源码直链与完整诊断证据包；
 //! 3. **零幻觉证据包**：所有数值、Shape 冲突、L2 未建模张量族与 `config.json` 未知字段全部来自确定性 Rust 校验器。
 
@@ -242,6 +242,126 @@ pub async fn fetch_trending_open_models(limit: usize) -> Result<Vec<String>, Str
   Ok(out)
 }
 
+/// 从 ModelScope Dolphin 热门榜 JSON 中提取原生开源模型候选列表（纯函数，便于单测）。
+pub fn parse_modelscope_trending_models(val: &Value, limit: usize) -> Vec<String> {
+  let Some(items) = val.pointer("/Data/Model/Models").and_then(Value::as_array) else {
+    return Vec::new();
+  };
+  let mut out = Vec::new();
+  let mut seen = std::collections::HashSet::new();
+  for item in items {
+    if item.get("IsAccessible").and_then(Value::as_bool) == Some(false) {
+      continue;
+    }
+    let Some(path) = item.get("Path").and_then(Value::as_str).map(str::trim) else {
+      continue;
+    };
+    let Some(name) = item.get("Name").and_then(Value::as_str).map(str::trim) else {
+      continue;
+    };
+    if path.is_empty() || name.is_empty() {
+      continue;
+    }
+    let id = format!("{path}/{name}");
+    if !is_original_arch_candidate(&id) {
+      continue;
+    }
+    if seen.insert(id.to_ascii_lowercase()) {
+      out.push(id);
+      if out.len() >= limit {
+        break;
+      }
+    }
+  }
+  out
+}
+
+/// 从 ModelScope 热门榜 API 抓取近期热门开源模型候选列表（已过滤 GGUF/纯量化转码仓）。
+pub async fn fetch_modelscope_trending_open_models(limit: usize) -> Result<Vec<String>, String> {
+  let client = audit_http_client()?;
+  let fetch_n = (limit.saturating_mul(3)).clamp(15, 60);
+  let url = "https://modelscope.cn/api/v1/dolphin/models";
+  let payload = serde_json::json!({
+    "PageSize": fetch_n,
+    "PageNumber": 1,
+    "SortBy": "Default"
+  });
+  let resp = client
+    .put(url)
+    .json(&payload)
+    .send()
+    .await
+    .map_err(|e| format!("拉取 ModelScope 热门榜失败: {e}"))?;
+  if !resp.status().is_success() {
+    return Err(format!("ModelScope 热门榜 API 返回 HTTP {}", resp.status().as_u16()));
+  }
+  let val: Value =
+    resp.json().await.map_err(|e| format!("解析 ModelScope 热门榜 JSON 失败: {e}"))?;
+  Ok(parse_modelscope_trending_models(&val, limit))
+}
+
+/// 将 HuggingFace 与 ModelScope 热门候选交替合并并按 `repo_id` 大小写去重，确保双源均衡巡检。
+pub fn merge_trending_candidates(
+  hf: Vec<String>,
+  ms: Vec<String>,
+  limit: usize,
+) -> Vec<(String, &'static str)> {
+  let mut out = Vec::new();
+  let mut seen = std::collections::HashSet::new();
+  let mut hf_it = hf.into_iter();
+  let mut ms_it = ms.into_iter();
+  while out.len() < limit {
+    let mut progressed = false;
+    if let Some(repo) = hf_it.next() {
+      progressed = true;
+      if seen.insert(repo.to_ascii_lowercase()) {
+        out.push((repo, "hf"));
+        if out.len() >= limit {
+          break;
+        }
+      }
+    }
+    if let Some(repo) = ms_it.next() {
+      progressed = true;
+      if seen.insert(repo.to_ascii_lowercase()) {
+        out.push((repo, "modelscope"));
+        if out.len() >= limit {
+          break;
+        }
+      }
+    }
+    if !progressed {
+      break;
+    }
+  }
+  out
+}
+
+/// 为数据库 `curated_models` 单条记录计算按优先级排列的核验目标 `(repo_id, source)`：
+/// - 配置了 `hf_repo`：优先走 `auto`（HF -> HF-Mirror -> ModelScope 同名回退）；
+/// - 若另配置了不同名的 `ms_repo`：作为第二候选回退源（走 `modelscope`）；
+/// - 若仅配置了 `ms_repo`（`hf_repo` 为空）：直接走 `modelscope`。
+pub fn select_curated_audit_targets(
+  hf_repo: &str,
+  ms_repo: Option<&str>,
+) -> Vec<(String, &'static str)> {
+  let mut targets = Vec::new();
+  let hf = hf_repo.trim();
+  if !hf.is_empty() && hf.contains('/') {
+    targets.push((hf.to_string(), "auto"));
+  }
+  if let Some(ms_raw) = ms_repo {
+    let ms = ms_raw.trim();
+    if !ms.is_empty() && ms.contains('/') {
+      let same_as_hf = !hf.is_empty() && ms.eq_ignore_ascii_case(hf);
+      if targets.is_empty() || !same_as_hf {
+        targets.push((ms.to_string(), "modelscope"));
+      }
+    }
+  }
+  targets
+}
+
 /// 对单个上游模型执行实时 L1×L2 硬校验并产出完整诊断证据包（零数据库依赖）。
 pub async fn check_single_repo(
   repo: &str,
@@ -332,23 +452,34 @@ pub async fn audit_curated_models(
 
   let mut stats = AuditRunSummary::default();
   for row in rows {
-    let repo = row.hf_repo.trim().to_string();
-    if repo.is_empty() || !repo.contains('/') {
+    let targets = select_curated_audit_targets(&row.hf_repo, row.ms_repo.as_deref());
+    if targets.is_empty() {
       continue;
     }
     stats.checked += 1;
-    let src = if row.ms_repo.as_deref().is_some_and(|s| !s.trim().is_empty()) && repo.is_empty() {
-      "modelscope"
-    } else {
-      "auto"
-    };
-    match check_single_repo(&repo, src, "").await {
-      Ok((_bp, evidence)) => match evidence.verification.status {
+
+    let mut fetched: Option<(String, &'static str, AuditEvidence)> = None;
+    let mut last_err = String::new();
+    for (repo, src) in targets {
+      match check_single_repo(&repo, src, "").await {
+        Ok((_bp, evidence)) => {
+          fetched = Some((repo, src, evidence));
+          break;
+        }
+        Err(err) => {
+          last_err = err;
+        }
+      }
+    }
+
+    match fetched {
+      Some((repo, src, evidence)) => match evidence.verification.status {
         VerificationStatus::Verified | VerificationStatus::CuratedVerified => {
           stats.verified += 1;
           tracing::info!(
             slug = %row.slug,
             repo = %repo,
+            source = %src,
             status = %evidence.verification.status.as_str(),
             "models-audit: curated model verified"
           );
@@ -371,6 +502,7 @@ pub async fn audit_curated_models(
           tracing::warn!(
             slug = %row.slug,
             repo = %repo,
+            source = %src,
             headline = %evidence.verification.headline,
             "models-audit: curated model downgraded to partial; preserving live blueprint and queueing review"
           );
@@ -385,6 +517,7 @@ pub async fn audit_curated_models(
           tracing::error!(
             slug = %row.slug,
             repo = %repo,
+            source = %src,
             headline = %evidence.verification.headline,
             "models-audit: curated model triggered circuit breaker; preserving live blueprint and queueing review"
           );
@@ -395,28 +528,74 @@ pub async fn audit_curated_models(
           }
         }
       },
-      Err(err) => {
+      None => {
         stats.errors += 1;
-        tracing::warn!(slug = %row.slug, repo = %repo, error = %err, "models-audit: fetch failed");
+        tracing::warn!(
+          slug = %row.slug,
+          hf_repo = %row.hf_repo,
+          ms_repo = ?row.ms_repo,
+          error = %last_err,
+          "models-audit: fetch failed across configured sources"
+        );
       }
     }
   }
   Ok(stats)
 }
 
-/// 发现并预审 HuggingFace Trending 开源新模型，按校验等级自动分流进 `model_audit_queue`。
+/// 发现并预审 HuggingFace / ModelScope 热门开源新模型，按校验等级自动分流进 `model_audit_queue`。
+/// `trending_source` 支持 `"all"`（默认，HF + ModelScope 交替合并）、`"hf"`、`"modelscope"`。
 pub async fn discover_and_audit_trending(
   db: Option<&sea_orm::DatabaseConnection>,
+  trending_source: &str,
   limit: usize,
   dry_run: bool,
 ) -> Result<(AuditRunSummary, Vec<AuditEvidence>), String> {
-  let repos = fetch_trending_open_models(limit).await?;
+  let mode = trending_source.trim().to_ascii_lowercase();
+  let candidates: Vec<(String, &'static str)> = match mode.as_str() {
+    "hf" | "huggingface" => {
+      fetch_trending_open_models(limit).await?.into_iter().map(|r| (r, "hf")).collect()
+    }
+    "ms" | "modelscope" => fetch_modelscope_trending_open_models(limit)
+      .await?
+      .into_iter()
+      .map(|r| (r, "modelscope"))
+      .collect(),
+    "" | "all" | "both" => {
+      let (hf_res, ms_res) = tokio::join!(
+        fetch_trending_open_models(limit),
+        fetch_modelscope_trending_open_models(limit)
+      );
+      let hf = match hf_res {
+        Ok(list) => list,
+        Err(err) => {
+          tracing::warn!(error = %err, "models-audit: HF trending fetch failed, continuing with ModelScope");
+          Vec::new()
+        }
+      };
+      let ms = match ms_res {
+        Ok(list) => list,
+        Err(err) => {
+          tracing::warn!(error = %err, "models-audit: ModelScope trending fetch failed, continuing with HF");
+          Vec::new()
+        }
+      };
+      if hf.is_empty() && ms.is_empty() {
+        return Err("HuggingFace 与 ModelScope 热门榜均拉取失败或为空".to_string());
+      }
+      merge_trending_candidates(hf, ms, limit)
+    }
+    other => {
+      return Err(format!("未知 --trending-source 值: {other}（可选 all | hf | modelscope）"));
+    }
+  };
+
   let mut stats = AuditRunSummary::default();
   let mut evidences = Vec::new();
 
-  for repo in repos {
+  for (repo, src) in candidates {
     stats.checked += 1;
-    match check_single_repo(&repo, "hf", "").await {
+    match check_single_repo(&repo, src, "").await {
       Ok((_bp, evidence)) => {
         match evidence.verification.status {
           VerificationStatus::Verified | VerificationStatus::CuratedVerified => {
@@ -427,8 +606,8 @@ pub async fn discover_and_audit_trending(
         }
         if !dry_run {
           if let Some(conn) = db {
-            if let Err(e) = upsert_audit_queue_row(conn, "hf", &evidence).await {
-              tracing::warn!(repo = %repo, error = %e, "models-audit: upsert trending row failed");
+            if let Err(e) = upsert_audit_queue_row(conn, src, &evidence).await {
+              tracing::warn!(repo = %repo, source = %src, error = %e, "models-audit: upsert trending row failed");
             }
           }
         }
@@ -436,7 +615,12 @@ pub async fn discover_and_audit_trending(
       }
       Err(err) => {
         stats.errors += 1;
-        tracing::info!(repo = %repo, error = %err, "models-audit: skipped non-standard or unavailable trending repo");
+        tracing::info!(
+          repo = %repo,
+          source = %src,
+          error = %err,
+          "models-audit: skipped non-standard or unavailable trending repo"
+        );
       }
     }
   }
@@ -467,5 +651,63 @@ mod tests {
     assert_eq!(queue_status_for(VerificationStatus::Unverified), "pending_review");
     assert_eq!(ev.config_fingerprint.len(), 16);
     assert_eq!(ev.modeling_files.len(), 1);
+  }
+
+  #[test]
+  fn parses_modelscope_trending_and_merges_dual_sources() {
+    let payload = serde_json::json!({
+      "Data": {
+        "Model": {
+          "Models": [
+            { "Path": "MiniMax", "Name": "MiniMax-H3-Image", "IsAccessible": true },
+            { "Path": "private-org", "Name": "Secret-Model", "IsAccessible": false },
+            { "Path": "bartowski", "Name": "Qwen3-8B-GGUF", "IsAccessible": true },
+            { "Path": "moonshotai", "Name": "Kimi-K3.1-Pro", "IsAccessible": true },
+            { "Path": "MiniMax", "Name": "minimax-h3-image", "IsAccessible": true }
+          ]
+        }
+      }
+    });
+    let ms = parse_modelscope_trending_models(&payload, 10);
+    assert_eq!(ms, vec!["MiniMax/MiniMax-H3-Image", "moonshotai/Kimi-K3.1-Pro"]);
+
+    let hf = vec![
+      "Aleph-Alpha/Kolibri-1.1".to_string(),
+      "moonshotai/kimi-k3.1-pro".to_string(),
+      "inclusionAI/Ling-3.2-air".to_string(),
+    ];
+    let merged = merge_trending_candidates(hf, ms, 4);
+    assert_eq!(
+      merged,
+      vec![
+        ("Aleph-Alpha/Kolibri-1.1".to_string(), "hf"),
+        ("MiniMax/MiniMax-H3-Image".to_string(), "modelscope"),
+        ("moonshotai/kimi-k3.1-pro".to_string(), "hf"),
+        ("inclusionAI/Ling-3.2-air".to_string(), "hf"),
+      ]
+    );
+  }
+
+  #[test]
+  fn selects_curated_targets_with_modelscope_fallback() {
+    assert_eq!(
+      select_curated_audit_targets("", Some("deepseek-ai/DeepSeek-V4-Pro")),
+      vec![("deepseek-ai/DeepSeek-V4-Pro".to_string(), "modelscope")]
+    );
+    assert_eq!(
+      select_curated_audit_targets(
+        "deepseek-ai/DeepSeek-V4-Pro",
+        Some("deepseek-ai/DeepSeek-V4-Pro")
+      ),
+      vec![("deepseek-ai/DeepSeek-V4-Pro".to_string(), "auto")]
+    );
+    assert_eq!(
+      select_curated_audit_targets("Tencent-Hunyuan/Hy4", Some("Tencent-Hunyuan/Hunyuan-4")),
+      vec![
+        ("Tencent-Hunyuan/Hy4".to_string(), "auto"),
+        ("Tencent-Hunyuan/Hunyuan-4".to_string(), "modelscope"),
+      ]
+    );
+    assert!(select_curated_audit_targets("", None).is_empty());
   }
 }
