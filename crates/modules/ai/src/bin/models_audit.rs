@@ -8,8 +8,9 @@
 //! # 2. 每日巡检数据库已收录模型（需 DATABASE_URL；退化模型绝不覆盖线上快照，仅入队告警）
 //! models-audit --audit-curated
 //!
-//! # 3. 每日发现并预审 HF Trending 热门新开源模型（绿灯进候选，黄红灯拦截入待复核队列）
+//! # 3. 每日发现并预审 HF + ModelScope 热门新开源模型（绿灯进候选，黄红灯拦截入待复核队列）
 //! models-audit --discover-trending --limit 12
+//! models-audit --discover-trending --trending-source modelscope --limit 8 --dry-run
 //!
 //! # 4. 试运行（不写库，仅打印巡检结果）
 //! models-audit --discover-trending --limit 5 --dry-run
@@ -26,12 +27,18 @@ struct Args {
   revision: String,
   audit_curated: bool,
   discover_trending: bool,
+  trending_source: String,
   limit: usize,
   dry_run: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
-  let mut args = Args { source: "auto".to_string(), limit: 12, ..Args::default() };
+  let mut args = Args {
+    source: "auto".to_string(),
+    trending_source: "all".to_string(),
+    limit: 12,
+    ..Args::default()
+  };
   let mut it = std::env::args().skip(1);
   while let Some(flag) = it.next() {
     match flag.as_str() {
@@ -46,6 +53,9 @@ fn parse_args() -> Result<Args, String> {
       }
       "--audit-curated" => args.audit_curated = true,
       "--discover-trending" => args.discover_trending = true,
+      "--trending-source" => {
+        args.trending_source = it.next().ok_or("--trending-source 缺少值 (all|hf|modelscope)")?;
+      }
       "--limit" => {
         let raw = it.next().ok_or("--limit 缺少正整数")?;
         let n: usize = raw.parse().map_err(|_| format!("--limit 非法整数: {raw}"))?;
@@ -62,7 +72,7 @@ fn parse_args() -> Result<Args, String> {
            用法:\n\
              models-audit --check <owner/repo> [--source auto|hf|modelscope] [--revision <rev>]\n\
              models-audit --audit-curated [--dry-run]\n\
-             models-audit --discover-trending [--limit 12] [--dry-run]"
+             models-audit --discover-trending [--trending-source all|hf|modelscope] [--limit 12] [--dry-run]"
         );
         std::process::exit(0);
       }
@@ -150,7 +160,14 @@ async fn main() -> ExitCode {
   }
 
   if args.discover_trending {
-    match discover_and_audit_trending(db_opt.as_ref(), args.limit, args.dry_run).await {
+    match discover_and_audit_trending(
+      db_opt.as_ref(),
+      &args.trending_source,
+      args.limit,
+      args.dry_run,
+    )
+    .await
+    {
       Ok((summary, evidences)) => {
         let out = serde_json::json!({
           "summary": summary,
