@@ -184,6 +184,10 @@ pub enum AttentionSpec {
     /// 是否附带编码器-解码器交叉注意力 `encoder_attn`（如 Whisper / Parler-TTS / SpeechT5 解码层）
     #[serde(default)]
     has_cross_attn: bool,
+    /// 服务端自定义精确单层注意力参数覆盖（用于低秩 Q/O 投影、非 MLA 独立 DSA Indexer 与 KV 压缩器，零客户端 WASM 开销）
+    #[cfg(feature = "server")]
+    #[serde(skip)]
+    custom_attn_params: Option<u64>,
   },
   /// DeepSeek Multi-head Latent Attention (MLA)：低秩联合压缩 KV + 可选解耦 RoPE / NoPE / Output Gate / DSA 稀疏索引器
   DeepSeekMla {
@@ -417,8 +421,14 @@ impl AttentionSpec {
         o_bias,
         qk_norm,
         has_cross_attn,
+        #[cfg(feature = "server")]
+        custom_attn_params,
         ..
       } => {
+        #[cfg(feature = "server")]
+        if let Some(p) = *custom_attn_params {
+          return p;
+        }
         let q_out = num_q_heads * head_dim;
         let kv_out = num_kv_heads * head_dim;
         let mut p =
@@ -868,7 +878,19 @@ impl ModelBlueprint {
         }
       }
       ArchFamily::QwenMoe => {
-        if contains_ascii_ci(mt, b"qwen") || contains_ascii_ci(arch0, b"qwen") {
+        let has_dsa_note = self
+          .segments
+          .iter()
+          .any(|s| s.schedule_note.as_deref().is_some_and(|n| n.contains("DSA")));
+        if contains_ascii_ci(mt, b"deepseek") || contains_ascii_ci(arch0, b"deepseek") {
+          if has_dsa_note {
+            "DeepSeek DSA + MoE"
+          } else {
+            "DeepSeek Sparse MoE"
+          }
+        } else if has_dsa_note {
+          "Low-Rank DSA + MoE"
+        } else if contains_ascii_ci(mt, b"qwen") || contains_ascii_ci(arch0, b"qwen") {
           "Qwen Sparse MoE"
         } else if contains_ascii_ci(mt, b"glm") || contains_ascii_ci(arch0, b"glm") {
           "GLM Sparse MoE"
@@ -1614,6 +1636,7 @@ pub fn build_model_blueprint_with_aux(
   let mla_use_nope = cfg_obj.get("mla_use_nope").and_then(Value::as_bool).unwrap_or(false);
   let has_explicit_rope = cfg_obj.contains_key("rope_theta")
     || cfg_obj.contains_key("rope_scaling")
+    || cfg_obj.contains_key("rope_parameters")
     || cfg_obj.contains_key("rotary_percent")
     || cfg_obj.contains_key("rotary_emb_base");
   let rope_summary = if is_pure_mamba || arch_joined.contains("rwkv") {
@@ -1626,6 +1649,9 @@ pub fn build_model_blueprint_with_aux(
     extract_rope_summary(cfg_obj)
   };
   let num_nextn_predict_layers = u64_any(cfg_obj, &["num_nextn_predict_layers"]).unwrap_or(0);
+  let dfly_layers = u64_any(root_obj, &["dfly_num_hidden_layers"])
+    .or_else(|| u64_any(cfg_obj, &["dfly_num_hidden_layers"]))
+    .unwrap_or(0);
 
   let num_q_heads =
     u64_any(cfg_obj, &["num_attention_heads", "n_head", "decoder_attention_heads", "num_heads"])
@@ -1639,7 +1665,7 @@ pub fn build_model_blueprint_with_aux(
   let is_causal = !(is_bi_encoder_arch || is_ctc_asr);
   let has_cross_attn = is_whisper_like || root_obj.contains_key("decoder");
 
-  // 1. 识别 Attention 形态（MLA/DSA vs Hybrid/Pure Linear SSM vs Standard GQA）
+  // 1. 识别 Attention 形态（MLA/DSA vs Hybrid/Pure Linear SSM vs Standard/Low-Rank GQA）
   let kv_lora_rank = u64_any(cfg_obj, &["kv_lora_rank"]);
   let is_mla = kv_lora_rank.is_some()
     || arch_joined.contains("deepseek_v2")
@@ -1655,13 +1681,19 @@ pub fn build_model_blueprint_with_aux(
     safetensors.as_ref(),
   );
 
+  let mut low_rank_dsa_note: Option<String> = None;
   let standard_attention = if let Some(kv_rank) = kv_lora_rank {
     let q_lora_rank = u64_any(cfg_obj, &["q_lora_rank"]).filter(|&v| v > 0);
     let qk_nope_head_dim = u64_any(cfg_obj, &["qk_nope_head_dim"]).unwrap_or(128);
     let qk_rope_head_dim = u64_any(cfg_obj, &["qk_rope_head_dim"]).unwrap_or(64);
     let v_head_dim = u64_any(cfg_obj, &["v_head_dim"]).unwrap_or(128);
-    let output_gate = cfg_obj.get("mla_use_output_gate").and_then(Value::as_bool).unwrap_or(false);
-    // 兼容顶层 DSA（DeepSeek-V3.2: index_topk / index_n_heads / index_head_dim）与嵌套 dsa_config（Kimi-K3.1）
+    let output_gate = cfg_obj
+      .get("mla_use_output_gate")
+      .or_else(|| cfg_obj.get("gated_mla"))
+      .or_else(|| root_obj.get("gated_mla"))
+      .and_then(Value::as_bool)
+      .unwrap_or(false);
+    // 兼容顶层 DSA（DeepSeek-V3.2 / Hy4: index_topk / index_n_heads / index_head_dim）与嵌套 dsa_config（Kimi-K3.1）
     let dsa_obj = cfg_obj.get("dsa_config").and_then(Value::as_object);
     let sparse_index_topk = dsa_obj
       .and_then(|d| u64_any(d, &["index_topk"]))
@@ -1678,7 +1710,18 @@ pub fn build_model_blueprint_with_aux(
         .unwrap_or(128);
       let q_in = q_lora_rank.unwrap_or(hidden_size);
       // Lightning Indexer: wq_b [idx_heads * idx_dim, q_in] + wk [idx_dim, D] + weights_proj [idx_heads, D]
-      q_in * (idx_heads * idx_dim) + hidden_size * idx_dim + hidden_size * idx_heads
+      let raw_idx = q_in * (idx_heads * idx_dim) + hidden_size * idx_dim + hidden_size * idx_heads;
+      // 若配置 `indexer_types`（如 Hy4 中 20 层独立 full + 58 层 shared 复用），按实际 full 比例均摊
+      if let Some(arr) = cfg_obj.get("indexer_types").and_then(Value::as_array) {
+        let full_cnt = arr.iter().filter(|v| v.as_str() == Some("full")).count() as u64;
+        if !arr.is_empty() && full_cnt > 0 && (full_cnt as usize) < arr.len() {
+          raw_idx * full_cnt / (arr.len() as u64)
+        } else {
+          raw_idx
+        }
+      } else {
+        raw_idx
+      }
     } else {
       0
     };
@@ -1738,6 +1781,73 @@ pub fn build_model_blueprint_with_aux(
       .or_else(|| detect_nope_interval(cfg_obj))
       .filter(|&iv| iv > 1);
 
+    // 通用支持非 MLA 的低秩 Q/O 投影（q_lora_rank / o_lora_rank + o_groups）与独立 DSA Indexer（如 DeepSeek-V4.1）
+    let q_lora = u64_any(cfg_obj, &["q_lora_rank"]).filter(|&v| v > 0);
+    let o_lora = u64_any(cfg_obj, &["o_lora_rank"]).filter(|&v| v > 0);
+    let standalone_topk = u64_any(cfg_obj, &["index_topk"]).filter(|&v| v > 0);
+    let custom_attn_params = if q_lora.is_some() || o_lora.is_some() || standalone_topk.is_some() {
+      let q_out = num_q_heads * head_dim;
+      let kv_out = num_kv_heads * head_dim;
+      let q_p = match q_lora {
+        Some(qr) => hidden_size * qr + qr + qr * q_out,
+        None => hidden_size * q_out,
+      };
+      let has_shared_wkv = o_lora.is_some()
+        || safetensors
+          .as_ref()
+          .is_some_and(|st| st.patterns.iter().any(|p| p.example_name.contains(".wkv.weight")));
+      let kv_p = if has_shared_wkv { hidden_size * kv_out } else { 2 * hidden_size * kv_out };
+      let o_p = match o_lora {
+        Some(or) => {
+          let o_groups = u64_any(cfg_obj, &["o_groups"]).unwrap_or(1).max(1);
+          let o_mid = or * o_groups;
+          (q_out / o_groups) * o_mid + o_mid * hidden_size
+        }
+        None => q_out * hidden_size,
+      };
+      let idx_p = if standalone_topk.is_some() {
+        let idx_h = u64_any(cfg_obj, &["index_n_heads", "index_num_heads"]).unwrap_or(32);
+        let idx_d = u64_any(cfg_obj, &["index_head_dim"]).unwrap_or(128);
+        let q_in = q_lora.unwrap_or(hidden_size);
+        let one_idx = q_in * (idx_h * idx_d) + kv_out * idx_d + hidden_size * idx_h;
+        let idx_layers = cfg_obj
+          .get("index_source_layer_ids")
+          .and_then(Value::as_array)
+          .map(|a| a.len() as u64)
+          .filter(|&n| n > 0 && n <= num_hidden_layers)
+          .unwrap_or(num_hidden_layers);
+        one_idx * idx_layers / num_hidden_layers
+      } else {
+        0
+      };
+      let comp_p = cfg_obj
+        .get("kv_source_layer_ids")
+        .and_then(Value::as_array)
+        .map(|a| a.len() as u64)
+        .filter(|&n| n > 0 && n <= num_hidden_layers)
+        .map(|n| (2 * kv_out * hidden_size) * n / num_hidden_layers)
+        .unwrap_or(0);
+
+      let mut note_parts = Vec::new();
+      if let Some(qr) = q_lora {
+        note_parts.push(format!("q_lora={qr}"));
+      }
+      if let Some(or) = o_lora {
+        let og = u64_any(cfg_obj, &["o_groups"]).unwrap_or(1);
+        note_parts.push(format!("o_lora={or}×{og}g"));
+      }
+      if let Some(tk) = standalone_topk {
+        note_parts.push(format!("DSA Top-{tk}"));
+      }
+      if let Some(w) = sliding_window {
+        note_parts.push(format!("SWA({w})"));
+      }
+      low_rank_dsa_note = Some(format!("低秩稀疏注意力机制：{}", note_parts.join(" · ")));
+      Some(q_p + kv_p + o_p + idx_p + comp_p)
+    } else {
+      None
+    };
+
     AttentionSpec::StandardGqa {
       num_q_heads,
       num_kv_heads,
@@ -1750,6 +1860,7 @@ pub fn build_model_blueprint_with_aux(
       nope_layer_interval,
       is_causal,
       has_cross_attn,
+      custom_attn_params,
     }
   };
 
@@ -1843,7 +1954,7 @@ pub fn build_model_blueprint_with_aux(
     OutputHeadSpec::CausalLmHead
   };
 
-  let schedule_note = build_schedule_note(&standard_attention, cfg_obj);
+  let schedule_note = low_rank_dsa_note.or_else(|| build_schedule_note(&standard_attention, cfg_obj));
 
   let dense_ffn = FfnSpec::DenseGated {
     intermediate_size: dense_mlp_inter,
@@ -1852,6 +1963,7 @@ pub fn build_model_blueprint_with_aux(
     fused_gate_up: is_glm,
     is_gated: is_gated_ffn,
   };
+  let dense_ffn_per_layer = dense_ffn.params_per_layer(hidden_size).0;
 
   let active_ffn = if is_moe {
     let top_k = u64_any(
@@ -2173,7 +2285,7 @@ pub fn build_model_blueprint_with_aux(
       _ => 0,
     };
 
-  let params = compute_param_breakdown(
+  let mut params = compute_param_breakdown(
     vision_params,
     audio_and_speech_params,
     vocab_size,
@@ -2183,6 +2295,65 @@ pub fn build_model_blueprint_with_aux(
     num_nextn_predict_layers,
     &segments,
   );
+
+  // 通用支持外部 N-gram 记忆表（如 Engram: `engram_num_embeddings` × `engram_head_dim`）：
+  // 计入模型总参数量（归类至 Embedding 表），但推理期每 Token 仅 O(1) 稀疏查表，不计入 active_params。
+  let engram_embed_params: u64 = cfg_obj
+    .get("engram_num_embeddings")
+    .and_then(Value::as_array)
+    .map(|arr| {
+      let head_d = u64_any(cfg_obj, &["engram_head_dim"]).unwrap_or(256);
+      arr.iter().filter_map(Value::as_u64).map(|n| n.saturating_mul(head_d)).sum()
+    })
+    .unwrap_or(0);
+  if engram_embed_params > 0 {
+    params.embedding = params.embedding.saturating_add(engram_embed_params);
+    params.total_params = params.total_params.saturating_add(engram_embed_params);
+    let engram_layers = cfg_obj
+      .get("engram_layer_ids")
+      .and_then(Value::as_array)
+      .map(Vec::len)
+      .unwrap_or(1);
+    let note = format!(
+      "含 {engram_layers} 层 Engram N-gram 记忆表（+{} 查表参数，O(1) 稀疏激活）",
+      format_count(engram_embed_params)
+    );
+    multimodal_note = Some(match multimodal_note {
+      Some(prev) => format!("{prev} · {note}"),
+      None => note,
+    });
+  }
+
+  // 兼容异构 MTP / 草稿头（如 DeepSeek-V4.1 的 `dspark_n_routed_experts` 或 Hy4 的 `dfly_num_hidden_layers`）
+  if num_nextn_predict_layers > 0 {
+    if let Some(dspark_e) = u64_any(cfg_obj, &["dspark_n_routed_experts"]) {
+      if let Some(last_seg) = segments.last() {
+        let moe_inter = u64_any(cfg_obj, &["moe_intermediate_size"]).unwrap_or(intermediate_size);
+        let shared_inter = u64_any(cfg_obj, &["n_shared_experts"]).unwrap_or(0) * moe_inter;
+        let one_mtp = last_seg.attention.params_per_layer(hidden_size)
+          + dspark_e * 3 * hidden_size * moe_inter
+          + 3 * hidden_size * shared_inter
+          + hidden_size * dspark_e;
+        params.mtp_head = num_nextn_predict_layers.saturating_mul(one_mtp);
+      }
+    }
+  } else if dfly_layers > 0 {
+    if let Some(first_seg) = segments.first() {
+      let dfly_dense =
+        first_seg.attention.params_per_layer(hidden_size) + dense_ffn_per_layer + 2 * hidden_size;
+      params.mtp_head = dfly_layers.saturating_mul(dfly_dense);
+    }
+  }
+
+  let effective_mtp_layers =
+    if num_nextn_predict_layers > 0 { num_nextn_predict_layers } else { dfly_layers };
+  if let Some(hc_m) = u64_any(cfg_obj, &["hc_mult"]).filter(|&m| m > 1) {
+    let note = format!("Hyper-Connections ({hc_m} 路残差超连接)");
+    multimodal_note = Some(match multimodal_note {
+      Some(prev) => format!("{prev} · {note}"),
+      None => note,
+    });
+  }
 
   let mut blueprint = ModelBlueprint {
     repo_id: repo_id.to_string(),
@@ -2205,7 +2376,7 @@ pub fn build_model_blueprint_with_aux(
     tie_word_embeddings,
     rope_summary,
     hidden_act,
-    num_nextn_predict_layers,
+    num_nextn_predict_layers: effective_mtp_layers,
     tokenizer_class,
     default_temperature,
     default_top_p,
@@ -2899,8 +3070,9 @@ mod multimodal_parsers {
       if let Some(l2_params) = st.l2_estimated_params {
         if bp.params.total_params > 0 && l2_params > 0 {
           let l1 = bp.params.total_params as f64;
+          let l1_with_mtp = (bp.params.total_params + bp.params.mtp_head) as f64;
           let l2 = l2_params as f64;
-          let diff_pct = ((l1 - l2).abs() / l2) * 100.0;
+          let diff_pct = (((l1 - l2).abs()).min((l1_with_mtp - l2).abs()) / l2) * 100.0;
           if diff_pct > 20.0 {
             warnings.push(format!(
               "L1/L2 总参数量偏差较大（{diff_pct:.1}%）：L1 公式估算 {} vs L2 真实张量 Shape 汇总 {}，请结合下方真实权重表核对。",
@@ -3218,7 +3390,11 @@ fn f64_any(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f64> {
 
 #[cfg(feature = "server")]
 fn extract_rope_summary(cfg: &serde_json::Map<String, Value>) -> String {
-  let theta = f64_any(cfg, &["rope_theta"]).unwrap_or(10_000.0);
+  // 兼容 Transformers v5 嵌套 `rope_parameters`（如 Hy4 的 `rope_parameters.rope_theta` + `mrope_section`）
+  let rope_params = cfg.get("rope_parameters").and_then(Value::as_object);
+  let theta = f64_any(cfg, &["rope_theta"])
+    .or_else(|| rope_params.and_then(|rp| f64_any(rp, &["rope_theta"])))
+    .unwrap_or(10_000.0);
   let theta_str = if theta >= 1_000_000.0 && (theta % 1_000_000.0).abs() < 1.0 {
     format!("{:.0}M", theta / 1_000_000.0)
   } else if theta >= 1_000.0 && (theta % 1_000.0).abs() < 1.0 {
@@ -3228,23 +3404,33 @@ fn extract_rope_summary(cfg: &serde_json::Map<String, Value>) -> String {
   };
 
   let partial = f64_any(cfg, &["partial_rotary_factor", "rotary_percent"])
+    .or_else(|| rope_params.and_then(|rp| f64_any(rp, &["partial_rotary_factor"])))
     .filter(|&p| p > 0.0 && p < 0.999)
     .map(|p| format!(" · {:.0}%d", p * 100.0))
     .unwrap_or_default();
 
-  if let Some(scaling) = cfg.get("rope_scaling").and_then(Value::as_object) {
-    let rtype = scaling
-      .get("rope_type")
-      .or_else(|| scaling.get("type"))
-      .and_then(Value::as_str)
-      .unwrap_or("scaled");
-    let factor = scaling.get("factor").and_then(Value::as_f64);
-    match factor {
-      Some(f) => format!("RoPE θ={theta_str}{partial} ({rtype} ×{f:.1})"),
-      None => format!("RoPE θ={theta_str}{partial} ({rtype})"),
+  let scaling = cfg.get("rope_scaling").and_then(Value::as_object).or(rope_params);
+  let mrope_sec = scaling
+    .and_then(|sc| sc.get("mrope_section"))
+    .and_then(Value::as_array)
+    .map(|arr| arr.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect::<Vec<_>>())
+    .filter(|v| !v.is_empty());
+  let prefix = if mrope_sec.is_some() { "M-RoPE" } else { "RoPE" };
+  let sec_suffix = mrope_sec.map(|v| format!(" [{}]", v.join(","))).unwrap_or_default();
+
+  if let Some(sc) = scaling {
+    let rtype = sc.get("rope_type").or_else(|| sc.get("type")).and_then(Value::as_str);
+    let factor = sc.get("factor").and_then(Value::as_f64);
+    match (rtype, factor) {
+      (Some(rt), Some(f)) => format!("{prefix} θ={theta_str}{partial}{sec_suffix} ({rt} ×{f:.1})"),
+      (None, Some(f)) => format!("{prefix} θ={theta_str}{partial}{sec_suffix} (scaled ×{f:.1})"),
+      (Some(rt), None) if rt != "default" => {
+        format!("{prefix} θ={theta_str}{partial}{sec_suffix} ({rt})")
+      }
+      _ => format!("{prefix} θ={theta_str}{partial}{sec_suffix}"),
     }
   } else {
-    format!("RoPE θ={theta_str}{partial}")
+    format!("{prefix} θ={theta_str}{partial}")
   }
 }
 
@@ -3501,6 +3687,8 @@ pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
           nope_layer_interval: None,
           is_causal: true,
           has_cross_attn: false,
+          #[cfg(feature = "server")]
+          custom_attn_params: None,
         },
         ffn: FfnSpec::SparseMoe {
           num_routed_experts: 128,
@@ -3555,6 +3743,8 @@ pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
           nope_layer_interval: None,
           is_causal: true,
           has_cross_attn: false,
+          #[cfg(feature = "server")]
+          custom_attn_params: None,
         },
         ffn: FfnSpec::DenseGated {
           intermediate_size: 12288,
@@ -3604,6 +3794,8 @@ pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
           nope_layer_interval: None,
           is_causal: true,
           has_cross_attn: false,
+          #[cfg(feature = "server")]
+          custom_attn_params: None,
         },
         ffn: FfnSpec::DenseGated {
           intermediate_size: 14336,
@@ -4539,6 +4731,7 @@ mod diffusion_parser {
         nope_layer_interval: None,
         is_causal: false,
         has_cross_attn: true,
+        custom_attn_params: None,
       };
       let ffn_spec = FfnSpec::DenseGated {
         intermediate_size: top_ch * 4,
@@ -4662,6 +4855,7 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: true,
+            custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
             intermediate_size: hidden_size * 4,
@@ -4692,6 +4886,7 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: false,
+            custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
             intermediate_size: hidden_size * 4,
@@ -4729,6 +4924,7 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: true,
+            custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
             intermediate_size: hidden_size * 4,
@@ -4827,6 +5023,7 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: has_cross,
+            custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
             intermediate_size: ffn_dim,
@@ -6131,5 +6328,166 @@ mod tests {
     }"#;
     let vlm_bp = build_model_blueprint("Qwen/Qwen2.5-VL-7B", "HF", vlm_cfg, None, None, None).unwrap();
     assert_eq!(vlm_bp.modality_badge_label(), "VLM 图文多模态");
+  }
+
+  #[test]
+  fn parses_hunyuan_hy4_and_deepseek_v41_flash_with_v5_rope_gated_mla_low_rank_and_engram() {
+    // 1) Tencent-Hunyuan/Hy4 (Transformers v5 nested rope_parameters 10M M-RoPE, gated_mla, indexer_types 20/78, dfly 5L, hc_mult=4)
+    let hy4_cfg = r#"{
+      "architectures": ["HYV4VLForConditionalGeneration"],
+      "model_type": "hy_v4_vl",
+      "dtype": "bfloat16",
+      "first_k_dense_replace": 1,
+      "gated_mla": true,
+      "hc_mult": 4,
+      "hidden_act": "silu",
+      "hidden_size": 6144,
+      "intermediate_size": 18432,
+      "kv_lora_rank": 512,
+      "q_lora_rank": 2048,
+      "qk_nope_head_dim": 192,
+      "qk_rope_head_dim": 64,
+      "v_head_dim": 256,
+      "num_attention_heads": 64,
+      "num_key_value_heads": 8,
+      "num_hidden_layers": 78,
+      "vocab_size": 120832,
+      "max_position_embeddings": 1048576,
+      "n_routed_experts": 256,
+      "n_shared_experts": 1,
+      "num_experts_per_tok": 8,
+      "moe_intermediate_size": 2048,
+      "index_head_dim": 128,
+      "index_n_heads": 32,
+      "index_topk": 2048,
+      "indexer_types": ["full","full","shared","shared","shared","full","shared","shared"],
+      "rope_parameters": {
+        "mrope_interleaved": true,
+        "mrope_section": [12, 10, 10],
+        "rope_theta": 10000000,
+        "rope_type": "default"
+      },
+      "dfly_num_hidden_layers": 5,
+      "vision_config": {
+        "model_type": "hy_v4_vl",
+        "hidden_size": 1536,
+        "intermediate_size": 6144,
+        "num_hidden_layers": 40,
+        "num_attention_heads": 16,
+        "patch_size": 16,
+        "spatial_merge_size": 2
+      }
+    }"#;
+    let hy4_st = SafetensorsSummary {
+      detected_num_layers: Some(78),
+      detected_num_experts: Some(256),
+      l2_estimated_params: Some(774_464_797_563),
+      has_vision_tower: true,
+      ..SafetensorsSummary::default()
+    };
+    let hy4 = build_model_blueprint("Tencent-Hunyuan/Hy4", "ModelScope", hy4_cfg, None, None, Some(hy4_st))
+      .expect("hy4");
+    assert_eq!(hy4.modality_badge_label(), "VLM 图文多模态");
+    assert_eq!(hy4.family_badge_label(), "MLA + DSA Sparse");
+    assert_eq!(hy4.rope_summary, "M-RoPE θ=10M [12,10,10]");
+    assert_eq!(hy4.num_nextn_predict_layers, 5);
+    assert!(
+      hy4.params.total_params > 768_000_000_000 && hy4.params.total_params < 776_000_000_000,
+      "Hy4 total_params should include gated_mla (~771B), got {}",
+      hy4.params.total_params
+    );
+    assert!(
+      hy4.params.active_params > 49_000_000_000 && hy4.params.active_params < 53_000_000_000,
+      "Hy4 active_params should include gated_mla (~50.8B), got {}",
+      hy4.params.active_params
+    );
+    assert!(hy4.params.mtp_head > 2_000_000_000);
+    assert!(hy4.parse_warning.is_none(), "Hy4 unexpected warning: {:?}", hy4.parse_warning);
+
+    // 2) deepseek-ai/DeepSeek-V4.1-Flash-1017 (q_lora_rank + o_lora_rank + o_groups + MQA + DSA + Engram 196.6B + dspark MTP)
+    let ds41_cfg = r#"{
+      "architectures": ["DeepseekV41ForCausalLM"],
+      "model_type": "deepseek_v41",
+      "dtype": "bfloat16",
+      "quantization_config": {
+        "quant_method": "fp8",
+        "weight_block_size": [32, 32],
+        "expert_dtype": "fp4"
+      },
+      "text_config": {
+        "model_type": "deepseek_v41_text",
+        "vocab_size": 129280,
+        "hidden_size": 5120,
+        "moe_intermediate_size": 2304,
+        "num_hidden_layers": 40,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 1,
+        "head_dim": 512,
+        "qk_rope_head_dim": 64,
+        "q_lora_rank": 1280,
+        "o_lora_rank": 1024,
+        "o_groups": 8,
+        "hidden_act": "silu",
+        "tie_word_embeddings": false,
+        "max_position_embeddings": 1048576,
+        "rope_theta": 10000,
+        "rope_scaling": { "rope_type": "yarn", "factor": 16 },
+        "n_routed_experts": 384,
+        "n_shared_experts": 1,
+        "num_experts_per_tok": 6,
+        "sliding_window": 128,
+        "kv_source_layer_ids": [2, 8, 14, 20],
+        "index_source_layer_ids": [2, 8, 14, 20, 24, 28, 32, 36],
+        "index_n_heads": 32,
+        "index_head_dim": 128,
+        "index_topk": 512,
+        "hc_mult": 4,
+        "engram_layer_ids": [1, 14],
+        "engram_num_embeddings": [384006168, 384016682],
+        "engram_head_dim": 256,
+        "num_nextn_predict_layers": 3,
+        "dspark_n_routed_experts": 128
+      },
+      "vision_config": {
+        "model_type": "deepseek_v41_vision",
+        "num_hidden_layers": 32,
+        "hidden_size": 1024,
+        "num_attention_heads": 16,
+        "intermediate_size": 2816,
+        "patch_size": 14
+      }
+    }"#;
+    let ds41_st = SafetensorsSummary {
+      detected_num_layers: Some(40),
+      detected_num_experts: Some(384),
+      l2_estimated_params: Some(762_000_000_000),
+      has_vision_tower: true,
+      ..SafetensorsSummary::default()
+    };
+    let ds41 = build_model_blueprint(
+      "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "HF",
+      ds41_cfg,
+      None,
+      None,
+      Some(ds41_st),
+    )
+    .expect("ds41");
+    assert_eq!(ds41.modality_badge_label(), "VLM 图文多模态");
+    assert_eq!(ds41.family_badge_label(), "DeepSeek DSA + MoE");
+    // Total includes 543.6B experts + 196.6B Engram + ~8B trunk = ~748B
+    assert!(
+      ds41.params.total_params > 740_000_000_000 && ds41.params.total_params < 760_000_000_000,
+      "DS-V4.1 total_params should be ~748B, got {}",
+      ds41.params.total_params
+    );
+    // Active excludes Engram lookup table & uses low-rank q/o projections -> ~16.7B
+    assert!(
+      ds41.params.active_params > 15_000_000_000 && ds41.params.active_params < 18_500_000_000,
+      "DS-V4.1 active_params should be ~16.7B, got {}",
+      ds41.params.active_params
+    );
+    assert!(ds41.params.attention < 6_000_000_000, "low-rank o_lora should keep attn ~5.1B");
+    assert!(ds41.parse_warning.is_none(), "DS-V4.1 unexpected warning: {:?}", ds41.parse_warning);
   }
 }
