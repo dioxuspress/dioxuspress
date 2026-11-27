@@ -30,6 +30,11 @@ pub struct Model {
   pub readme_md: Option<String>,
   #[sea_orm(column_type = "Text")]
   pub blueprint_json: String,
+  pub verification_status: String,
+  #[sea_orm(column_type = "Text", nullable)]
+  pub verification_report_json: Option<String>,
+  pub verified_at: Option<DateTimeWithTimeZone>,
+  pub upstream_fingerprint: Option<String>,
   pub created_by: Option<i32>,
   pub created_at: DateTimeWithTimeZone,
   pub updated_at: DateTimeWithTimeZone,

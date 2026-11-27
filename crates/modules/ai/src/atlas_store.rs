@@ -974,11 +974,29 @@ pub fn invalidate_db_models_cache() {
 }
 
 #[cfg(feature = "server")]
+pub fn config_fingerprint_hex(raw: &str) -> String {
+  // 确定性 FNV-1a 64-bit 指纹（零外部哈希依赖，用于检测上游 config.json 内容是否变动）
+  let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+  for &b in raw.as_bytes() {
+    h ^= u64::from(b);
+    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+  }
+  format!("{h:016x}")
+}
+
+#[cfg(feature = "server")]
 fn row_to_detail(
   row: app_core::entities::curated_model::Model,
 ) -> Result<CuratedModelDetail, String> {
-  let blueprint: ModelBlueprint = serde_json::from_str(&row.blueprint_json)
+  let mut blueprint: ModelBlueprint = serde_json::from_str(&row.blueprint_json)
     .map_err(|e| format!("解析数据库模型 `{}` 的 blueprint_json 失败: {e}", row.slug))?;
+  if blueprint.verification_wire.is_none() {
+    if let Some(ref rep_json) = row.verification_report_json {
+      if let Ok(rep) = serde_json::from_str::<crate::arch::VerificationReport>(rep_json) {
+        blueprint.verification_wire = Some(rep.encode_wire());
+      }
+    }
+  }
   let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
   let highlights: Vec<String> = serde_json::from_str(&row.highlights_json).unwrap_or_default();
   let highlights_en: Vec<String> =
@@ -1321,7 +1339,16 @@ pub async fn admin_save_curated_model(input_json: String) -> Result<String, Serv
       serde_json::to_string(&clean.highlights_en).map_err(|e| ServerFnError::new(e.to_string()))?;
     let blueprint_json =
       serde_json::to_string(&clean.blueprint).map_err(|e| ServerFnError::new(e.to_string()))?;
+    let ver_report = clean.blueprint.verification_report();
+    let verification_status = ver_report
+      .as_ref()
+      .map(|v| v.status.as_str().to_string())
+      .unwrap_or_else(|| "partial".to_string());
+    let verification_report_json = ver_report.as_ref().and_then(|v| serde_json::to_string(v).ok());
+    let upstream_fingerprint = Some(config_fingerprint_hex(&clean.blueprint.raw_config_pretty));
     let now = chrono::Utc::now().fixed_offset();
+    let verified_at =
+      matches!(verification_status.as_str(), "verified" | "curated_verified").then_some(now);
 
     let active = curated_model::ActiveModel {
       slug: Set(clean.slug.clone()),
@@ -1341,6 +1368,10 @@ pub async fn admin_save_curated_model(input_json: String) -> Result<String, Serv
       highlights_en_json: Set(highlights_en_json),
       readme_md: Set(clean.readme_md.clone()),
       blueprint_json: Set(blueprint_json),
+      verification_status: Set(verification_status),
+      verification_report_json: Set(verification_report_json),
+      verified_at: Set(verified_at),
+      upstream_fingerprint: Set(upstream_fingerprint),
       created_by: Set(Some(admin.id)),
       created_at: Set(now),
       updated_at: Set(now),
@@ -1366,6 +1397,10 @@ pub async fn admin_save_curated_model(input_json: String) -> Result<String, Serv
             curated_model::Column::HighlightsEnJson,
             curated_model::Column::ReadmeMd,
             curated_model::Column::BlueprintJson,
+            curated_model::Column::VerificationStatus,
+            curated_model::Column::VerificationReportJson,
+            curated_model::Column::VerifiedAt,
+            curated_model::Column::UpstreamFingerprint,
             curated_model::Column::UpdatedAt,
           ])
           .to_owned(),

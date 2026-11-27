@@ -803,6 +803,115 @@ pub struct AuxConfigSnapshot {
   pub raw_json_pretty: String,
 }
 
+/// 模型架构解析可信度等级（由 L1 配置 × L2 Safetensors 真实权重自动判定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "server", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "server", serde(rename_all = "snake_case"))]
+pub enum VerificationStatus {
+  /// L2 Safetensors 真实权重分模块 + 核心投影 Shape + 总参实证通过
+  Verified,
+  /// 人工核验签注的声明式图谱或内置基准快照
+  CuratedVerified,
+  /// 仅 L1 推演，或存在分模块偏差 / 未建模张量族 / 未消费结构字段（差异已逐条列明）
+  #[default]
+  Partial,
+  /// L1 与 L2 存在严重冲突或架构超出推导范围，已主动熔断猜测 DAG
+  Unverified,
+}
+
+impl VerificationStatus {
+  pub fn as_str(self) -> &'static str {
+    match self {
+      Self::Verified => "verified",
+      Self::CuratedVerified => "curated_verified",
+      Self::Partial => "partial",
+      Self::Unverified => "unverified",
+    }
+  }
+
+  fn from_wire(code: &str) -> Self {
+    match code {
+      "V" => Self::Verified,
+      "C" => Self::CuratedVerified,
+      "U" => Self::Unverified,
+      _ => Self::Partial,
+    }
+  }
+
+  fn to_wire(self) -> &'static str {
+    match self {
+      Self::Verified => "V",
+      Self::CuratedVerified => "C",
+      Self::Partial => "P",
+      Self::Unverified => "U",
+    }
+  }
+
+  pub fn badge_label(self) -> &'static str {
+    match self {
+      Self::Verified => "L2 权重实证通过",
+      Self::CuratedVerified => "人工核验蓝图",
+      Self::Partial => "部分推演 · 含差异提示",
+      Self::Unverified => "超出推导范围 · 已熔断",
+    }
+  }
+}
+
+/// L1 × L2 自动化核验对账报告（服务端结构化 JSON + 客户端零 serde 线编码解码）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "server", derive(Serialize, Deserialize))]
+pub struct VerificationReport {
+  pub status: VerificationStatus,
+  pub headline: String,
+  #[cfg_attr(feature = "server", serde(default))]
+  pub checks: Vec<String>,
+  #[cfg_attr(feature = "server", serde(default))]
+  pub issues: Vec<String>,
+  #[cfg_attr(feature = "server", serde(default))]
+  pub circuit_broken: bool,
+}
+
+impl VerificationReport {
+  pub fn encode_wire(&self) -> String {
+    let mut out = String::with_capacity(128);
+    out.push_str(self.status.to_wire());
+    out.push('|');
+    out.push(if self.circuit_broken { '1' } else { '0' });
+    out.push('|');
+    out.push_str(&self.headline.replace('\n', " "));
+    for i in &self.issues {
+      out.push('\n');
+      out.push('!');
+      out.push_str(&i.replace('\n', " "));
+    }
+    for c in &self.checks {
+      out.push('\n');
+      out.push('+');
+      out.push_str(&c.replace('\n', " "));
+    }
+    out
+  }
+
+  pub fn decode_wire(wire: &str) -> Option<Self> {
+    let mut lines = wire.lines();
+    let head = lines.next()?;
+    let mut parts = head.splitn(3, '|');
+    let status = VerificationStatus::from_wire(parts.next()?);
+    let circuit_broken = parts.next()? == "1";
+    let headline = parts.next().unwrap_or_default().to_string();
+    let mut checks = Vec::new();
+    let mut issues = Vec::new();
+    for line in lines {
+      if let Some(rest) = line.strip_prefix('!') {
+        issues.push(rest.to_string());
+      } else if let Some(rest) = line.strip_prefix('+') {
+        checks.push(rest.to_string());
+      }
+    }
+    Some(Self { status, headline, checks, issues, circuit_broken })
+  }
+}
+
 /// 完整的模型架构可视化数据包（SSR / Server Function / 客户端自定义解析共用）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelBlueprint {
@@ -857,6 +966,9 @@ pub struct ModelBlueprint {
   /// 通用诚实解析诊断告警（多条按 `\n` 拼接，如未知架构字段、L1/L2 层数/专家数/总参偏差等），正常精确匹配时为 `None`
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub parse_warning: Option<String>,
+  /// L1 × L2 自动化核验对账报告紧凑线编码（零客户端 serde 膨胀，通过 `verification_report()` 解码）
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub verification_wire: Option<String>,
 }
 
 fn contains_ascii_ci(hay: &str, needle: &[u8]) -> bool {
@@ -864,6 +976,10 @@ fn contains_ascii_ci(hay: &str, needle: &[u8]) -> bool {
 }
 
 impl ModelBlueprint {
+  /// 解码 L1 × L2 自动化核验对账报告。
+  pub fn verification_report(&self) -> Option<VerificationReport> {
+    self.verification_wire.as_deref().and_then(VerificationReport::decode_wire)
+  }
   /// 返回与主干架构正交的模态徽章（清晰区分图文多模态 VLM、纯文本 LLM、2D 生图、3D 视频、语音与向量重排）。
   pub fn modality_badge_label(&self) -> &'static str {
     if self.is_diffusion_pipeline() {
@@ -2592,12 +2708,14 @@ pub fn build_model_blueprint_with_aux(
     aux_configs,
     declarative_graph_wire: None,
     parse_warning: None,
+    verification_wire: None,
   };
-  let warns = collect_parse_warnings(root_obj, cfg_obj, &blueprint);
-  if !warns.is_empty() {
+  let report = build_verification_report(root_obj, cfg_obj, &blueprint);
+  if !report.issues.is_empty() {
     blueprint.parse_warning =
-      Some(warns.into_iter().map(|w| format!("⚠ {w}")).collect::<Vec<_>>().join("\n"));
+      Some(report.issues.iter().map(|w| format!("⚠ {w}")).collect::<Vec<_>>().join("\n"));
   }
+  blueprint.verification_wire = Some(report.encode_wire());
   Ok(blueprint)
 }
 
@@ -3172,18 +3290,171 @@ mod multimodal_parsers {
     None
   }
 
-  /// 通用诚实解析诊断：审计未建模高影响配置字段 + L1/L2 Safetensors 交叉一致性，杜绝静默算错。
-  pub(super) fn collect_parse_warnings(
+  fn is_known_or_benign_config_key(key: &str) -> bool {
+    matches!(
+      key,
+      "architectures"
+        | "auto_map"
+        | "model_type"
+        | "torch_dtype"
+        | "dtype"
+        | "transformers_version"
+        | "quantization_config"
+        | "expert_dtype"
+        | "rope_scaling"
+        | "rope_parameters"
+        | "rope_theta"
+        | "partial_rotary_factor"
+        | "text_config"
+        | "llm_config"
+        | "language_config"
+        | "vision_config"
+        | "visual_config"
+        | "audio_config"
+        | "thinker_config"
+        | "talker_config"
+        | "token2wav_config"
+        | "denoising_config"
+        | "generation_config"
+        | "linear_attn_config"
+        | "dsa_config"
+        | "hybrid_override_pattern"
+        | "layer_types"
+        | "full_attention_interval"
+        | "attn_layer_offset"
+        | "attn_layer_period"
+        | "linear_conv_kernel_dim"
+        | "linear_key_head_dim"
+        | "linear_num_key_heads"
+        | "linear_num_value_heads"
+        | "linear_value_head_dim"
+        | "conv_kernel"
+        | "state_size"
+        | "ssm_state_size"
+        | "mamba_num_heads"
+        | "mamba_head_dim"
+        | "mamba_d_conv"
+        | "mamba_expand"
+        | "mamba_n_groups"
+        | "n_groups"
+        | "expand"
+        | "q_lora_rank"
+        | "kv_lora_rank"
+        | "o_lora_rank"
+        | "o_groups"
+        | "qk_nope_head_dim"
+        | "qk_rope_head_dim"
+        | "v_head_dim"
+        | "mla_use_nope"
+        | "mla_use_output_gate"
+        | "attn_output_gate"
+        | "index_topk"
+        | "index_n_heads"
+        | "index_num_heads"
+        | "index_head_dim"
+        | "index_source_layer_ids"
+        | "kv_source_layer_ids"
+        | "compress_ratios"
+        | "sliding_window"
+        | "sliding_window_pattern"
+        | "no_rope_layers"
+        | "no_rope_layer_interval"
+        | "n_routed_experts"
+        | "num_experts"
+        | "num_local_experts"
+        | "moe_num_experts"
+        | "num_experts_per_tok"
+        | "num_experts_per_token"
+        | "num_selected_experts"
+        | "moe_k"
+        | "moe_intermediate_size"
+        | "n_shared_experts"
+        | "num_shared_experts"
+        | "shared_expert_intermediate_size"
+        | "routed_expert_hidden_size"
+        | "moe_latent_dim"
+        | "expert_latent_dim"
+        | "latent_moe_use_norm"
+        | "first_k_dense_replace"
+        | "expert_layer_offset"
+        | "interleave_moe_layer_step"
+        | "expert_layer_period"
+        | "n_group"
+        | "num_expert_group"
+        | "topk_group"
+        | "scoring_func"
+        | "moe_router_activation_func"
+        | "router_activation_func"
+        | "num_nextn_predict_layers"
+        | "mtp_num_hidden_layers"
+        | "dfly_num_hidden_layers"
+        | "dspark_n_routed_experts"
+        | "engram_num_embeddings"
+        | "engram_head_dim"
+        | "engram_layer_ids"
+        | "hc_mult"
+        | "num_hash_layers"
+        | "block_size"
+        | "mask_token_id"
+        | "attn_res_block_size"
+    )
+  }
+
+  fn is_high_risk_unmodeled_key(key: &str, val: &Value) -> bool {
+    if is_known_or_benign_config_key(key) {
+      return false;
+    }
+    let is_active_val = match val {
+      Value::Null => false,
+      Value::Bool(b) => *b,
+      Value::Number(n) => n.as_u64() != Some(0) && n.as_f64() != Some(0.0),
+      Value::Array(a) => !a.is_empty(),
+      Value::Object(o) => !o.is_empty(),
+      Value::String(s) => !s.trim().is_empty(),
+    };
+    if !is_active_val {
+      return false;
+    }
+    let kl = key.to_ascii_lowercase();
+    if kl.ends_with("_config") && val.is_object() {
+      return !matches!(
+        kl.as_str(),
+        "rope_config" | "pad_config" | "tokenizer_config" | "speaker_config"
+      );
+    }
+    kl.contains("ssm_config")
+      || kl.contains("mamba_config")
+      || kl.contains("deltanet")
+      || kl.contains("cross_layer_kv")
+      || kl.contains("kv_sharing")
+      || kl.contains("recurrent_depth")
+      || kl.contains("parallel_residual")
+      || kl.contains("latent_moe")
+      || kl.contains("hyper_routing")
+      || kl.contains("attn_res_")
+  }
+
+  fn rel_diff_pct(a: u64, b: u64) -> f64 {
+    if b == 0 {
+      return 0.0;
+    }
+    ((a as f64) - (b as f64)).abs() * 100.0 / (b as f64)
+  }
+
+  /// 通用诚实解析硬校验器：审计未建模结构字段 + L1/L2 分阶段参数对账 + 核心投影 Shape 断言 + 熔断判定。
+  pub(super) fn build_verification_report(
     root_obj: &serde_json::Map<String, Value>,
     cfg_obj: &serde_json::Map<String, Value>,
     bp: &ModelBlueprint,
-  ) -> Vec<String> {
-    let mut warnings = Vec::new();
+  ) -> VerificationReport {
+    let mut checks: Vec<String> = Vec::new();
+    let mut issues: Vec<String> = Vec::new();
+    let mut circuit_broken = false;
 
-    // 1. 审计未完整建模的高影响架构特征（仅针对已知确实存在拓扑差异的字段，不误报普通超参）
+    // 1. 审计未完整建模的高影响架构特征
     if let Some(blk) = u64_any(cfg_obj, &["attn_res_block_size"]) {
       if blk > 0 {
-        warnings.push(format!(
+        issues.push(format!(
           "检测到跨块注意力残差配置 attn_res_block_size={blk}（已计入基础结构，跨块 Attention Residuals 拓扑暂以标准残差简化示意）。"
         ));
       }
@@ -3203,7 +3474,7 @@ mod multimodal_parsers {
         .map(String::as_str)
         .collect();
       if !unmodeled_lin.is_empty() {
-        warnings.push(format!(
+        issues.push(format!(
           "config.json 含线性/状态空间相关字段（{}），但解析器未能识别出混合线性层结构，结果可能偏向纯标准注意力。",
           unmodeled_lin.join(", ")
         ));
@@ -3214,7 +3485,7 @@ mod multimodal_parsers {
       .iter()
       .any(|s| matches!(s.ffn, FfnSpec::SparseMoe { latent_dim, .. } if latent_dim > 0));
     if !has_latent_moe && cfg_obj.get("routed_expert_hidden_size").is_some_and(|v| !v.is_null()) {
-      warnings.push(
+      issues.push(
         "config.json 含 routed_expert_hidden_size 潜空间专家字段，但未在 MoE 层生效，总参估算可能偏高。"
           .to_string(),
       );
@@ -3223,22 +3494,51 @@ mod multimodal_parsers {
       || cfg_obj.get("vision_config").is_some_and(Value::is_object))
       && bp.vision.is_none()
     {
-      warnings.push(
+      issues.push(
         "config.json 包含 vision_config，但未能识别其中的维度字段，视觉编码器支路与参数量暂未计入。"
           .to_string(),
       );
     }
 
-    // 2. L1 vs L2 Safetensors 真实权重交叉核验
+    // 1b. 扫描未消费的高危未知结构字段（不依赖硬编码清单）
+    let mut unmodeled_cfg_keys: Vec<&str> = cfg_obj
+      .iter()
+      .filter(|(k, v)| is_high_risk_unmodeled_key(k, v))
+      .map(|(k, _)| k.as_str())
+      .collect();
+    unmodeled_cfg_keys.sort_unstable();
+    if !unmodeled_cfg_keys.is_empty() {
+      // 避免与上方 linear_attn 专用提示重复
+      let dedup: Vec<&str> =
+        unmodeled_cfg_keys.into_iter().filter(|k| !issues.iter().any(|w| w.contains(*k))).collect();
+      if !dedup.is_empty() {
+        issues.push(format!(
+          "config.json 含未建模结构字段（{}），请结合原始配置与 L2 真实权重核对。",
+          dedup.join(", ")
+        ));
+      }
+    }
+
+    // 2. L1 vs L2 Safetensors 真实权重硬对账
+    let mut l2_verified_total = false;
     if let Some(ref st) = bp.safetensors {
+      // 2a. 层数与专家数硬校验
       if let Some(l2_layers) = st.detected_num_layers {
         if l2_layers != bp.num_hidden_layers {
-          warnings.push(format!(
+          let diff = l2_layers.abs_diff(bp.num_hidden_layers);
+          let severe = diff > (bp.num_hidden_layers / 10).max(2);
+          issues.push(format!(
             "L1/L2 层数差异：config.json 声明 {} 层，L2 权重索引检测到 {} 层。",
             bp.num_hidden_layers, l2_layers
           ));
+          if severe {
+            circuit_broken = true;
+          }
+        } else {
+          checks.push(format!("✓ 层数一致：{} 层（L1 与 L2 权重索引对齐）", bp.num_hidden_layers));
         }
       }
+
       if let Some(l2_experts) = st.detected_num_experts {
         let l1_experts = bp
           .segments
@@ -3249,53 +3549,282 @@ mod multimodal_parsers {
           })
           .unwrap_or(0);
         if l2_experts != l1_experts {
-          warnings.push(format!(
+          issues.push(format!(
             "L1/L2 专家数差异：L1 解析为 {l1_experts} 个路由专家，L2 权重索引检测到 {l2_experts} 个。"
           ));
+          circuit_broken = true;
+        } else if l1_experts > 0 {
+          checks.push(format!("✓ 路由专家数一致：{l1_experts} 个专家（L1 与 L2 对齐）"));
         }
       }
+
       if st.has_vision_tower && bp.vision.is_none() {
-        warnings.push(
+        issues.push(
           "L2 真实权重检测到视觉编码器（vision_tower / mm_projector），但 L1 未解析出视觉塔规格。"
             .to_string(),
         );
       }
       if st.has_latent_moe_proj && !has_latent_moe {
-        warnings.push(
+        issues.push(
           "L2 真实权重检测到 Latent MoE 投影（routed_expert_down/up_proj），但 L1 未启用潜空间维度核算。"
             .to_string(),
         );
       }
       if st.detected_linear_attn_layers.is_some() && !bp.has_linear_recurrent() {
-        warnings.push(format!(
+        issues.push(format!(
           "L2 真实权重检测到 {} 层线性/SSM 注意力张量，但 L1 未识别出混合线性层。",
           st.detected_linear_attn_layers.unwrap_or(0)
         ));
       }
+
+      // 2b. 总参数量硬对账（<=5% 绿灯，5~20% 黄灯，>20% 红灯熔断）
       if let Some(l2_params) = st.l2_estimated_params {
         if bp.params.total_params > 0 && l2_params > 0 {
           let l1 = bp.params.total_params as f64;
           let l1_with_mtp = (bp.params.total_params + bp.params.mtp_head) as f64;
           let l2 = l2_params as f64;
           let diff_pct = (((l1 - l2).abs()).min((l1_with_mtp - l2).abs()) / l2) * 100.0;
-          if diff_pct > 20.0 {
-            warnings.push(format!(
-              "L1/L2 总参数量偏差较大（{diff_pct:.1}%）：L1 公式估算 {} vs L2 真实张量 Shape 汇总 {}，请结合下方真实权重表核对。",
+          if diff_pct <= 5.0 {
+            l2_verified_total = true;
+            checks.push(format!(
+              "✓ 总参数量实证通过：L1 {} vs L2 {}（偏差 {diff_pct:.2}%）",
+              format_count(bp.params.total_params),
+              format_count(l2_params)
+            ));
+          } else if diff_pct <= 20.0 {
+            issues.push(format!(
+              "L1/L2 总参数量存在中等偏差（{diff_pct:.1}%）：L1 公式估算 {} vs L2 真实张量汇总 {}。",
+              format_count(bp.params.total_params),
+              format_count(l2_params)
+            ));
+          } else {
+            circuit_broken = true;
+            issues.push(format!(
+              "L1/L2 总参数量偏差较大（{diff_pct:.1}%）：L1 公式估算 {} vs L2 真实张量 Shape 汇总 {}，已触发熔断保护。",
               format_count(bp.params.total_params),
               format_count(l2_params)
             ));
           }
         }
       }
+
+      // 2c. 分阶段参数对账（精准捕获总参误差被 MoE 稀释的 Attention / FFN 局部漏算）
+      // 双塔 AudioAsr（如 Whisper）L2 同时含 Encoder+Decoder 的 self_attn/fc，而 L1 把 Encoder 合并计入 audio_and_speech，
+      // 因此双塔 ASR 合并对比 (audio_and_speech + attention + dense_ffn) vs (l2_audio + l2_attention + l2_ffn_moe)。
+      let sp = &st.l2_stage_params;
+      if bp.family == ArchFamily::AudioAsr && bp.audio.is_some() {
+        if sp.attention_covered && sp.ffn_moe_covered {
+          let l1_dual = bp
+            .params
+            .audio_and_speech
+            .saturating_add(bp.params.attention)
+            .saturating_add(bp.params.dense_ffn);
+          let l2_dual = sp.audio.saturating_add(sp.attention).saturating_add(sp.ffn_moe);
+          let diff_pct = rel_diff_pct(l1_dual, l2_dual);
+          let abs_diff = l1_dual.abs_diff(l2_dual);
+          if diff_pct <= 15.0 || abs_diff <= 50_000_000 {
+            checks.push(format!(
+              "✓ 声学编码+解码主干对账：L1 {} vs L2 {}（偏差 {diff_pct:.1}%）",
+              format_count(l1_dual),
+              format_count(l2_dual)
+            ));
+          } else {
+            issues.push(format!(
+              "声学编码+解码主干偏差较大（{diff_pct:.1}%）：L1 {} vs L2 实测 {}。",
+              format_count(l1_dual),
+              format_count(l2_dual)
+            ));
+          }
+        }
+      } else {
+        if sp.attention_covered && bp.params.attention > 0 && sp.attention > 0 {
+          let diff_pct = rel_diff_pct(bp.params.attention, sp.attention);
+          let abs_diff = bp.params.attention.abs_diff(sp.attention);
+          if diff_pct <= 15.0 || abs_diff <= 50_000_000 {
+            checks.push(format!(
+              "✓ Attention/SSM 分项对账：L1 {} vs L2 {}（偏差 {diff_pct:.1}%）",
+              format_count(bp.params.attention),
+              format_count(sp.attention)
+            ));
+          } else {
+            issues.push(format!(
+              "Attention/SSM 分项偏差较大（{diff_pct:.1}%）：L1 {} vs L2 实测 {}，可能存在未建模门控、索引器或压缩投影。",
+              format_count(bp.params.attention),
+              format_count(sp.attention)
+            ));
+            if diff_pct > 50.0
+              && abs_diff > 200_000_000
+              && sp.attention * 20 >= bp.params.total_params
+            {
+              circuit_broken = true;
+            }
+          }
+        }
+
+        let l1_ffn_moe = bp
+          .params
+          .dense_ffn
+          .saturating_add(bp.params.moe_routed)
+          .saturating_add(bp.params.moe_shared);
+        if sp.ffn_moe_covered && l1_ffn_moe > 0 && sp.ffn_moe > 0 {
+          let diff_pct = rel_diff_pct(l1_ffn_moe, sp.ffn_moe);
+          let abs_diff = l1_ffn_moe.abs_diff(sp.ffn_moe);
+          if diff_pct <= 10.0 || abs_diff <= 50_000_000 {
+            checks.push(format!(
+              "✓ FFN/MoE 分项对账：L1 {} vs L2 {}（偏差 {diff_pct:.1}%）",
+              format_count(l1_ffn_moe),
+              format_count(sp.ffn_moe)
+            ));
+          } else {
+            issues.push(format!(
+              "FFN/MoE 分项偏差较大（{diff_pct:.1}%）：L1 {} vs L2 实测 {}。",
+              format_count(l1_ffn_moe),
+              format_count(sp.ffn_moe)
+            ));
+            if diff_pct > 30.0 && abs_diff > 200_000_000 {
+              circuit_broken = true;
+            }
+          }
+        }
+      }
+
+      // 2d. 核心投影矩阵 Shape 精确断言
+      if !st.l2_proj_shapes.is_empty() && bp.hidden_size > 0 {
+        let std_gqa = bp.segments.iter().find_map(|s| match s.attention {
+          AttentionSpec::StandardGqa { num_q_heads, num_kv_heads, head_dim, gqa_flags, .. } => {
+            Some((num_q_heads, num_kv_heads, head_dim, gqa_flags))
+          }
+          _ => None,
+        });
+        let mut shape_ok_cnt = 0usize;
+        for proj in &st.l2_proj_shapes {
+          if proj.logical_shape.len() != 2 {
+            continue;
+          }
+          let (out_d, in_d) = (proj.logical_shape[0], proj.logical_shape[1]);
+          match proj.role {
+            "embed_tokens" | "lm_head" => {
+              if bp.vocab_size > 0 {
+                let d_ok = in_d == bp.hidden_size;
+                let v_ok = out_d.abs_diff(bp.vocab_size) <= 1024;
+                if d_ok && v_ok {
+                  shape_ok_cnt += 1;
+                } else {
+                  issues.push(format!(
+                    "矩阵 Shape 偏差（{}）：L1 预期 [{}, {}] vs L2 实测 [{out_d}, {in_d}]。",
+                    proj.pattern, bp.vocab_size, bp.hidden_size
+                  ));
+                }
+              }
+            }
+            "q_proj" => {
+              if let Some((qh, _, hd, flags)) = std_gqa {
+                if (flags & GQA_FLAG_LOW_RANK_QO) == 0 {
+                  let mult = if (flags & GQA_FLAG_OUTPUT_GATE) != 0 { 2 } else { 1 };
+                  let exp_out = qh.saturating_mul(hd).saturating_mul(mult);
+                  if out_d == exp_out && in_d == bp.hidden_size {
+                    shape_ok_cnt += 1;
+                  } else {
+                    issues.push(format!(
+                      "Q 投影 Shape 偏差（{}）：L1 预期 [{exp_out}, {}] vs L2 实测 [{out_d}, {in_d}]。",
+                      proj.pattern, bp.hidden_size
+                    ));
+                  }
+                }
+              }
+            }
+            "k_proj" | "v_proj" | "wkv" => {
+              if let Some((_, kvh, hd, _)) = std_gqa {
+                let exp_out = kvh.saturating_mul(hd);
+                if out_d == exp_out && in_d == bp.hidden_size {
+                  shape_ok_cnt += 1;
+                } else {
+                  issues.push(format!(
+                    "KV 投影 Shape 偏差（{}）：L1 预期 [{exp_out}, {}] vs L2 实测 [{out_d}, {in_d}]。",
+                    proj.pattern, bp.hidden_size
+                  ));
+                }
+              }
+            }
+            "o_proj" => {
+              if let Some((qh, _, hd, flags)) = std_gqa {
+                if (flags & GQA_FLAG_LOW_RANK_QO) == 0 {
+                  let exp_in = qh.saturating_mul(hd);
+                  if out_d == bp.hidden_size && in_d == exp_in {
+                    shape_ok_cnt += 1;
+                  } else {
+                    issues.push(format!(
+                      "O 投影 Shape 偏差（{}）：L1 预期 [{}, {exp_in}] vs L2 实测 [{out_d}, {in_d}]。",
+                      proj.pattern, bp.hidden_size
+                    ));
+                  }
+                }
+              }
+            }
+            _ => {}
+          }
+        }
+        if shape_ok_cnt > 0 {
+          checks.push(format!("✓ 核心投影矩阵 Shape 匹配（通过 {shape_ok_cnt} 类 2D 权重断言）"));
+        }
+      }
+
+      // 2e. L2 未归类大体积张量族雷达（防静默漏算新子模块）
+      for u in &st.l2_unmodeled_other {
+        let share_pct = (u.total_params as f64) * 100.0 / (bp.params.total_params.max(1) as f64);
+        if u.total_params >= 100_000_000 || (bp.params.total_params > 0 && share_pct >= 1.5) {
+          let shape_s =
+            u.shape.as_ref().map(|s| format!("{s:?}")).unwrap_or_else(|| "unknown".to_string());
+          issues.push(format!(
+            "L2 检测到未归类大体积张量族 `{}`（shape={shape_s}, ×{}, 合计 {}，占 {share_pct:.1}%），拓扑图可能省略了该子模块。",
+            u.pattern,
+            u.repeat_count,
+            format_count(u.total_params)
+          ));
+        }
+      }
     }
 
-    warnings
+    // 3. 综合裁定可信度等级
+    let has_l2_coverage = l2_verified_total
+      || bp.safetensors.as_ref().is_some_and(|st| {
+        st.total_tensor_count > 0
+          && st.l2_stage_params.covered_tensors * 100 >= st.total_tensor_count * 85
+      });
+
+    let (status, headline) = if circuit_broken {
+      (
+        VerificationStatus::Unverified,
+        "L1 推导与 L2 真实权重存在严重冲突，已熔断猜测拓扑图，请以真实权重树与原始 config.json 为准"
+          .to_string(),
+      )
+    } else if !issues.is_empty() {
+      (
+        VerificationStatus::Partial,
+        format!("存在 {} 项未建模结构或 L1/L2 差异提示，请结合下方对账明细审阅", issues.len()),
+      )
+    } else if has_l2_coverage {
+      (
+        VerificationStatus::Verified,
+        "L2 Safetensors 真实权重分模块与矩阵 Shape 对账全部通过".to_string(),
+      )
+    } else {
+      checks.push(
+        "ℹ 未获取到完整 L2 Safetensors 权重采样，当前仅基于 config.json 公式推演".to_string(),
+      );
+      (
+        VerificationStatus::Partial,
+        "仅基于 config.json 公式推演（缺少 L2 Safetensors 完整权重实证）".to_string(),
+      )
+    };
+
+    VerificationReport { status, headline, checks, issues, circuit_broken }
   }
 }
 
 #[cfg(feature = "server")]
 use multimodal_parsers::{
-  collect_parse_warnings, detect_linear_ssm, parse_audio_spec, parse_pooling_meta,
+  build_verification_report, detect_linear_ssm, parse_audio_spec, parse_pooling_meta,
   parse_preprocessor_meta, parse_speech_synthesizer, parse_vision_spec,
 };
 
@@ -3524,6 +4053,20 @@ fn build_safetensors_fallback_blueprint(
     aux_configs: Vec::new(),
     declarative_graph_wire: None,
     parse_warning: None,
+    verification_wire: Some(
+      VerificationReport {
+        status: VerificationStatus::Unverified,
+        headline: "非标准 Transformer 配置，已自动退化为 L2 真实 Safetensors 权重树展示"
+          .to_string(),
+        checks: Vec::new(),
+        issues: vec![
+          "config.json 缺少标准架构超参，暂不推演猜测计算图，以下以 L2 真实权重张量清单为准。"
+            .to_string(),
+        ],
+        circuit_broken: true,
+      }
+      .encode_wire(),
+    ),
   }
 }
 
@@ -3580,6 +4123,16 @@ pub fn build_declarative_graph_blueprint(
     aux_configs: Vec::new(),
     declarative_graph_wire: Some(wire),
     parse_warning: None,
+    verification_wire: Some(
+      VerificationReport {
+        status: VerificationStatus::CuratedVerified,
+        headline: "人工核验并结构化校验通过的声明式架构蓝图 (graph.json)".to_string(),
+        checks: vec![format!("✓ 声明式计算图已通过拓扑合法性校验（{node_count} 节点）")],
+        issues: Vec::new(),
+        circuit_broken: false,
+      }
+      .encode_wire(),
+    ),
   })
 }
 
@@ -3807,6 +4360,10 @@ fn direct_preset_blueprint(
     aux_configs: Vec::new(),
     declarative_graph_wire: None,
     parse_warning: None,
+    verification_wire: Some(
+      "C|0|内置基准快照（已完成 L1/L2 人工核验）\n+✓ 内置静态基准蓝图（HF/ModelScope 实测核验）"
+        .to_string(),
+    ),
   }
 }
 
@@ -5332,24 +5889,70 @@ mod diffusion_parser {
     if is_video { "视频" } else { "图像" }
   ));
 
-    let parse_warning = safetensors.as_ref().and_then(|st| {
-      let l2_params = st.l2_estimated_params?;
-      if denoiser_total == 0 || l2_params == 0 {
-        return None;
+    let (parse_warning, verification) = {
+      let mut checks = Vec::new();
+      let mut issues = Vec::new();
+      let mut circuit_broken = false;
+      let mut verified_l2 = false;
+      if let Some(ref st) = safetensors {
+        if let Some(l2_params) = st.l2_estimated_params {
+          if denoiser_total > 0 && l2_params > 0 {
+            let l1 = denoiser_total as f64;
+            let l2 = l2_params as f64;
+            let diff_pct = ((l1 - l2).abs() / l2) * 100.0;
+            if diff_pct <= 10.0 {
+              verified_l2 = true;
+              checks.push(format!(
+                "✓ 去噪主干 L1/L2 实证通过：L1 {} vs L2 {}（偏差 {diff_pct:.1}%）",
+                format_count(denoiser_total),
+                format_count(l2_params)
+              ));
+            } else if diff_pct <= 20.0 {
+              issues.push(format!(
+                "去噪主干参数量存在中等偏差（{diff_pct:.1}%）：L1 {} vs L2 实测 {}。",
+                format_count(denoiser_total),
+                format_count(l2_params)
+              ));
+            } else {
+              circuit_broken = true;
+              issues.push(format!(
+                "L1/L2 去噪主干参数量偏差较大（{diff_pct:.1}%）：L1 公式估算 {} vs L2 真实张量 Shape 汇总 {}，请结合下方真实权重表核对。",
+                format_count(denoiser_total),
+                format_count(l2_params)
+              ));
+            }
+          }
+        }
       }
-      let l1 = denoiser_total as f64;
-      let l2 = l2_params as f64;
-      let diff_pct = ((l1 - l2).abs() / l2) * 100.0;
-      if diff_pct > 20.0 {
-        Some(format!(
-          "⚠ L1/L2 去噪主干参数量偏差较大（{diff_pct:.1}%）：L1 公式估算 {} vs L2 真实张量 Shape 汇总 {}，请结合下方真实权重表核对。",
-          format_count(denoiser_total),
-          format_count(l2_params)
-        ))
+      let (status, headline) = if circuit_broken {
+        (
+          VerificationStatus::Unverified,
+          "去噪主干 L1/L2 偏差超过 20%，已触发熔断保护，请对照真实权重表核验".to_string(),
+        )
+      } else if !issues.is_empty() {
+        (
+          VerificationStatus::Partial,
+          format!("存在 {} 项去噪主干偏差提示，请结合对账明细审阅", issues.len()),
+        )
+      } else if verified_l2 {
+        (VerificationStatus::Verified, "去噪主干 L2 Safetensors 真实权重对账通过".to_string())
       } else {
+        checks.push("ℹ 未获取到去噪主干完整 L2 权重采样，当前基于 Diffusers 配置推演".to_string());
+        (
+          VerificationStatus::Partial,
+          "仅基于 Diffusers 配置推演（缺少去噪主干 L2 权重实证）".to_string(),
+        )
+      };
+      let warn = if issues.is_empty() {
         None
-      }
-    });
+      } else {
+        Some(issues.iter().map(|w| format!("⚠ {w}")).collect::<Vec<_>>().join("\n"))
+      };
+      (
+        warn,
+        Some(VerificationReport { status, headline, checks, issues, circuit_broken }.encode_wire()),
+      )
+    };
 
     Ok(ModelBlueprint {
       repo_id: repo_id.to_string(),
@@ -5405,6 +6008,7 @@ mod diffusion_parser {
       aux_configs: Vec::new(),
       declarative_graph_wire: None,
       parse_warning,
+      verification_wire: verification,
     })
   }
 }
@@ -6399,6 +7003,146 @@ mod tests {
       "expected missing vision warning, got {:?}",
       red2.parse_warning
     );
+    let red2_v = red2.verification_report().expect("red2 verification");
+    assert_eq!(red2_v.status, VerificationStatus::Unverified);
+    assert!(red2_v.circuit_broken, "severe param mismatch must trigger circuit breaker");
+
+    // 黄灯 #1：总参几乎一致，但 Q 投影 Shape 与 L1 推导不符（模拟漏算双倍 Q Output Gate）-> 必须被 Shape 断言抓现行
+    let mut bad_shape_st = SafetensorsSummary {
+      detected_num_layers: Some(32),
+      l2_estimated_params: Some(8_030_000_000),
+      ..SafetensorsSummary::default()
+    };
+    bad_shape_st.l2_stage_params.covered_tensors = 100;
+    bad_shape_st.l2_stage_params.total_tensors = 100;
+    bad_shape_st.l2_proj_shapes.push(crate::safetensors_meta::L2ProjShape {
+      role: "q_proj",
+      pattern: "model.layers.[0..31].self_attn.q_proj.weight".to_string(),
+      logical_shape: vec![8192, 4096], // 预期应为 [4096, 4096]
+      repeat_count: 32,
+    });
+    let yellow_shape = build_model_blueprint(
+      "org/SilentGateModel",
+      "HF",
+      LLAMA_3_1_8B_CONFIG,
+      None,
+      None,
+      Some(bad_shape_st),
+    )
+    .expect("yellow_shape");
+    let ys_v = yellow_shape.verification_report().expect("yellow_shape verification");
+    assert_eq!(ys_v.status, VerificationStatus::Partial);
+    assert!(
+      ys_v.issues.iter().any(|i| i.contains("Q 投影 Shape 偏差") && i.contains("[8192, 4096]")),
+      "expected Q shape mismatch issue, got {:?}",
+      ys_v.issues
+    );
+
+    // 黄灯 #2：总参在 5% 以内，但 Attention 分项偏差 > 15% 且 > 50M -> 必须被分阶段对账抓现行
+    let mut bad_stage_st = SafetensorsSummary {
+      detected_num_layers: Some(32),
+      l2_estimated_params: Some(8_180_000_000),
+      ..SafetensorsSummary::default()
+    };
+    bad_stage_st.l2_stage_params.covered_tensors = 100;
+    bad_stage_st.l2_stage_params.total_tensors = 100;
+    bad_stage_st.l2_stage_params.attention_covered = true;
+    bad_stage_st.l2_stage_params.attention = 1_850_000_000; // L1 约 1.34B，差 > 500M (>25%)
+    let yellow_stage = build_model_blueprint(
+      "org/SilentAttnModel",
+      "HF",
+      LLAMA_3_1_8B_CONFIG,
+      None,
+      None,
+      Some(bad_stage_st),
+    )
+    .expect("yellow_stage");
+    let yst_v = yellow_stage.verification_report().expect("yellow_stage verification");
+    assert_eq!(yst_v.status, VerificationStatus::Partial);
+    assert!(
+      yst_v.issues.iter().any(|i| i.contains("Attention/SSM 分项偏差较大")),
+      "expected Attention stage mismatch, got {:?}",
+      yst_v.issues
+    );
+
+    // 黄灯 #3：L2 存在未归类大体积张量族（>100M）-> 反漏算雷达必报警
+    let mut unmodeled_tensor_st = SafetensorsSummary {
+      detected_num_layers: Some(32),
+      l2_estimated_params: Some(8_150_000_000),
+      ..SafetensorsSummary::default()
+    };
+    unmodeled_tensor_st.l2_stage_params.covered_tensors = 100;
+    unmodeled_tensor_st.l2_stage_params.total_tensors = 100;
+    unmodeled_tensor_st.l2_unmodeled_other.push(crate::safetensors_meta::L2UnmodeledTensor {
+      pattern: "model.layers.[0..31].novel_memory.bank.weight".to_string(),
+      shape: Some(vec![2048, 2048]),
+      repeat_count: 32,
+      total_params: 134_217_728,
+    });
+    let yellow_unmodeled = build_model_blueprint(
+      "org/NovelMemoryModel",
+      "HF",
+      LLAMA_3_1_8B_CONFIG,
+      None,
+      None,
+      Some(unmodeled_tensor_st),
+    )
+    .expect("yellow_unmodeled");
+    let yu_v = yellow_unmodeled.verification_report().expect("yellow_unmodeled verification");
+    assert_eq!(yu_v.status, VerificationStatus::Partial);
+    assert!(
+      yu_v.issues.iter().any(|i| i.contains("novel_memory.bank.weight")),
+      "expected unmodeled tensor warning, got {:?}",
+      yu_v.issues
+    );
+
+    // 黄灯 #4：config.json 含未知高危嵌套配置（未在硬编码清单中）-> 未知结构字段审计必报警
+    let novel_cfg = r#"{
+      "model_type": "future_novel",
+      "hidden_size": 4096,
+      "num_hidden_layers": 32,
+      "num_attention_heads": 32,
+      "num_key_value_heads": 8,
+      "intermediate_size": 14336,
+      "vocab_size": 32000,
+      "hyper_routing_config": {"depth": 4, "shared": true}
+    }"#;
+    let yellow_cfg =
+      build_model_blueprint("org/NovelCfg", "HF", novel_cfg, None, None, None).expect("yellow_cfg");
+    let yc_v = yellow_cfg.verification_report().expect("yellow_cfg verification");
+    assert_eq!(yc_v.status, VerificationStatus::Partial);
+    assert!(
+      yc_v.issues.iter().any(|i| i.contains("hyper_routing_config")),
+      "expected unmodeled config key warning, got {:?}",
+      yc_v.issues
+    );
+
+    // 绿灯：完整 L2 覆盖 + 准确分阶段与核心 Shape -> 必须判为 Verified 且无熔断
+    let mut green_st = SafetensorsSummary {
+      detected_num_layers: Some(32),
+      l2_estimated_params: Some(8_030_000_000),
+      ..SafetensorsSummary::default()
+    };
+    green_st.l2_stage_params.covered_tensors = 100;
+    green_st.l2_stage_params.total_tensors = 100;
+    green_st.l2_proj_shapes.push(crate::safetensors_meta::L2ProjShape {
+      role: "q_proj",
+      pattern: "model.layers.[0..31].self_attn.q_proj.weight".to_string(),
+      logical_shape: vec![4096, 4096],
+      repeat_count: 32,
+    });
+    let green_bp = build_model_blueprint(
+      "meta-llama/Llama-3.1-8B-Instruct",
+      "HF",
+      LLAMA_3_1_8B_CONFIG,
+      None,
+      None,
+      Some(green_st),
+    )
+    .expect("green_bp");
+    let gv = green_bp.verification_report().expect("green verification");
+    assert_eq!(gv.status, VerificationStatus::Verified, "expected Verified, got {:?}", gv);
+    assert!(!gv.circuit_broken);
 
     // 红灯/兜底 #3：未知 L1 配置，但 L2 权重检测到 24 层线性注意力 + 8 层全注意力 -> L2 自动兜底识别 HybridLinearSsm
     let l2_hybrid_st = SafetensorsSummary {

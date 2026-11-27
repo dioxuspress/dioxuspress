@@ -4,6 +4,7 @@ pub mod course_progress;
 pub mod curated_model;
 pub mod entitlement;
 pub mod membership;
+pub mod model_audit_queue;
 pub mod moderation_queue;
 pub mod order;
 pub mod topic;
