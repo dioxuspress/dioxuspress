@@ -156,12 +156,16 @@ RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=ri
  && if grep -q 'wasm-opt failed' /tmp/bundle.log; then echo 'dx bundle: wasm-opt failed' >&2; exit 1; fi
 
 # 3. 定时任务程序（不链接进 app，服务器 cron 用 `docker compose run --rm app /app/<bin>` 跑）：
-#    零数据库 `basic` 镜像传 `--build-arg INCLUDE_PAPERS_INGEST=0` 跳过以缩短构建耗时与镜像体积。
+#    - `INCLUDE_PAPERS_INGEST=0`：零数据库 `basic` 镜像跳过以缩短构建耗时与镜像体积。
+#    - `INCLUDE_MODELS_AUDIT=1`：启用 `ai` 垂直扩展时显式开启，产出 `/app/models-audit`。
 ARG INCLUDE_PAPERS_INGEST=1
+ARG INCLUDE_MODELS_AUDIT=0
 RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=rie-cargo-registry,target=/usr/local/cargo/registry \
     if [ "$INCLUDE_PAPERS_INGEST" = "1" ]; then \
-      CARGO_NET_OFFLINE=true cargo build --release -p module-papers --features ingest --bin papers-ingest \
-      && CARGO_NET_OFFLINE=true cargo build --release -p module-ai --features audit --bin models-audit; \
+      CARGO_NET_OFFLINE=true cargo build --release -p module-papers --features ingest --bin papers-ingest; \
+    fi \
+ && if [ "$INCLUDE_MODELS_AUDIT" = "1" ]; then \
+      CARGO_NET_OFFLINE=true cargo build --release -p module-ai --features audit --bin models-audit; \
     fi
 
 # 4. 收敛产物到统一目录，方便 runtime 阶段单层 COPY
@@ -169,7 +173,8 @@ RUN --mount=type=cache,id=rie-target,target=/tmp/target \
     mkdir -p /out \
  && cp -r /tmp/target/dx/app/release/web/public /out/public \
  && cp /tmp/target/dx/app/release/web/server /out/server \
- && if [ "$INCLUDE_PAPERS_INGEST" = "1" ]; then cp /tmp/target/release/papers-ingest /out/papers-ingest && cp /tmp/target/release/models-audit /out/models-audit; fi \
+ && if [ "$INCLUDE_PAPERS_INGEST" = "1" ]; then cp /tmp/target/release/papers-ingest /out/papers-ingest; fi \
+ && if [ "$INCLUDE_MODELS_AUDIT" = "1" ]; then cp /tmp/target/release/models-audit /out/models-audit; fi \
  && cp -r assets /out/assets
 
 
