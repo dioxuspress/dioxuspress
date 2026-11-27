@@ -8,16 +8,22 @@
 //! 历史 Navbar 的实现已下沉到 `layouts/classic.rs`；本文件仅负责分发。
 
 use dioxus::prelude::*;
+use dioxus::router::Outlet;
 
-use crate::components::layouts::{ClassicShell, DocsShell, MinimalShell};
+use crate::components::layouts::{
+  ClassicShell, DocsShell, FooterBoardLink, MinimalShell, NavEcosystem,
+};
+use crate::routes::Route;
 use crate::server::get_active_layout;
 
-/// Routable layout 入口：内部根据 `get_active_layout` 选择 shell。
-///
-/// SSR 与水合首帧优先使用编译期内嵌的 `SiteConfig::embedded().active_layout_or_default()`，
-/// 彻底消除 `docs` / `minimal` 布局在首屏水合时闪回 `classic` 的问题。
+/// 与具体 `Route` 枚举解耦的通用站点布局壳，供宿主站点（含私有扩展仓）复用。
 #[component]
-pub fn Navbar() -> Element {
+pub fn SiteNavbar(
+  current_path: String,
+  #[props(default)] ecosystems: Vec<NavEcosystem>,
+  #[props(default)] footer_boards: Vec<FooterBoardLink>,
+  children: Element,
+) -> Element {
   let default_layout =
     app_core::settings::SiteConfig::active().active_layout_or_default().to_string();
   let fallback = default_layout.clone();
@@ -29,9 +35,23 @@ pub fn Navbar() -> Element {
 
   rsx! {
     match layout.as_str() {
-      "docs" => rsx! { DocsShell {} },
-      "minimal" => rsx! { MinimalShell {} },
-      _ => rsx! { ClassicShell {} },
+      "docs" => rsx! { DocsShell { current_path, {children} } },
+      "minimal" => rsx! { MinimalShell { {children} } },
+      _ => rsx! { ClassicShell { current_path, ecosystems, footer_boards, {children} } },
+    }
+  }
+}
+
+/// DioxusPress 默认 `Route` 的 `#[layout(Navbar)]` 入口组件。
+#[component]
+pub fn Navbar() -> Element {
+  let current_path = use_route::<Route>().to_string();
+  rsx! {
+    SiteNavbar {
+      current_path,
+      ecosystems: crate::taxonomy::nav_ecosystems(),
+      footer_boards: crate::taxonomy::default_footer_boards(),
+      Outlet::<Route> {}
     }
   }
 }

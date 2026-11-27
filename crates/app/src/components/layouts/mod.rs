@@ -20,6 +20,38 @@ pub use classic::ClassicShell;
 pub use docs::DocsShell;
 pub use minimal::MinimalShell;
 
+/// 生态下拉菜单中的单个领域链接（与具体 `Route` 枚举解耦，供外部站点壳注入）。
+#[derive(Clone, PartialEq)]
+pub struct NavDomain {
+  pub id: &'static str,
+  pub label_key: &'static str,
+  pub path: &'static str,
+  pub module_id: &'static str,
+}
+
+/// 顶部导航生态分组（与具体 `Route` 枚举解耦）。
+#[derive(Clone, PartialEq)]
+pub struct NavEcosystem {
+  pub id: &'static str,
+  pub label_key: &'static str,
+  pub blurb_key: &'static str,
+  pub domains: Vec<NavDomain>,
+}
+
+/// 页脚专题列条目（与具体 `Route` 枚举解耦）。
+#[derive(Clone, PartialEq)]
+pub struct FooterBoardLink {
+  pub module_id: &'static str,
+  pub path: &'static str,
+  pub label_key: &'static str,
+}
+
+/// `current` 是否等于 `section` 或位于其子路径下（按路径段，`/papers-x` 不匹配 `/papers`）。
+pub fn path_within(current: &str, section: &str) -> bool {
+  let current = current.split(['?', '#']).next().unwrap_or(current);
+  current == section || current.strip_prefix(section).is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// 站点品牌标识：根据 `site.json` 渲染横版明暗双态 Logo、独立紧凑图标或纯文字站名。
 ///
 /// 采用纯 CSS `dark:hidden` / `hidden dark:block` 切换明暗图，保证 SSR 与 WASM 首屏

@@ -17,7 +17,6 @@ use dioxus::prelude::*;
 use dioxus::router::Link;
 
 use crate::components::view::Container;
-use crate::routes::Route;
 use crate::server::{enabled_module_ids, is_module_enabled};
 
 /// 已启用模块 id：编译进来（FEATURE_TIERS DL2）且 site.json 未关。
@@ -57,7 +56,7 @@ pub fn ModuleGate(id: String, children: Element) -> Element {
               "「{id_label}」模块在 site.json 中被设置为 enabled: false，目前不可访问。"
             }
             Link {
-              to: Route::Home {},
+              to: "/",
               class: "inline-flex items-center rounded-md btn-flow px-4 py-2 text-sm font-semibold",
               "回到首页"
             }

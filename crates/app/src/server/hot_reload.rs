@@ -9,10 +9,18 @@
 //!    mtime；即便手工 `git pull` / `rsync` 未发信号，也能在数秒内自动热同步。
 
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use app_core::i18n::Language;
 use app_core::settings::SiteConfig;
+
+static EXTRA_HOT_RELOAD: OnceLock<fn()> = OnceLock::new();
+
+/// 注册宿主站点的自定义热刷新回调（在 `SIGHUP` 或 `CONTENT_DIR` 变更时自动触发）。
+pub fn register_extra_hot_reload(callback: fn()) {
+  let _ = EXTRA_HOT_RELOAD.set(callback);
+}
 
 /// 同步清空全部内存配置与目录列表缓存，并推进 `ETag` 纪元。
 /// 纯内存原子/短锁操作（微秒级），可在任何异步上下文直接调用。
@@ -34,6 +42,9 @@ pub fn invalidate_all_in_memory_caches() -> u64 {
     module_ai::components_atlas::invalidate_components_cache();
     module_ai::math_atlas::invalidate_math_cache();
     module_ai::ml_atlas::invalidate_ml_cache();
+  }
+  if let Some(cb) = EXTRA_HOT_RELOAD.get() {
+    cb();
   }
   board::server::invalidate_board_cache();
   crate::server::conditional_cache::bump_content_epoch()

@@ -232,9 +232,19 @@ fn max_mtime_in(candidates: impl IntoIterator<Item = std::path::PathBuf>) -> u12
   candidates.into_iter().map(|p| mtime_nanos(&p)).max().unwrap_or(0)
 }
 
+static EXTRA_ETAG_STAMP: std::sync::OnceLock<fn(&str) -> Option<u128>> = std::sync::OnceLock::new();
+
+/// 注册宿主站点的自定义路由 ETag 版本戳计算函数（如私有图鉴/动态模型目录）。
+pub fn register_extra_etag_stamp(callback: fn(&str) -> Option<u128>) {
+  let _ = EXTRA_ETAG_STAMP.set(callback);
+}
+
 /// 轻量内容源指纹（仅数次 VFS `stat`，微秒级）：确保本地改 Markdown 或 `site.json` 无需等信号即刻换 `ETag`。
 fn probe_source_stamp(path: &str) -> u128 {
   let site_stamp = mtime_nanos(&app_core::utils::site_json_path());
+  if let Some(extra) = EXTRA_ETAG_STAMP.get().and_then(|f| f(path)) {
+    return site_stamp.wrapping_mul(6364136223846793005) ^ extra;
+  }
   let docs_root = app_core::utils::content_dir("docs");
   let posts_root = app_core::utils::content_dir("posts");
 

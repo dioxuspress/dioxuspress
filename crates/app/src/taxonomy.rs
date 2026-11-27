@@ -6,6 +6,7 @@
 //! `Route` 不是 const，故以函数 `ecosystems()` 在调用处构造（与 `routes::Home`
 //! 里的 `modules` 同样手法）。
 
+use crate::components::layouts::{FooterBoardLink, NavDomain, NavEcosystem};
 use crate::routes::Route;
 
 /// 一个领域条目：展示名 i18n key + 目标路由 + 用于「站点模块开关」gating 的 module id。
@@ -109,5 +110,66 @@ pub fn ecosystems() -> Vec<Ecosystem> {
         },
       ],
     },
+  ]
+}
+
+/// 与 `Route` 解耦的生态菜单数据结构，供 `SiteNavbar` / `ClassicShell` 消费。
+pub fn nav_ecosystems() -> Vec<NavEcosystem> {
+  vec![
+    NavEcosystem {
+      id: "rust",
+      label_key: "nav.eco.rust",
+      blurb_key: "nav.eco.rust.blurb",
+      domains: vec![
+        NavDomain {
+          id: "embedded",
+          label_key: "nav.embedded",
+          path: "/embedded",
+          module_id: "embedded",
+        },
+        NavDomain { id: "web3", label_key: "nav.web3", path: "/web3", module_id: "web3" },
+        NavDomain { id: "wasm", label_key: "nav.wasm", path: "/wasm", module_id: "wasm" },
+        NavDomain { id: "cli", label_key: "nav.cli", path: "/cli", module_id: "cli" },
+      ],
+    },
+    NavEcosystem {
+      id: "ai",
+      label_key: "nav.eco.ai",
+      blurb_key: "nav.eco.ai.blurb",
+      domains: vec![
+        NavDomain { id: "models", label_key: "nav.models", path: "/models", module_id: "ai" },
+        NavDomain {
+          id: "components",
+          label_key: "nav.ai.components",
+          path: "/ai/components",
+          module_id: "ai",
+        },
+        NavDomain { id: "math", label_key: "nav.ai.math", path: "/ai/math", module_id: "ai" },
+        NavDomain { id: "ml", label_key: "nav.ai.ml", path: "/ai/ml", module_id: "ai" },
+        NavDomain { id: "llm", label_key: "nav.ai.llm", path: "/ai", module_id: "ai" },
+        NavDomain { id: "inference", label_key: "nav.ai.inference", path: "/ai", module_id: "ai" },
+        NavDomain { id: "agent", label_key: "nav.ai.agent", path: "/ai", module_id: "ai" },
+        NavDomain { id: "rust-ai", label_key: "nav.ai.rust_ai", path: "/ai", module_id: "ai" },
+        NavDomain {
+          id: "visualizer",
+          label_key: "nav.ai.visualizer",
+          path: "/ai/visualizer",
+          module_id: "ai",
+        },
+        NavDomain { id: "papers", label_key: "nav.papers", path: "/papers", module_id: "papers" },
+      ],
+    },
+  ]
+}
+
+/// 默认 Classic 布局页脚「专题」列链接。
+pub fn default_footer_boards() -> Vec<FooterBoardLink> {
+  vec![
+    FooterBoardLink { module_id: "embedded", path: "/embedded", label_key: "nav.embedded" },
+    FooterBoardLink { module_id: "ai", path: "/ai", label_key: "nav.ai.rust_ai" },
+    FooterBoardLink { module_id: "papers", path: "/papers", label_key: "nav.papers" },
+    FooterBoardLink { module_id: "web3", path: "/web3", label_key: "nav.web3" },
+    FooterBoardLink { module_id: "wasm", path: "/wasm", label_key: "nav.wasm" },
+    FooterBoardLink { module_id: "cli", path: "/cli", label_key: "nav.cli" },
   ]
 }

@@ -4,7 +4,7 @@
 //! 语言 + 暗色 + 登录入口；不渲染主导航栏列表，也不渲染 Footer。
 
 use dioxus::prelude::*;
-use dioxus::router::{Link, Outlet};
+use dioxus::router::Link;
 use dioxus_shadcn::{Button, ButtonSize, ButtonVariant};
 
 use crate::components::lang_picker::LangPicker;
@@ -12,12 +12,11 @@ use crate::components::theme_picker::ThemePicker;
 use crate::components::user_menu::UserMenu;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n};
-use crate::routes::Route;
 use module_search::search::SearchButton;
 
-/// Minimal shell：极简顶部条，`Outlet::<Route>` 主导内容；无 Footer。
+/// Minimal shell：极简顶部条，`children` 主导内容；无 Footer。
 #[component]
-pub fn MinimalShell() -> Element {
+pub fn MinimalShell(children: Element) -> Element {
   let lang = use_i18n();
   let mut is_dark = use_signal(|| false);
   let mut show_auth_modal = crate::use_auth_modal();
@@ -42,7 +41,7 @@ pub fn MinimalShell() -> Element {
               Container {
                   div { class: "h-12 flex items-center justify-between gap-4",
                       Link {
-                          to: Route::Home {},
+                          to: "/",
                           class: "font-extrabold tracking-tight text-flow text-sm inline-flex items-center gap-2",
                           super::BrandMark { compact: true }
                       }
@@ -87,7 +86,7 @@ pub fn MinimalShell() -> Element {
           }
 
           main { class: "flex-1",
-              Outlet::<Route> {}
+              {children}
           }
       }
   }

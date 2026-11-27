@@ -25,6 +25,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![cfg(feature = "server")]
 
+pub use async_trait;
 pub use sea_orm_migration::prelude::*;
 
 mod m20260527_000001_initial_schema;

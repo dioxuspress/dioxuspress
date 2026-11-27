@@ -11,13 +11,12 @@
 use dioxus::prelude::*;
 use dioxus::router::Link;
 
+use crate::components::layouts::{path_within, NavEcosystem};
 use crate::i18n::{t, use_i18n};
-use crate::routes::Route;
-use crate::taxonomy::Ecosystem;
 
 /// 单个生态的桌面 mega 菜单。`enabled` 为已启用模块 id 列表，用于隐藏被关闭的领域。
 #[component]
-pub fn EcosystemMenu(eco: Ecosystem, enabled: Vec<String>) -> Element {
+pub fn EcosystemMenu(eco: NavEcosystem, current_path: String, enabled: Vec<String>) -> Element {
   let lang = use_i18n();
   let label = t(lang(), eco.label_key);
 
@@ -28,9 +27,8 @@ pub fn EcosystemMenu(eco: Ecosystem, enabled: Vec<String>) -> Element {
 
   // 当前页属于这个生态（任一领域页或其子页、生态落地页）时，触发按钮按选中态显示，
   // 与普通导航项一致；以前在 /papers、/ai 等页面顶栏没有任何选中项。
-  let current = use_route::<Route>().to_string();
-  let active = current == format!("/ecosystem/{}", eco.id)
-    || eco.domains.iter().any(|d| path_within(&current, &d.route.to_string()));
+  let active = current_path == format!("/ecosystem/{}", eco.id)
+    || eco.domains.iter().any(|d| path_within(&current_path, d.path));
   let button_class = if active {
     "inline-flex items-center gap-1 px-2 h-14 text-[var(--color-primary)] font-bold border-b-2 border-[var(--color-primary)] transition-colors"
   } else {
@@ -63,7 +61,7 @@ pub fn EcosystemMenu(eco: Ecosystem, enabled: Vec<String>) -> Element {
                       p { class: "{col_title}", "{t(lang(), \"mega.col.domains\")}" }
                       div { class: "flex flex-col",
                           for d in domains.iter() {
-                              Link { key: "{d.id}", to: d.route.clone(), class: "{item_class}", "{t(lang(), d.label_key)}" }
+                              Link { key: "{d.id}", to: d.path, class: "{item_class}", "{t(lang(), d.label_key)}" }
                           }
                       }
                   }
@@ -72,13 +70,13 @@ pub fn EcosystemMenu(eco: Ecosystem, enabled: Vec<String>) -> Element {
                       p { class: "{col_title}", "{t(lang(), \"mega.col.learn\")}" }
                       div { class: "flex flex-col",
                           if on("docs") {
-                              Link { to: Route::Docs {}, class: "{item_class}", "{t(lang(), \"mega.learn.docs\")}" }
+                              Link { to: "/docs", class: "{item_class}", "{t(lang(), \"mega.learn.docs\")}" }
                           }
                           if on("course") {
-                              Link { to: Route::Courses {}, class: "{item_class}", "{t(lang(), \"mega.learn.courses\")}" }
+                              Link { to: "/course", class: "{item_class}", "{t(lang(), \"mega.learn.courses\")}" }
                           }
                           if on("cases") {
-                              Link { to: Route::Cases {}, class: "{item_class}", "{t(lang(), \"mega.learn.cases\")}" }
+                              Link { to: "/case", class: "{item_class}", "{t(lang(), \"mega.learn.cases\")}" }
                           }
                       }
                   }
@@ -89,7 +87,7 @@ pub fn EcosystemMenu(eco: Ecosystem, enabled: Vec<String>) -> Element {
                           p { class: "text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed", "{t(lang(), eco.blurb_key)}" }
                       }
                       if on("cases") {
-                          Link { to: Route::Cases {}, class: "mt-3 inline-flex items-center gap-1 text-xs font-medium text-[var(--color-primary)] hover:underline",
+                          Link { to: "/case", class: "mt-3 inline-flex items-center gap-1 text-xs font-medium text-[var(--color-primary)] hover:underline",
                               "{t(lang(), \"mega.featured.cta\")}"
                               svg { class: "w-3.5 h-3.5", fill: "none", stroke: "currentColor", view_box: "0 0 24 24", stroke_width: "2",
                                   path { stroke_linecap: "round", stroke_linejoin: "round", d: "M9 5l7 7-7 7" }
@@ -103,15 +101,9 @@ pub fn EcosystemMenu(eco: Ecosystem, enabled: Vec<String>) -> Element {
   }
 }
 
-/// `current` 是 `section` 本身或其下的页面（按路径段，`/papers-x` 不算 `/papers` 之下）。
-fn path_within(current: &str, section: &str) -> bool {
-  let current = current.split(['?', '#']).next().unwrap_or(current);
-  current == section || current.strip_prefix(section).is_some_and(|rest| rest.starts_with('/'))
-}
-
 #[cfg(test)]
 mod tests {
-  use super::path_within;
+  use crate::components::layouts::path_within;
 
   #[test]
   fn path_within_matches_by_segment() {
