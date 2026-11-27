@@ -397,10 +397,16 @@ mod parser {
       || name.contains("enorm")
       || name.contains("hnorm")
       || name.contains("shared_head")
+      || name.starts_with("mtp.")
+      || name.contains(".mtp.")
+      || name.starts_with("dfly.")
+      || name.contains(".dfly.")
     {
       return "mtp";
     }
     if name.starts_with("visual.")
+      || name.starts_with("vision.")
+      || name.starts_with("aligner.")
       || name.contains("vision_tower")
       || name.contains("vision_model")
       || name.contains("mm_projector")
@@ -416,6 +422,10 @@ mod parser {
       return "audio";
     }
     if name.contains("embed_tokens")
+      || name == "embed.weight"
+      || name.ends_with(".embed.weight")
+      || name.contains(".engram.")
+      || name.starts_with("engram.")
       || name.contains("wte")
       || name.contains("word_embeddings")
       || name.contains("embed_positions")
@@ -428,6 +438,8 @@ mod parser {
     {
       "embedding"
     } else if name.contains("lm_head")
+      || name == "head.weight"
+      || name.ends_with(".head.weight")
       || name.contains("output.weight")
       || name.contains("proj_out")
       || name.contains("conv_out.")
@@ -505,7 +517,8 @@ mod parser {
 
   /// 判断张量是否为量化辅助元数据（scale / zero-point / g_idx），不应重复计入有效模型参数量。
   fn is_quant_aux_tensor(name: &str) -> bool {
-    name.ends_with(".weight_scale")
+    name.ends_with(".scale")
+      || name.ends_with(".weight_scale")
       || name.ends_with(".weight_scale_inv")
       || name.ends_with(".input_scale")
       || name.ends_with(".scales")
@@ -516,24 +529,64 @@ mod parser {
       || name.ends_with(".zero_point")
   }
 
-  /// 计算单个模式覆盖的逻辑参数个数（自动识别 4-bit 打包张量，跳过量化 scale/zero 辅助张量）。
-  fn effective_pattern_params(p: &TensorPatternEntry) -> Option<u64> {
-    if is_quant_aux_tensor(&p.example_name) {
-      return Some(0);
-    }
-    let raw = p.total_elements()?;
-    let is_packed =
+  /// 基于张量名后缀或伴随微缩放张量（如 OCP MX `F8_E8M0` block=32）数学比值推导量化打包倍数。
+  fn infer_pack_multiplier(
+    p: &TensorPatternEntry,
+    scale_by_stem: &HashMap<&str, &TensorPatternEntry>,
+  ) -> u64 {
+    let is_packed_name =
       p.example_name.ends_with(".weight_packed") || p.example_name.ends_with(".qweight");
-    let mul = if is_packed {
-      match p.dtype.as_deref() {
+    if is_packed_name {
+      return match p.dtype.as_deref() {
         Some("U8" | "I8") => 2,
         Some("U16" | "I16") => 4,
         Some("U32" | "I32") => 8,
         _ => 1,
-      }
+      };
+    }
+
+    // 通用微缩放 FP4/INT4 解包：当权重存为整数打包格式（I8/U8/I32/U32）且伴随 F8_E8M0 (block=32) 缩放表时，
+    // 校验 `scale_last * 32 == weight_last * k` 精确反推打包倍数 k（如 DeepSeek-V4.1 I8 [2304, 2560] + F8_E8M0 [2304, 160] => k=2）。
+    let max_k: u64 = match p.dtype.as_deref() {
+      Some("U8" | "I8") => 2,
+      Some("U16" | "I16") => 4,
+      Some("U32" | "I32") => 8,
+      _ => return 1,
+    };
+    let Some(stem) = p.pattern.strip_suffix(".weight") else {
+      return 1;
+    };
+    let Some(sc) = scale_by_stem.get(stem) else {
+      return 1;
+    };
+    if sc.dtype.as_deref() != Some("F8_E8M0") {
+      return 1;
+    }
+    let (Some(w_shape), Some(s_shape)) = (p.shape.as_ref(), sc.shape.as_ref()) else {
+      return 1;
+    };
+    if w_shape.len() < 2 || s_shape.len() < 2 {
+      return 1;
+    }
+    let w_last = *w_shape.last().unwrap_or(&0);
+    let s_last = *s_shape.last().unwrap_or(&0);
+    if w_last > 0 && s_last > 0 && s_last.saturating_mul(32) == w_last.saturating_mul(max_k) {
+      max_k
     } else {
       1
-    };
+    }
+  }
+
+  /// 计算单个模式覆盖的逻辑参数个数（自动识别显式与微缩放伴随 4-bit 打包张量，跳过量化 scale/zero 辅助张量）。
+  fn effective_pattern_params(
+    p: &TensorPatternEntry,
+    scale_by_stem: &HashMap<&str, &TensorPatternEntry>,
+  ) -> Option<u64> {
+    if is_quant_aux_tensor(&p.example_name) {
+      return Some(0);
+    }
+    let raw = p.total_elements()?;
+    let mul = infer_pack_multiplier(p, scale_by_stem);
     raw.checked_mul(mul)
   }
 
@@ -542,6 +595,18 @@ mod parser {
     if total_tensor_count == 0 || patterns.is_empty() {
       return None;
     }
+    let mut scale_by_stem: HashMap<&str, &TensorPatternEntry> = HashMap::new();
+    for p in patterns {
+      if let Some(stem) = p
+        .pattern
+        .strip_suffix(".scale")
+        .or_else(|| p.pattern.strip_suffix(".weight_scale"))
+        .or_else(|| p.pattern.strip_suffix(".weight_scale_inv"))
+        .or_else(|| p.pattern.strip_suffix(".scales"))
+      {
+        scale_by_stem.insert(stem, p);
+      }
+    }
     let mut covered_tensors = 0usize;
     let mut total_params = 0u64;
     for p in patterns {
@@ -549,7 +614,7 @@ mod parser {
         covered_tensors += p.repeat_count;
         continue;
       }
-      if let Some(params) = effective_pattern_params(p) {
+      if let Some(params) = effective_pattern_params(p, &scale_by_stem) {
         covered_tensors += p.repeat_count;
         total_params = total_params.saturating_add(params);
       }
@@ -580,11 +645,15 @@ mod parser {
         || name.contains("k_proj")
         || name.contains("qkv_proj")
         || name.contains("wqkv")
+        || name.contains("wq_a")
+        || name.contains("wkv")
         || name.contains(".indexer."))
   }
 
   fn is_vision_signal(name: &str) -> bool {
     name.starts_with("visual.")
+      || name.starts_with("vision.")
+      || name.starts_with("aligner.")
       || name.contains("vision_tower")
       || name.contains("vision_model")
       || name.contains("mm_projector")
@@ -650,6 +719,7 @@ mod parser {
       hetero_attn_shard: Option<String>,
       first_moe_shard: Option<String>,
       vision_shard: Option<String>,
+      extra_module_shard: Option<String>,
       tail_shard: Option<String>,
       fallback_shard: Option<String>,
       groups: BTreeMap<String, StreamingGroupAcc>,
@@ -668,7 +738,9 @@ mod parser {
           if self.first_trunk_shard.is_none()
             && !is_vision_signal(&name)
             && (name.contains("embed_tokens")
+              || name == "embed.weight"
               || name.contains("layers.0.self_attn")
+              || name.contains("layers.0.attn.")
               || name.contains("transformer_blocks.0.")
               || name.contains("blocks.0."))
           {
@@ -688,7 +760,18 @@ mod parser {
           if self.vision_shard.is_none() && is_vision_signal(&name) {
             self.vision_shard = Some(shard.clone());
           }
-          if name.contains("lm_head") || name.contains("proj_out") || name.ends_with(".norm.weight")
+          if self.extra_module_shard.is_none()
+            && (name.contains(".engram.embed.weight")
+              || name.starts_with("mtp.0.")
+              || name.starts_with("dfly.")
+              || name.contains("token_refiner.blocks.0."))
+          {
+            self.extra_module_shard = Some(shard.clone());
+          }
+          if name.contains("lm_head")
+            || name == "head.weight"
+            || name.contains("proj_out")
+            || name.ends_with(".norm.weight")
           {
             self.tail_shard = Some(shard.clone());
           }
@@ -711,7 +794,11 @@ mod parser {
         let is_mtp_sig = name.contains("eh_proj")
           || name.contains("enorm")
           || name.contains("hnorm")
-          || name.contains("shared_head");
+          || name.contains("shared_head")
+          || name.starts_with("mtp.")
+          || name.contains(".mtp.")
+          || name.starts_with("dfly.")
+          || name.contains(".dfly.");
         if is_mtp_sig {
           if let Some(l) = sp.layer_idx {
             self.mtp_layers.insert(l);
@@ -841,6 +928,7 @@ mod parser {
       hetero_attn_shard: None,
       first_moe_shard: None,
       vision_shard: None,
+      extra_module_shard: None,
       tail_shard: None,
       fallback_shard: None,
       groups: BTreeMap::new(),
@@ -875,6 +963,7 @@ mod parser {
       state.first_trunk_shard,
       state.hetero_attn_shard,
       state.first_moe_shard,
+      state.extra_module_shard,
       state.vision_shard,
       state.tail_shard,
       state.fallback_shard,
@@ -885,7 +974,7 @@ mod parser {
       if !representative_shards.iter().any(|s| s == &cand) {
         representative_shards.push(cand);
       }
-      if representative_shards.len() >= 5 {
+      if representative_shards.len() >= 6 {
         break;
       }
     }
@@ -1047,12 +1136,18 @@ mod parser {
       shard: Option<String>,
     }
 
-    // 先过一遍识别 MTP 层（含 `eh_proj` / `shared_head` 的层不计入常规主干层上限）。
+    // 先过一遍识别 MTP 层（含 `eh_proj` / `shared_head` 或 `mtp.`/`dfly.` 前缀的不计入常规主干层上限）。
     let mut mtp_layers: BTreeSet<u64> = BTreeSet::new();
     for t in &tensors {
       let sp = canonical_skeleton(&t.name);
       if let Some(l) = sp.layer_idx {
-        if t.name.contains("eh_proj") || t.name.contains("enorm") || t.name.contains("shared_head")
+        if t.name.contains("eh_proj")
+          || t.name.contains("enorm")
+          || t.name.contains("shared_head")
+          || t.name.starts_with("mtp.")
+          || t.name.contains(".mtp.")
+          || t.name.starts_with("dfly.")
+          || t.name.contains(".dfly.")
         {
           mtp_layers.insert(l);
         }
@@ -1433,5 +1528,145 @@ mod tests {
       .patterns
       .iter()
       .any(|p| p.stage == "vision" && p.pattern.contains("mm_projector")));
+  }
+
+  #[test]
+  fn streaming_index_unpacks_i8_fp4_via_e8m0_scale_and_samples_engram_and_vision() {
+    let raw_idx = r#"{
+      "metadata": {"total_size": 510286023000},
+      "weight_map": {
+        "vision.blocks.0.attn.wqkv.weight": "model-00047.safetensors",
+        "embed.weight": "model-00001.safetensors",
+        "layers.0.attn.wq_a.weight": "model-00001.safetensors",
+        "layers.0.attn.wq_a.scale": "model-00001.safetensors",
+        "layers.0.ffn.experts.0.w1.weight": "model-00002.safetensors",
+        "layers.0.ffn.experts.0.w1.scale": "model-00002.safetensors",
+        "layers.0.ffn.experts.1.w1.weight": "model-00002.safetensors",
+        "layers.0.ffn.experts.1.w1.scale": "model-00002.safetensors",
+        "layers.0.ffn.shared_experts.w1.weight": "model-00002.safetensors",
+        "layers.0.ffn.shared_experts.w1.scale": "model-00002.safetensors",
+        "layers.1.engram.embed.weight": "model-00005.safetensors",
+        "layers.1.engram.embed.scale": "model-00005.safetensors",
+        "mtp.0.ffn.experts.0.w1.weight": "model-00048.safetensors",
+        "head.weight": "model-00048.safetensors"
+      }
+    }"#;
+
+    let scan = parse_safetensors_index_streaming(raw_idx).expect("scan ds-v4.1 style index");
+    let shards = scan.sample_shards();
+    assert!(shards.contains(&"model-00001.safetensors".to_string()));
+    assert!(shards.contains(&"model-00002.safetensors".to_string()));
+    assert!(shards.contains(&"model-00005.safetensors".to_string()), "engram shard must be sampled");
+    assert!(shards.contains(&"model-00047.safetensors".to_string()), "vision shard must be sampled");
+    assert!(shards.contains(&"model-00048.safetensors".to_string()), "tail shard must be sampled");
+
+    let sampled = vec![
+      RawTensorMeta {
+        name: "vision.blocks.0.attn.wqkv.weight".to_string(),
+        shape: Some(vec![3072, 1024]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(3072 * 1024 * 2),
+        shard: Some("model-00047.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "embed.weight".to_string(),
+        shape: Some(vec![129280, 5120]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(129280 * 5120 * 2),
+        shard: Some("model-00001.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "layers.0.attn.wq_a.weight".to_string(),
+        shape: Some(vec![1280, 5120]),
+        dtype: Some("F8_E4M3".to_string()),
+        byte_len: Some(1280 * 5120),
+        shard: Some("model-00001.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "layers.0.attn.wq_a.scale".to_string(),
+        shape: Some(vec![40, 160]),
+        dtype: Some("F8_E8M0".to_string()),
+        byte_len: Some(40 * 160),
+        shard: Some("model-00001.safetensors".to_string()),
+      },
+      // FP4 packed in I8 without _packed suffix: [2304, 2560] with E8M0 scale [2304, 160] (160*32 = 5120 = 2*2560)
+      RawTensorMeta {
+        name: "layers.0.ffn.experts.0.w1.weight".to_string(),
+        shape: Some(vec![2304, 2560]),
+        dtype: Some("I8".to_string()),
+        byte_len: Some(2304 * 2560),
+        shard: Some("model-00002.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "layers.0.ffn.experts.0.w1.scale".to_string(),
+        shape: Some(vec![2304, 160]),
+        dtype: Some("F8_E8M0".to_string()),
+        byte_len: Some(2304 * 160),
+        shard: Some("model-00002.safetensors".to_string()),
+      },
+      // FP8 weight: [2304, 5120] with E8M0 scale [72, 160] -> must remain 1x (NOT doubled)
+      RawTensorMeta {
+        name: "layers.0.ffn.shared_experts.w1.weight".to_string(),
+        shape: Some(vec![2304, 5120]),
+        dtype: Some("F8_E4M3".to_string()),
+        byte_len: Some(2304 * 5120),
+        shard: Some("model-00002.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "layers.0.ffn.shared_experts.w1.scale".to_string(),
+        shape: Some(vec![72, 160]),
+        dtype: Some("F8_E8M0".to_string()),
+        byte_len: Some(72 * 160),
+        shard: Some("model-00002.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "layers.1.engram.embed.weight".to_string(),
+        shape: Some(vec![1000, 256]),
+        dtype: Some("F8_E4M3".to_string()),
+        byte_len: Some(1000 * 256),
+        shard: Some("model-00005.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "layers.1.engram.embed.scale".to_string(),
+        shape: Some(vec![1000, 8]),
+        dtype: Some("F8_E8M0".to_string()),
+        byte_len: Some(1000 * 8),
+        shard: Some("model-00005.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "mtp.0.ffn.experts.0.w1.weight".to_string(),
+        shape: Some(vec![2304, 2560]),
+        dtype: Some("I8".to_string()),
+        byte_len: Some(2304 * 2560),
+        shard: Some("model-00048.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "head.weight".to_string(),
+        shape: Some(vec![129280, 5120]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(129280 * 5120 * 2),
+        shard: Some("model-00048.safetensors".to_string()),
+      },
+    ];
+
+    let summary = finalize_streaming_index(scan, &sampled);
+    assert!(summary.has_vision_tower);
+    assert_eq!(summary.detected_num_layers, Some(2));
+    assert_eq!(summary.detected_full_attn_layers, Some(1));
+    assert!(summary.patterns.iter().any(|p| p.stage == "vision" && p.pattern.starts_with("vision.")));
+    assert!(summary.patterns.iter().any(|p| p.stage == "mtp" && p.pattern.starts_with("mtp.")));
+
+    // Exact math verification:
+    // vision(3072*1024) + embed(129280*5120) + wq_a(1280*5120) + 2*experts(2*2304*2560*2)
+    // + shared(2304*5120) + engram(1000*256) + mtp_no_scale(2304*2560) + head(129280*5120)
+    let expected = 3072 * 1024
+      + 129280 * 5120
+      + 1280 * 5120
+      + 2 * 2304 * 2560 * 2
+      + 2304 * 5120
+      + 1000 * 256
+      + 2304 * 2560
+      + 129280 * 5120;
+    assert_eq!(summary.l2_estimated_params, Some(expected));
   }
 }

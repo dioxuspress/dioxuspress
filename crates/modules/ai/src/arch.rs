@@ -4733,6 +4733,25 @@ mod diffusion_parser {
     if is_video { "视频" } else { "图像" }
   ));
 
+    let parse_warning = safetensors.as_ref().and_then(|st| {
+      let l2_params = st.l2_estimated_params?;
+      if denoiser_total == 0 || l2_params == 0 {
+        return None;
+      }
+      let l1 = denoiser_total as f64;
+      let l2 = l2_params as f64;
+      let diff_pct = ((l1 - l2).abs() / l2) * 100.0;
+      if diff_pct > 20.0 {
+        Some(format!(
+          "⚠ L1/L2 去噪主干参数量偏差较大（{diff_pct:.1}%）：L1 公式估算 {} vs L2 真实张量 Shape 汇总 {}，请结合下方真实权重表核对。",
+          format_count(denoiser_total),
+          format_count(l2_params)
+        ))
+      } else {
+        None
+      }
+    });
+
     Ok(ModelBlueprint {
       repo_id: repo_id.to_string(),
       source_label: source_label.to_string(),
@@ -4786,7 +4805,7 @@ mod diffusion_parser {
       raw_config_pretty,
       aux_configs: Vec::new(),
       declarative_graph_wire: None,
-      parse_warning: None,
+      parse_warning,
     })
   }
 }
