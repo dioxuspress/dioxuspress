@@ -45,7 +45,8 @@ tracing-subscriber = { workspace = true, optional = true }
 migration = { path = "../migration", default-features = false, optional = true }
 
 [features]
-default = ["web", "payments", "papers", "ai"]
+# 默认 = 通用完整建站框架（不含垂直领域的 `ai` 模块；需要 AI 模型图鉴与实验室时显式传 `--features ai`）。
+default = ["web", "payments", "papers"]
 web = ["dioxus/web"]
 desktop = ["dioxus/desktop"]
 mobile = ["dioxus/mobile"]

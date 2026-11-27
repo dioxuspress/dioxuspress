@@ -14,7 +14,7 @@
 | 打赏 | 随 `payments`（DT4） | 博客 / 播客页打赏，见 §6 | 同上 |
 | 论文资讯（正交） | `papers` = `accounts` + 论文 | 论文速递 `/papers` 与 `/papers/feed.xml` | 同 `accounts` |
 
-`default = ["web", "payments", "papers", "ai"]`，即完整站点；不传 feature 的构建行为与完整门户一致。
+`default = ["web", "payments", "papers"]`，即通用的完整建站框架（不含垂直领域的 `ai` 模块）。`ai` 为显式 opt-in 扩展特性（通过 `--features ai` 开启，Docker 中如需内置 `models-audit` 巡检工具同步传 `--build-arg INCLUDE_MODELS_AUDIT=1`）。
 
 ```toml
 # crates/app/Cargo.toml
