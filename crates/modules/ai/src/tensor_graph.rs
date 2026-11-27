@@ -1314,78 +1314,157 @@ fn append_segment_subgraph(
       sliding_window,
       is_causal,
       has_cross_attn,
+      gqa_flags,
+      sparse_index_topk,
       ..
     } => {
-      min_q = min_q.min(-4);
-      max_q = max_q.max(4);
+      let is_shared_kv = (*gqa_flags & crate::arch::GQA_FLAG_SHARED_KV) != 0;
+      let is_out_gate = (*gqa_flags & crate::arch::GQA_FLAG_OUTPUT_GATE) != 0;
+      let is_low_rank = (*gqa_flags & crate::arch::GQA_FLAG_LOW_RANK_QO) != 0;
       let q_out = num_q_heads * head_dim;
       let kv_out = num_kv_heads * head_dim;
       let kv_shape = preset.fmt_heads(*num_kv_heads, *head_dim);
 
-      let q = g.add_proj(
-        OpKind::ConvOrLinear,
-        &preset.fmt_heads(*num_q_heads, *head_dim),
-        &fmt_num(if *qk_norm { "q+N " } else { "q " }, *num_q_heads, "H"),
-        "Query Projection (q_proj + RoPE)",
-        d,
-        q_out,
-        &fmt_param("参数量: ", d * q_out),
-        -4,
-        row,
-      );
-      let k = g.add_proj(
-        OpKind::AvgPool,
-        &kv_shape,
-        &fmt_num(if *qk_norm { "k+N " } else { "k " }, *num_kv_heads, "H"),
-        "Key Projection (k_proj → KV Cache)",
-        d,
-        kv_out,
-        &fmt_param("KV elems/tok: ", seg.attention.cached_elements_per_token()),
-        0,
-        row,
-      );
-      let v = g.add_proj(
-        OpKind::AvgPool,
-        &kv_shape,
-        &fmt_num("v ", *num_kv_heads, "H"),
-        "Value Projection (v_proj → KV Cache)",
-        d,
-        kv_out,
-        "与 K 共同构成推理期 KV Cache",
-        4,
-        row,
-      );
-      g.edge(attn_in, q);
-      g.edge(attn_in, k);
-      g.edge(attn_in, v);
+      let q_prefix = if is_low_rank {
+        "q_a/b "
+      } else if is_out_gate {
+        if *qk_norm {
+          "q+N+g "
+        } else {
+          "q+g "
+        }
+      } else if *qk_norm {
+        "q+N "
+      } else {
+        "q "
+      };
+
+      let (q_node, kv_nodes): (usize, (usize, Option<usize>)) = if is_shared_kv {
+        min_q = min_q.min(-3);
+        max_q = max_q.max(3);
+        let q = g.add_proj(
+          OpKind::ConvOrLinear,
+          &preset.fmt_heads(*num_q_heads, *head_dim),
+          &fmt_num(q_prefix, *num_q_heads, "H"),
+          if is_low_rank {
+            "Low-Rank Query Projection (wq_a → wq_b)"
+          } else {
+            "Query Projection (q_proj + RoPE)"
+          },
+          d,
+          q_out,
+          &fmt_param("本层 Attention 总参: ", attn_params),
+          -3,
+          row,
+        );
+        let wkv = g.add_proj(
+          OpKind::AvgPool,
+          &kv_shape,
+          &fmt_num(if *qk_norm { "wkv+N " } else { "wkv " }, *num_kv_heads, "H"),
+          "Shared Latent KV Projection (wkv → KV Cache)",
+          d,
+          kv_out,
+          &fmt_param("共享单路 KV elems/tok: ", seg.attention.cached_elements_per_token()),
+          3,
+          row,
+        );
+        g.edge(attn_in, q);
+        g.edge(attn_in, wkv);
+        (q, (wkv, None))
+      } else {
+        min_q = min_q.min(-4);
+        max_q = max_q.max(4);
+        let q = g.add_proj(
+          OpKind::ConvOrLinear,
+          &preset.fmt_heads(*num_q_heads, *head_dim),
+          &fmt_num(q_prefix, *num_q_heads, "H"),
+          if is_out_gate {
+            "Gated Query Projection (q_proj → Q + Gate)"
+          } else {
+            "Query Projection (q_proj + RoPE)"
+          },
+          d,
+          q_out * if is_out_gate { 2 } else { 1 },
+          &fmt_param("参数量: ", d * q_out * if is_out_gate { 2 } else { 1 }),
+          -4,
+          row,
+        );
+        let k = g.add_proj(
+          OpKind::AvgPool,
+          &kv_shape,
+          &fmt_num(if *qk_norm { "k+N " } else { "k " }, *num_kv_heads, "H"),
+          "Key Projection (k_proj → KV Cache)",
+          d,
+          kv_out,
+          &fmt_param("KV elems/tok: ", seg.attention.cached_elements_per_token()),
+          0,
+          row,
+        );
+        let v = g.add_proj(
+          OpKind::AvgPool,
+          &kv_shape,
+          &fmt_num("v ", *num_kv_heads, "H"),
+          "Value Projection (v_proj → KV Cache)",
+          d,
+          kv_out,
+          "与 K 共同构成推理期 KV Cache",
+          4,
+          row,
+        );
+        g.edge(attn_in, q);
+        g.edge(attn_in, k);
+        g.edge(attn_in, v);
+        (q, (k, Some(v)))
+      };
       row += 1;
 
-      let tag = match (sliding_window, is_causal, has_cross_attn) {
-        (Some(w), _, _) => fmt_num("SWA(", *w, ")"),
-        (None, false, _) => "Bi-Attn".to_string(),
-        (None, true, true) => "Self+Cross".to_string(),
-        _ => fmt_pair(*num_q_heads, ":", *num_kv_heads),
+      let (tag, sdpa_title, sdpa_formula) = if *sparse_index_topk > 0 {
+        (
+          fmt_num("DSA Top-", *sparse_index_topk, ""),
+          "DeepSeek Sparse Attention (DSA)",
+          "SparseSoftmax(TopK_Indexer(Q·Kᵀ)/√d) · V",
+        )
+      } else {
+        let t = match (sliding_window, is_causal, has_cross_attn) {
+          (Some(w), _, _) => fmt_num("SWA(", *w, ")"),
+          (None, false, _) => "Bi-Attn".to_string(),
+          (None, true, true) => "Self+Cross".to_string(),
+          _ => fmt_pair(*num_q_heads, ":", *num_kv_heads),
+        };
+        (t, "Scaled Dot-Product Attention (GQA / FlashAttn)", "Softmax(Q·Kᵀ/√d_k)·V → Concat Heads")
       };
       let sdpa = g.add(
         OpKind::Attention,
         &preset.fmt_seq(q_out),
         &tag,
-        "Scaled Dot-Product Attention (GQA / FlashAttn)",
-        "Softmax(Q·Kᵀ/√d_k)·V → Concat Heads",
+        sdpa_title,
+        sdpa_formula,
         &fmt_param("本层 Attention 总参: ", attn_params),
         0,
         row,
       );
-      g.edge(q, sdpa);
-      g.edge(k, sdpa);
-      g.edge(v, sdpa);
+      g.edge(q_node, sdpa);
+      g.edge(kv_nodes.0, sdpa);
+      if let Some(v_node) = kv_nodes.1 {
+        g.edge(v_node, sdpa);
+      }
       row += 1;
 
       let op = g.add_proj(
         OpKind::ConvOrLinear,
         seq_d,
-        "o_proj",
-        "Attention Output Projection (o_proj)",
+        if is_low_rank {
+          "o_a→o_b"
+        } else if is_out_gate {
+          "g⊙o_proj"
+        } else {
+          "o_proj"
+        },
+        if is_low_rank {
+          "Low-Rank Output Projection (wo_a → wo_b)"
+        } else {
+          "Attention Output Projection (o_proj)"
+        },
         q_out,
         d,
         &fmt_param("参数量: ", q_out * d),

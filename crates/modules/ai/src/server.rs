@@ -1034,6 +1034,22 @@ mod tests {
         5_500_000_000,
         8_500_000_000,
       ),
+      (
+        "deepseek-ai/DeepSeek-V4-Pro",
+        "modelscope",
+        "LLM 语言模型",
+        "DeepSeek DSA + MoE",
+        1_565_000_000_000,
+        1_585_000_000_000,
+      ),
+      (
+        "Diffuspace/Clover-35B-A3B-Preview",
+        "hf",
+        "LLM 语言模型",
+        "Hybrid Linear / SSM",
+        34_550_000_000,
+        34_800_000_000,
+      ),
     ];
 
     for (repo, src, expected_modality, expected_badge, min_params, max_params) in cases {
