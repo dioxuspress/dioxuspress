@@ -184,6 +184,10 @@ pub enum AttentionSpec {
     /// 是否附带编码器-解码器交叉注意力 `encoder_attn`（如 Whisper / Parler-TTS / SpeechT5 解码层）
     #[serde(default)]
     has_cross_attn: bool,
+    /// 服务端自定义精确单层注意力参数覆盖（用于低秩 Q/O 投影、非 MLA 独立 DSA Indexer 与 KV 压缩器，零客户端 WASM 开销）
+    #[cfg(feature = "server")]
+    #[serde(skip)]
+    custom_attn_params: Option<u64>,
   },
   /// DeepSeek Multi-head Latent Attention (MLA)：低秩联合压缩 KV + 可选解耦 RoPE / NoPE / Output Gate / DSA 稀疏索引器
   DeepSeekMla {
@@ -417,8 +421,14 @@ impl AttentionSpec {
         o_bias,
         qk_norm,
         has_cross_attn,
+        #[cfg(feature = "server")]
+        custom_attn_params,
         ..
       } => {
+        #[cfg(feature = "server")]
+        if let Some(p) = *custom_attn_params {
+          return p;
+        }
         let q_out = num_q_heads * head_dim;
         let kv_out = num_kv_heads * head_dim;
         let mut p =
@@ -660,11 +670,30 @@ impl LayerSegment {
   }
 
   pub fn range_label(&self) -> String {
-    if self.start_layer == self.end_layer {
-      format!("Layer {}", self.start_layer)
-    } else {
-      format!("Layers {}–{} (×{})", self.start_layer, self.end_layer, self.layer_count())
+    let n = self.layer_count();
+    let mut s = String::with_capacity(28);
+    if n == 1 {
+      s.push_str("Layer ");
+      push_u64(&mut s, self.start_layer);
+      return s;
     }
+    let is_interleaved = self.schedule_note.as_deref().is_some_and(|note| {
+      note.contains("混合序列架构") || note.contains("三态异构") || note.contains("交替堆叠")
+    });
+    if is_interleaved {
+      s.push_str("交替分布 (×");
+      push_u64(&mut s, n);
+      s.push_str("层)");
+    } else {
+      s.push_str("Layers ");
+      push_u64(&mut s, self.start_layer);
+      s.push('–');
+      push_u64(&mut s, self.end_layer);
+      s.push_str(" (×");
+      push_u64(&mut s, n);
+      s.push(')');
+    }
+    s
   }
 }
 
@@ -808,6 +837,45 @@ fn contains_ascii_ci(hay: &str, needle: &[u8]) -> bool {
 }
 
 impl ModelBlueprint {
+  /// 返回与主干架构正交的模态徽章（清晰区分图文多模态 VLM、纯文本 LLM、2D 生图、3D 视频、语音与向量重排）。
+  pub fn modality_badge_label(&self) -> &'static str {
+    if self.is_diffusion_pipeline() {
+      if self.diffusion.as_ref().is_some_and(|d| d.is_video) {
+        return "Video 视频生成";
+      }
+      return "Image 图像生成";
+    }
+    match self.family {
+      ArchFamily::SpeechTtsOmni => {
+        if self.vision.is_some() {
+          "Omni 全模态"
+        } else {
+          "TTS 语音合成"
+        }
+      }
+      ArchFamily::AudioAsr => "Audio ASR 语音",
+      ArchFamily::EncoderEmbedding => {
+        if matches!(self.output_head, OutputHeadSpec::SequenceScorer { .. }) {
+          "Reranker 重排"
+        } else {
+          "Embedding 向量"
+        }
+      }
+      ArchFamily::DeclarativeGraph => "经典 / CV 图谱",
+      _ => {
+        if self.vision.is_some() && self.audio.is_some() {
+          "Omni 多模态"
+        } else if self.vision.is_some() {
+          "VLM 图文多模态"
+        } else if self.audio.is_some() {
+          "Audio-LLM 语音"
+        } else {
+          "LLM 语言模型"
+        }
+      }
+    }
+  }
+
   /// 返回去厂商误标的准确架构徽章（避免将非 DeepSeek 的 MLA 模型标成 DeepSeek、或将非 Qwen 的 MoE 标成 Qwen）。
   pub fn family_badge_label(&self) -> &'static str {
     let mt = self.model_type.as_str();
@@ -829,7 +897,19 @@ impl ModelBlueprint {
         }
       }
       ArchFamily::QwenMoe => {
-        if contains_ascii_ci(mt, b"qwen") || contains_ascii_ci(arch0, b"qwen") {
+        let has_dsa_note = self
+          .segments
+          .iter()
+          .any(|s| s.schedule_note.as_deref().is_some_and(|n| n.contains("DSA")));
+        if contains_ascii_ci(mt, b"deepseek") || contains_ascii_ci(arch0, b"deepseek") {
+          if has_dsa_note {
+            "DeepSeek DSA + MoE"
+          } else {
+            "DeepSeek Sparse MoE"
+          }
+        } else if has_dsa_note {
+          "Low-Rank DSA + MoE"
+        } else if contains_ascii_ci(mt, b"qwen") || contains_ascii_ci(arch0, b"qwen") {
           "Qwen Sparse MoE"
         } else if contains_ascii_ci(mt, b"glm") || contains_ascii_ci(arch0, b"glm") {
           "GLM Sparse MoE"
@@ -1575,6 +1655,7 @@ pub fn build_model_blueprint_with_aux(
   let mla_use_nope = cfg_obj.get("mla_use_nope").and_then(Value::as_bool).unwrap_or(false);
   let has_explicit_rope = cfg_obj.contains_key("rope_theta")
     || cfg_obj.contains_key("rope_scaling")
+    || cfg_obj.contains_key("rope_parameters")
     || cfg_obj.contains_key("rotary_percent")
     || cfg_obj.contains_key("rotary_emb_base");
   let rope_summary = if is_pure_mamba || arch_joined.contains("rwkv") {
@@ -1587,6 +1668,9 @@ pub fn build_model_blueprint_with_aux(
     extract_rope_summary(cfg_obj)
   };
   let num_nextn_predict_layers = u64_any(cfg_obj, &["num_nextn_predict_layers"]).unwrap_or(0);
+  let dfly_layers = u64_any(root_obj, &["dfly_num_hidden_layers"])
+    .or_else(|| u64_any(cfg_obj, &["dfly_num_hidden_layers"]))
+    .unwrap_or(0);
 
   let num_q_heads =
     u64_any(cfg_obj, &["num_attention_heads", "n_head", "decoder_attention_heads", "num_heads"])
@@ -1600,7 +1684,7 @@ pub fn build_model_blueprint_with_aux(
   let is_causal = !(is_bi_encoder_arch || is_ctc_asr);
   let has_cross_attn = is_whisper_like || root_obj.contains_key("decoder");
 
-  // 1. 识别 Attention 形态（MLA/DSA vs Hybrid/Pure Linear SSM vs Standard GQA）
+  // 1. 识别 Attention 形态（MLA/DSA vs Hybrid/Pure Linear SSM vs Standard/Low-Rank GQA）
   let kv_lora_rank = u64_any(cfg_obj, &["kv_lora_rank"]);
   let is_mla = kv_lora_rank.is_some()
     || arch_joined.contains("deepseek_v2")
@@ -1616,13 +1700,19 @@ pub fn build_model_blueprint_with_aux(
     safetensors.as_ref(),
   );
 
+  let mut low_rank_dsa_note: Option<String> = None;
   let standard_attention = if let Some(kv_rank) = kv_lora_rank {
     let q_lora_rank = u64_any(cfg_obj, &["q_lora_rank"]).filter(|&v| v > 0);
     let qk_nope_head_dim = u64_any(cfg_obj, &["qk_nope_head_dim"]).unwrap_or(128);
     let qk_rope_head_dim = u64_any(cfg_obj, &["qk_rope_head_dim"]).unwrap_or(64);
     let v_head_dim = u64_any(cfg_obj, &["v_head_dim"]).unwrap_or(128);
-    let output_gate = cfg_obj.get("mla_use_output_gate").and_then(Value::as_bool).unwrap_or(false);
-    // 兼容顶层 DSA（DeepSeek-V3.2: index_topk / index_n_heads / index_head_dim）与嵌套 dsa_config（Kimi-K3.1）
+    let output_gate = cfg_obj
+      .get("mla_use_output_gate")
+      .or_else(|| cfg_obj.get("gated_mla"))
+      .or_else(|| root_obj.get("gated_mla"))
+      .and_then(Value::as_bool)
+      .unwrap_or(false);
+    // 兼容顶层 DSA（DeepSeek-V3.2 / Hy4: index_topk / index_n_heads / index_head_dim）与嵌套 dsa_config（Kimi-K3.1）
     let dsa_obj = cfg_obj.get("dsa_config").and_then(Value::as_object);
     let sparse_index_topk = dsa_obj
       .and_then(|d| u64_any(d, &["index_topk"]))
@@ -1639,7 +1729,18 @@ pub fn build_model_blueprint_with_aux(
         .unwrap_or(128);
       let q_in = q_lora_rank.unwrap_or(hidden_size);
       // Lightning Indexer: wq_b [idx_heads * idx_dim, q_in] + wk [idx_dim, D] + weights_proj [idx_heads, D]
-      q_in * (idx_heads * idx_dim) + hidden_size * idx_dim + hidden_size * idx_heads
+      let raw_idx = q_in * (idx_heads * idx_dim) + hidden_size * idx_dim + hidden_size * idx_heads;
+      // 若配置 `indexer_types`（如 Hy4 中 20 层独立 full + 58 层 shared 复用），按实际 full 比例均摊
+      if let Some(arr) = cfg_obj.get("indexer_types").and_then(Value::as_array) {
+        let full_cnt = arr.iter().filter(|v| v.as_str() == Some("full")).count() as u64;
+        if !arr.is_empty() && full_cnt > 0 && (full_cnt as usize) < arr.len() {
+          raw_idx * full_cnt / (arr.len() as u64)
+        } else {
+          raw_idx
+        }
+      } else {
+        raw_idx
+      }
     } else {
       0
     };
@@ -1699,6 +1800,73 @@ pub fn build_model_blueprint_with_aux(
       .or_else(|| detect_nope_interval(cfg_obj))
       .filter(|&iv| iv > 1);
 
+    // 通用支持非 MLA 的低秩 Q/O 投影（q_lora_rank / o_lora_rank + o_groups）与独立 DSA Indexer（如 DeepSeek-V4.1）
+    let q_lora = u64_any(cfg_obj, &["q_lora_rank"]).filter(|&v| v > 0);
+    let o_lora = u64_any(cfg_obj, &["o_lora_rank"]).filter(|&v| v > 0);
+    let standalone_topk = u64_any(cfg_obj, &["index_topk"]).filter(|&v| v > 0);
+    let custom_attn_params = if q_lora.is_some() || o_lora.is_some() || standalone_topk.is_some() {
+      let q_out = num_q_heads * head_dim;
+      let kv_out = num_kv_heads * head_dim;
+      let q_p = match q_lora {
+        Some(qr) => hidden_size * qr + qr + qr * q_out,
+        None => hidden_size * q_out,
+      };
+      let has_shared_wkv = o_lora.is_some()
+        || safetensors
+          .as_ref()
+          .is_some_and(|st| st.patterns.iter().any(|p| p.example_name.contains(".wkv.weight")));
+      let kv_p = if has_shared_wkv { hidden_size * kv_out } else { 2 * hidden_size * kv_out };
+      let o_p = match o_lora {
+        Some(or) => {
+          let o_groups = u64_any(cfg_obj, &["o_groups"]).unwrap_or(1).max(1);
+          let o_mid = or * o_groups;
+          (q_out / o_groups) * o_mid + o_mid * hidden_size
+        }
+        None => q_out * hidden_size,
+      };
+      let idx_p = if standalone_topk.is_some() {
+        let idx_h = u64_any(cfg_obj, &["index_n_heads", "index_num_heads"]).unwrap_or(32);
+        let idx_d = u64_any(cfg_obj, &["index_head_dim"]).unwrap_or(128);
+        let q_in = q_lora.unwrap_or(hidden_size);
+        let one_idx = q_in * (idx_h * idx_d) + kv_out * idx_d + hidden_size * idx_h;
+        let idx_layers = cfg_obj
+          .get("index_source_layer_ids")
+          .and_then(Value::as_array)
+          .map(|a| a.len() as u64)
+          .filter(|&n| n > 0 && n <= num_hidden_layers)
+          .unwrap_or(num_hidden_layers);
+        one_idx * idx_layers / num_hidden_layers
+      } else {
+        0
+      };
+      let comp_p = cfg_obj
+        .get("kv_source_layer_ids")
+        .and_then(Value::as_array)
+        .map(|a| a.len() as u64)
+        .filter(|&n| n > 0 && n <= num_hidden_layers)
+        .map(|n| (2 * kv_out * hidden_size) * n / num_hidden_layers)
+        .unwrap_or(0);
+
+      let mut note_parts = Vec::new();
+      if let Some(qr) = q_lora {
+        note_parts.push(format!("q_lora={qr}"));
+      }
+      if let Some(or) = o_lora {
+        let og = u64_any(cfg_obj, &["o_groups"]).unwrap_or(1);
+        note_parts.push(format!("o_lora={or}×{og}g"));
+      }
+      if let Some(tk) = standalone_topk {
+        note_parts.push(format!("DSA Top-{tk}"));
+      }
+      if let Some(w) = sliding_window {
+        note_parts.push(format!("SWA({w})"));
+      }
+      low_rank_dsa_note = Some(format!("低秩稀疏注意力机制：{}", note_parts.join(" · ")));
+      Some(q_p + kv_p + o_p + idx_p + comp_p)
+    } else {
+      None
+    };
+
     AttentionSpec::StandardGqa {
       num_q_heads,
       num_kv_heads,
@@ -1711,6 +1879,7 @@ pub fn build_model_blueprint_with_aux(
       nope_layer_interval,
       is_causal,
       has_cross_attn,
+      custom_attn_params,
     }
   };
 
@@ -1804,7 +1973,8 @@ pub fn build_model_blueprint_with_aux(
     OutputHeadSpec::CausalLmHead
   };
 
-  let schedule_note = build_schedule_note(&standard_attention, cfg_obj);
+  let schedule_note =
+    low_rank_dsa_note.or_else(|| build_schedule_note(&standard_attention, cfg_obj));
 
   let dense_ffn = FfnSpec::DenseGated {
     intermediate_size: dense_mlp_inter,
@@ -1813,6 +1983,7 @@ pub fn build_model_blueprint_with_aux(
     fused_gate_up: is_glm,
     is_gated: is_gated_ffn,
   };
+  let dense_ffn_per_layer = dense_ffn.params_per_layer(hidden_size).0;
 
   let active_ffn = if is_moe {
     let top_k = u64_any(
@@ -2134,7 +2305,7 @@ pub fn build_model_blueprint_with_aux(
       _ => 0,
     };
 
-  let params = compute_param_breakdown(
+  let mut params = compute_param_breakdown(
     vision_params,
     audio_and_speech_params,
     vocab_size,
@@ -2144,6 +2315,62 @@ pub fn build_model_blueprint_with_aux(
     num_nextn_predict_layers,
     &segments,
   );
+
+  // 通用支持外部 N-gram 记忆表（如 Engram: `engram_num_embeddings` × `engram_head_dim`）：
+  // 计入模型总参数量（归类至 Embedding 表），但推理期每 Token 仅 O(1) 稀疏查表，不计入 active_params。
+  let engram_embed_params: u64 = cfg_obj
+    .get("engram_num_embeddings")
+    .and_then(Value::as_array)
+    .map(|arr| {
+      let head_d = u64_any(cfg_obj, &["engram_head_dim"]).unwrap_or(256);
+      arr.iter().filter_map(Value::as_u64).map(|n| n.saturating_mul(head_d)).sum()
+    })
+    .unwrap_or(0);
+  if engram_embed_params > 0 {
+    params.embedding = params.embedding.saturating_add(engram_embed_params);
+    params.total_params = params.total_params.saturating_add(engram_embed_params);
+    let engram_layers =
+      cfg_obj.get("engram_layer_ids").and_then(Value::as_array).map(Vec::len).unwrap_or(1);
+    let note = format!(
+      "含 {engram_layers} 层 Engram N-gram 记忆表（+{} 查表参数，O(1) 稀疏激活）",
+      format_count(engram_embed_params)
+    );
+    multimodal_note = Some(match multimodal_note {
+      Some(prev) => format!("{prev} · {note}"),
+      None => note,
+    });
+  }
+
+  // 兼容异构 MTP / 草稿头（如 DeepSeek-V4.1 的 `dspark_n_routed_experts` 或 Hy4 的 `dfly_num_hidden_layers`）
+  if num_nextn_predict_layers > 0 {
+    if let Some(dspark_e) = u64_any(cfg_obj, &["dspark_n_routed_experts"]) {
+      if let Some(last_seg) = segments.last() {
+        let moe_inter = u64_any(cfg_obj, &["moe_intermediate_size"]).unwrap_or(intermediate_size);
+        let shared_inter = u64_any(cfg_obj, &["n_shared_experts"]).unwrap_or(0) * moe_inter;
+        let one_mtp = last_seg.attention.params_per_layer(hidden_size)
+          + dspark_e * 3 * hidden_size * moe_inter
+          + 3 * hidden_size * shared_inter
+          + hidden_size * dspark_e;
+        params.mtp_head = num_nextn_predict_layers.saturating_mul(one_mtp);
+      }
+    }
+  } else if dfly_layers > 0 {
+    if let Some(first_seg) = segments.first() {
+      let dfly_dense =
+        first_seg.attention.params_per_layer(hidden_size) + dense_ffn_per_layer + 2 * hidden_size;
+      params.mtp_head = dfly_layers.saturating_mul(dfly_dense);
+    }
+  }
+
+  let effective_mtp_layers =
+    if num_nextn_predict_layers > 0 { num_nextn_predict_layers } else { dfly_layers };
+  if let Some(hc_m) = u64_any(cfg_obj, &["hc_mult"]).filter(|&m| m > 1) {
+    let note = format!("Hyper-Connections ({hc_m} 路残差超连接)");
+    multimodal_note = Some(match multimodal_note {
+      Some(prev) => format!("{prev} · {note}"),
+      None => note,
+    });
+  }
 
   let mut blueprint = ModelBlueprint {
     repo_id: repo_id.to_string(),
@@ -2166,7 +2393,7 @@ pub fn build_model_blueprint_with_aux(
     tie_word_embeddings,
     rope_summary,
     hidden_act,
-    num_nextn_predict_layers,
+    num_nextn_predict_layers: effective_mtp_layers,
     tokenizer_class,
     default_temperature,
     default_top_p,
@@ -2860,8 +3087,9 @@ mod multimodal_parsers {
       if let Some(l2_params) = st.l2_estimated_params {
         if bp.params.total_params > 0 && l2_params > 0 {
           let l1 = bp.params.total_params as f64;
+          let l1_with_mtp = (bp.params.total_params + bp.params.mtp_head) as f64;
           let l2 = l2_params as f64;
-          let diff_pct = ((l1 - l2).abs() / l2) * 100.0;
+          let diff_pct = (((l1 - l2).abs()).min((l1_with_mtp - l2).abs()) / l2) * 100.0;
           if diff_pct > 20.0 {
             warnings.push(format!(
               "L1/L2 总参数量偏差较大（{diff_pct:.1}%）：L1 公式估算 {} vs L2 真实张量 Shape 汇总 {}，请结合下方真实权重表核对。",
@@ -3179,7 +3407,11 @@ fn f64_any(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f64> {
 
 #[cfg(feature = "server")]
 fn extract_rope_summary(cfg: &serde_json::Map<String, Value>) -> String {
-  let theta = f64_any(cfg, &["rope_theta"]).unwrap_or(10_000.0);
+  // 兼容 Transformers v5 嵌套 `rope_parameters`（如 Hy4 的 `rope_parameters.rope_theta` + `mrope_section`）
+  let rope_params = cfg.get("rope_parameters").and_then(Value::as_object);
+  let theta = f64_any(cfg, &["rope_theta"])
+    .or_else(|| rope_params.and_then(|rp| f64_any(rp, &["rope_theta"])))
+    .unwrap_or(10_000.0);
   let theta_str = if theta >= 1_000_000.0 && (theta % 1_000_000.0).abs() < 1.0 {
     format!("{:.0}M", theta / 1_000_000.0)
   } else if theta >= 1_000.0 && (theta % 1_000.0).abs() < 1.0 {
@@ -3189,23 +3421,33 @@ fn extract_rope_summary(cfg: &serde_json::Map<String, Value>) -> String {
   };
 
   let partial = f64_any(cfg, &["partial_rotary_factor", "rotary_percent"])
+    .or_else(|| rope_params.and_then(|rp| f64_any(rp, &["partial_rotary_factor"])))
     .filter(|&p| p > 0.0 && p < 0.999)
     .map(|p| format!(" · {:.0}%d", p * 100.0))
     .unwrap_or_default();
 
-  if let Some(scaling) = cfg.get("rope_scaling").and_then(Value::as_object) {
-    let rtype = scaling
-      .get("rope_type")
-      .or_else(|| scaling.get("type"))
-      .and_then(Value::as_str)
-      .unwrap_or("scaled");
-    let factor = scaling.get("factor").and_then(Value::as_f64);
-    match factor {
-      Some(f) => format!("RoPE θ={theta_str}{partial} ({rtype} ×{f:.1})"),
-      None => format!("RoPE θ={theta_str}{partial} ({rtype})"),
+  let scaling = cfg.get("rope_scaling").and_then(Value::as_object).or(rope_params);
+  let mrope_sec = scaling
+    .and_then(|sc| sc.get("mrope_section"))
+    .and_then(Value::as_array)
+    .map(|arr| arr.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect::<Vec<_>>())
+    .filter(|v| !v.is_empty());
+  let prefix = if mrope_sec.is_some() { "M-RoPE" } else { "RoPE" };
+  let sec_suffix = mrope_sec.map(|v| format!(" [{}]", v.join(","))).unwrap_or_default();
+
+  if let Some(sc) = scaling {
+    let rtype = sc.get("rope_type").or_else(|| sc.get("type")).and_then(Value::as_str);
+    let factor = sc.get("factor").and_then(Value::as_f64);
+    match (rtype, factor) {
+      (Some(rt), Some(f)) => format!("{prefix} θ={theta_str}{partial}{sec_suffix} ({rt} ×{f:.1})"),
+      (None, Some(f)) => format!("{prefix} θ={theta_str}{partial}{sec_suffix} (scaled ×{f:.1})"),
+      (Some(rt), None) if rt != "default" => {
+        format!("{prefix} θ={theta_str}{partial}{sec_suffix} ({rt})")
+      }
+      _ => format!("{prefix} θ={theta_str}{partial}{sec_suffix}"),
     }
   } else {
-    format!("RoPE θ={theta_str}{partial}")
+    format!("{prefix} θ={theta_str}{partial}")
   }
 }
 
@@ -3462,6 +3704,8 @@ pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
           nope_layer_interval: None,
           is_causal: true,
           has_cross_attn: false,
+          #[cfg(feature = "server")]
+          custom_attn_params: None,
         },
         ffn: FfnSpec::SparseMoe {
           num_routed_experts: 128,
@@ -3516,6 +3760,8 @@ pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
           nope_layer_interval: None,
           is_causal: true,
           has_cross_attn: false,
+          #[cfg(feature = "server")]
+          custom_attn_params: None,
         },
         ffn: FfnSpec::DenseGated {
           intermediate_size: 12288,
@@ -3565,6 +3811,8 @@ pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
           nope_layer_interval: None,
           is_causal: true,
           has_cross_attn: false,
+          #[cfg(feature = "server")]
+          custom_attn_params: None,
         },
         ffn: FfnSpec::DenseGated {
           intermediate_size: 14336,
@@ -4116,6 +4364,24 @@ mod diffusion_parser {
     build_diffusion_pipeline_blueprint(repo_id, source_label, &synth_index, &comps, safetensors)
   }
 
+  /// 严格词边界匹配 `"3d"` 令牌（要求前面不是字母或数字，避免将 `MiniMaxH3DiTModel` 中的 `h3d` 误判为 3D 视频模型）。
+  fn contains_3d_token(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() < 2 {
+      return false;
+    }
+    for i in 0..=(bytes.len() - 2) {
+      if bytes[i] == b'3' && bytes[i + 1].eq_ignore_ascii_case(&b'd') {
+        let prev_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        let next_ok = i + 2 >= bytes.len() || !bytes[i + 2].is_ascii_lowercase();
+        if prev_ok && next_ok {
+          return true;
+        }
+      }
+    }
+    false
+  }
+
   fn parse_conditioner_component(
     slot: &str,
     class_name: &str,
@@ -4128,6 +4394,17 @@ mod diffusion_parser {
       let layers = u64_any(sub, &["num_hidden_layers", "num_layers"]).unwrap_or(12);
       let vocab = u64_any(sub, &["vocab_size"]).unwrap_or(49_408);
       let ffn = u64_any(sub, &["intermediate_size", "d_ff"]).unwrap_or(d * 4);
+      let heads = u64_any(sub, &["num_attention_heads", "num_heads"]).unwrap_or(0);
+      let kv_heads = u64_any(sub, &["num_key_value_heads", "num_kv_heads"]).unwrap_or(heads);
+      let head_dim =
+        u64_any(sub, &["head_dim"]).unwrap_or_else(|| d.checked_div(heads).unwrap_or(0));
+      let attn_per_layer = if heads > 0 && head_dim > 0 {
+        let q_out = heads * head_dim;
+        let kv_out = kv_heads.max(1) * head_dim;
+        2 * d * q_out + 2 * d * kv_out
+      } else {
+        4 * d * d
+      };
       let is_gated = sub.get("is_gated_act").and_then(Value::as_bool).unwrap_or(false)
         || sub
           .get("feed_forward_proj")
@@ -4138,12 +4415,33 @@ mod diffusion_parser {
         || cl.contains("gemma")
         || cl.contains("mistral");
       let ffn_mats = if is_gated { 3 } else { 2 };
-      let est = vocab * d + layers * (4 * d * d + ffn_mats * d * ffn);
+      let untied_head = if c
+        .get("tie_word_embeddings")
+        .or_else(|| sub.get("tie_word_embeddings"))
+        .and_then(Value::as_bool)
+        == Some(false)
+      {
+        vocab * d
+      } else {
+        0
+      };
+      let vision_params = c
+        .get("vision_config")
+        .and_then(Value::as_object)
+        .and_then(|vc| parse_vision_spec(vc, d, &PreprocessorHints::default()))
+        .map(|v| v.estimated_params)
+        .unwrap_or(0);
+      let est =
+        vocab * d + untied_head + vision_params + layers * (attn_per_layer + ffn_mats * d * ffn);
       return PipelineComponentSpec {
         slot: slot.to_string(),
         class_name: class_name.to_string(),
         role: "conditioner".to_string(),
-        spec_summary: format!("{layers}L × {d}d (FFN={ffn})"),
+        spec_summary: if vision_params > 0 {
+          format!("{layers}L × {d}d + Vision (FFN={ffn})")
+        } else {
+          format!("{layers}L × {d}d (FFN={ffn})")
+        },
         estimated_params: est,
       };
     }
@@ -4205,12 +4503,15 @@ mod diffusion_parser {
     is_video_hint: bool,
   ) -> (PipelineComponentSpec, u64, u64, u64) {
     let cl = class_name.to_ascii_lowercase();
-    let is_3d = is_video_hint
-      || cl.contains("wan")
-      || cl.contains("hunyuan")
-      || cl.contains("cogvideo")
-      || cl.contains("video")
-      || cl.contains("3d");
+    let explicit_2d = cl.contains("image")
+      || cfg_opt.and_then(|c| c.get("vit_decoder_2d")).and_then(Value::as_bool) == Some(true);
+    let is_3d = !explicit_2d
+      && (is_video_hint
+        || cl.contains("wan")
+        || cl.contains("hunyuan")
+        || cl.contains("cogvideo")
+        || cl.contains("video")
+        || contains_3d_token(class_name));
 
     let latent_ch = cfg_opt
       .and_then(|c| u64_any(c, &["latent_channels", "z_dim"]))
@@ -4226,9 +4527,20 @@ mod diffusion_parser {
     } else {
       1
     };
-    let est = if is_3d { 127_000_000 } else { 83_800_000 };
+    let vit_dec_params =
+      cfg_opt.and_then(|c| c.get("vit_decoder_kwargs").and_then(Value::as_object)).map(|vk| {
+        let vl = u64_any(vk, &["num_layers", "depth"]).unwrap_or(24);
+        let vh = u64_any(vk, &["heads", "num_heads"]).unwrap_or(16);
+        let vdh = u64_any(vk, &["dim_head", "head_dim"]).unwrap_or(64);
+        let vd = (vh * vdh).max(256);
+        // ViT Decoder 块（Attention 4d² + FFN ~8d²）+ 对称/卷积 Encoder 估算
+        vl * 12 * vd * vd + 280_000_000
+      });
+    let est = vit_dec_params.unwrap_or(if is_3d { 127_000_000 } else { 83_800_000 });
     let summary = if is_3d {
       format!("{latent_ch}ch 3D Causal Latent ({temporal_comp}×{spatial_comp}×{spatial_comp})")
+    } else if vit_dec_params.is_some() {
+      format!("{latent_ch}ch 2D ViT Latent ({spatial_comp}×{spatial_comp} Spatial)")
     } else {
       format!("{latent_ch}ch 2D Latent ({spatial_comp}×{spatial_comp} Spatial)")
     };
@@ -4255,6 +4567,7 @@ mod diffusion_parser {
     safetensors: Option<SafetensorsSummary>,
   ) -> Result<ModelBlueprint, String> {
     let (pipeline_class, slots) = extract_diffusion_slots(model_index_json)?;
+    let index_root_val = serde_json::from_str::<Value>(model_index_json).ok();
     let mut parsed_cfgs: std::collections::HashMap<String, Value> =
       std::collections::HashMap::new();
     for (slot, raw) in component_configs {
@@ -4264,12 +4577,22 @@ mod diffusion_parser {
     }
 
     let pipe_lc = format!("{} {}", pipeline_class, repo_id).to_ascii_lowercase();
-    let mut is_video = pipe_lc.contains("video")
-      || pipe_lc.contains("wan")
-      || pipe_lc.contains("t2v")
-      || pipe_lc.contains("i2v")
-      || pipe_lc.contains("cogvideo")
-      || pipe_lc.contains("ltx");
+    let explicit_image_pipe = (pipe_lc.contains("image") && !pipe_lc.contains("video"))
+      || index_root_val.as_ref().and_then(Value::as_object).is_some_and(|obj| {
+        obj.values().any(|v| {
+          v.as_object()
+            .and_then(|m| m.get("partition"))
+            .and_then(Value::as_str)
+            .is_some_and(|p| p.eq_ignore_ascii_case("image"))
+        })
+      });
+    let mut is_video = !explicit_image_pipe
+      && (pipe_lc.contains("video")
+        || pipe_lc.contains("wan")
+        || pipe_lc.contains("t2v")
+        || pipe_lc.contains("i2v")
+        || pipe_lc.contains("cogvideo")
+        || pipe_lc.contains("ltx"));
 
     let mut components: Vec<PipelineComponentSpec> = Vec::new();
     let mut conditioner_params = 0u64;
@@ -4278,7 +4601,9 @@ mod diffusion_parser {
     let mut vae_slot_cls: Option<(String, String)> = None;
 
     for (slot, cls) in &slots {
-      if cls.to_ascii_lowercase().contains("3d") || cls.to_ascii_lowercase().contains("video") {
+      if !explicit_image_pipe
+        && (contains_3d_token(cls) || cls.to_ascii_lowercase().contains("video"))
+      {
         is_video = true;
       }
       match diffusion_slot_role(slot, cls) {
@@ -4319,7 +4644,9 @@ mod diffusion_parser {
     });
     let den_obj = parsed_cfgs.get(&den_slot).and_then(Value::as_object);
     let den_lc = den_cls.to_ascii_lowercase();
-    if den_lc.contains("3d") || den_lc.contains("wan") || den_lc.contains("hunyuanvideo") {
+    if !explicit_image_pipe
+      && (contains_3d_token(&den_cls) || den_lc.contains("wan") || den_lc.contains("hunyuanvideo"))
+    {
       is_video = true;
     }
 
@@ -4416,6 +4743,7 @@ mod diffusion_parser {
         nope_layer_interval: None,
         is_causal: false,
         has_cross_attn: true,
+        custom_attn_params: None,
       };
       let ffn_spec = FfnSpec::DenseGated {
         intermediate_size: top_ch * 4,
@@ -4479,7 +4807,11 @@ mod diffusion_parser {
           let dims: Vec<String> =
             arr.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect();
           if !dims.is_empty() {
-            patch_summary = format!("[{}] 3D Patchify", dims.join("×"));
+            patch_summary = if is_video {
+              format!("[{}] 3D Patchify", dims.join("×"))
+            } else {
+              format!("[{}] 2D Patchify", dims.join("×"))
+            };
           }
         } else if let Some(p) = u64_any(c, &["patch_size"]) {
           if let Some(pt) = u64_any(c, &["patch_size_t"]) {
@@ -4535,6 +4867,7 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: true,
+            custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
             intermediate_size: hidden_size * 4,
@@ -4565,6 +4898,7 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: false,
+            custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
             intermediate_size: hidden_size * 4,
@@ -4602,6 +4936,7 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: true,
+            custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
             intermediate_size: hidden_size * 4,
@@ -4622,21 +4957,70 @@ mod diffusion_parser {
           "Diffusion Transformer (DiT)".to_string()
         };
         let ffn_dim = den_obj
-          .and_then(|c| u64_any(c, &["ffn_dim", "intermediate_size"]))
+          .and_then(|c| u64_any(c, &["ffn_dim", "ffn_hidden_size", "intermediate_size"]))
           .unwrap_or(hidden_size * 4);
-        let has_cross = den_obj.is_none_or(|c| {
-          c.contains_key("text_dim") || c.contains_key("cross_attention_dim") || is_video
+        let attn_dim = (heads * head_dim).max(hidden_size);
+        let refiner_layers =
+          den_obj.and_then(|c| u64_any(c, &["token_refiner_num_layers"])).unwrap_or(0);
+        let l2_has_separate_cross = safetensors.as_ref().is_some_and(|st| {
+          st.patterns.iter().any(|p| {
+            p.example_name.contains("attn2")
+              || p.example_name.contains("cross_attn")
+              || p.example_name.contains("encoder_attn")
+          })
         });
+        let l2_has_single_qkv = safetensors
+          .as_ref()
+          .is_some_and(|st| st.patterns.iter().any(|p| p.example_name.contains("attn.qkv_proj")));
+        let has_cross = if l2_has_separate_cross {
+          true
+        } else if l2_has_single_qkv || refiner_layers > 0 {
+          false
+        } else {
+          den_obj.is_none_or(|c| {
+            c.contains_key("text_dim") || c.contains_key("cross_attention_dim") || is_video
+          })
+        };
+        let l2_gated_ffn = safetensors.as_ref().is_some_and(|st| {
+          st.patterns.iter().any(|p| {
+            (p.example_name.contains("mlp.fc1.") || p.example_name.contains("gate_proj"))
+              && p.shape.as_ref().and_then(|s| s.first().copied()) == Some(ffn_dim * 2)
+          })
+        });
+        let is_gated_dit_ffn = l2_gated_ffn
+          || den_obj.is_some_and(|c| {
+            c.get("ffn_use_gated").and_then(Value::as_bool) == Some(true)
+              || (c.contains_key("ffn_hidden_size") && c.contains_key("adaln_out_features"))
+          });
+        let ffn_mats = if is_gated_dit_ffn { 3 } else { 2 };
         let attn_mats = if has_cross { 8 } else { 4 };
+        let total_dit_blocks = double_layers + refiner_layers;
         let d2 = hidden_size * hidden_size;
-        denoiser_attn_params = double_layers * attn_mats * d2;
-        denoiser_ffn_params = double_layers * 2 * hidden_size * ffn_dim;
-        denoiser_mod_params = double_layers * 6 * hidden_size * 256 + 8 * d2;
+        denoiser_attn_params = total_dit_blocks * attn_mats * hidden_size * attn_dim;
+        denoiser_ffn_params = total_dit_blocks * ffn_mats * hidden_size * ffn_dim;
+        let adaln_out = den_obj.and_then(|c| u64_any(c, &["adaln_out_features"])).unwrap_or(0);
+        denoiser_mod_params = if adaln_out > 0 {
+          let mod_in = den_obj
+            .and_then(|c| u64_any(c, &["time_embed_dim", "time_embed_hidden_size"]))
+            .unwrap_or(hidden_size);
+          let final_adaln = den_obj
+            .and_then(|c| u64_any(c, &["final_adaln_out_features"]))
+            .unwrap_or(2 * hidden_size);
+          let text_d = den_obj.and_then(|c| u64_any(c, &["text_dim"])).unwrap_or(hidden_size);
+          double_layers * adaln_out * mod_in
+            + final_adaln * mod_in
+            + hidden_size * mod_in
+            + hidden_size * text_d
+        } else {
+          double_layers * 6 * hidden_size * 256 + 8 * d2
+        };
         segments = vec![LayerSegment {
           start_layer: 0,
           end_layer: double_layers - 1,
           title: if is_video {
             format!("3D 时空视频去噪层栈 (3D Full-Attn + CrossAttn ×{double_layers})")
+          } else if refiner_layers > 0 {
+            format!("DiT 2D 空间去噪层栈 (DiT ×{double_layers} + Refiner ×{refiner_layers})")
           } else {
             format!("DiT 空间去噪层栈 (DiT Blocks ×{double_layers})")
           },
@@ -4652,13 +5036,14 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: has_cross,
+            custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
             intermediate_size: ffn_dim,
-            act_fn: "gelu_tanh".to_string(),
-            bias: true,
-            fused_gate_up: false,
-            is_gated: false,
+            act_fn: if is_gated_dit_ffn { "swiglu".to_string() } else { "gelu_tanh".to_string() },
+            bias: !is_gated_dit_ffn,
+            fused_gate_up: is_gated_dit_ffn,
+            is_gated: is_gated_dit_ffn,
           },
           norms_per_layer: 2,
           schedule_note: Some(if is_video {
@@ -4733,6 +5118,25 @@ mod diffusion_parser {
     if is_video { "视频" } else { "图像" }
   ));
 
+    let parse_warning = safetensors.as_ref().and_then(|st| {
+      let l2_params = st.l2_estimated_params?;
+      if denoiser_total == 0 || l2_params == 0 {
+        return None;
+      }
+      let l1 = denoiser_total as f64;
+      let l2 = l2_params as f64;
+      let diff_pct = ((l1 - l2).abs() / l2) * 100.0;
+      if diff_pct > 20.0 {
+        Some(format!(
+          "⚠ L1/L2 去噪主干参数量偏差较大（{diff_pct:.1}%）：L1 公式估算 {} vs L2 真实张量 Shape 汇总 {}，请结合下方真实权重表核对。",
+          format_count(denoiser_total),
+          format_count(l2_params)
+        ))
+      } else {
+        None
+      }
+    });
+
     Ok(ModelBlueprint {
       repo_id: repo_id.to_string(),
       source_label: source_label.to_string(),
@@ -4786,7 +5190,7 @@ mod diffusion_parser {
       raw_config_pretty,
       aux_configs: Vec::new(),
       declarative_graph_wire: None,
-      parse_warning: None,
+      parse_warning,
     })
   }
 }
@@ -5802,5 +6206,303 @@ mod tests {
     assert_eq!(l2_bp.segments.len(), 2);
     assert_eq!(l2_bp.segments[0].layer_count(), 24);
     assert_eq!(l2_bp.segments[1].layer_count(), 8);
+  }
+
+  #[test]
+  fn parses_minimax_h3_image_2d_dit_accurately_and_separates_modalities() {
+    let model_index = r#"{
+      "_class_name": "MiniMaxH3ImagePipeline",
+      "_minimax_h3": { "partition": "image", "tasks": ["t2i", "edit"] },
+      "text_encoder": ["transformers", "Qwen3VLForConditionalGeneration"],
+      "transformer": ["diffusers", "MiniMaxH3DiTModel"],
+      "vae": ["diffusers", "MiniMaxH3ImageVAE"]
+    }"#;
+    let comps = vec![
+      (
+        "transformer".to_string(),
+        r#"{
+          "_class_name": "MiniMaxH3DiTModel",
+          "hidden_size": 5376,
+          "num_layers": 50,
+          "token_refiner_num_layers": 2,
+          "num_attention_heads": 56,
+          "attention_head_dim": 128,
+          "ffn_hidden_size": 14336,
+          "latents_dim": 24,
+          "patch_size": [1, 2, 2],
+          "text_dim": 5120,
+          "time_embed_hidden_size": 5376,
+          "time_embed_dim": 2688,
+          "adaln_out_features": 96768,
+          "final_adaln_out_features": 10752
+        }"#
+          .to_string(),
+      ),
+      (
+        "text_encoder".to_string(),
+        r#"{
+          "architectures": ["Qwen3VLForConditionalGeneration"],
+          "model_type": "qwen3_vl",
+          "tie_word_embeddings": false,
+          "text_config": {
+            "hidden_size": 5120,
+            "intermediate_size": 25600,
+            "num_hidden_layers": 64,
+            "num_attention_heads": 64,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "vocab_size": 151936
+          },
+          "vision_config": {
+            "depth": 27,
+            "hidden_size": 1152,
+            "intermediate_size": 4304,
+            "num_heads": 16,
+            "patch_size": 16,
+            "spatial_merge_size": 2
+          }
+        }"#
+          .to_string(),
+      ),
+      (
+        "vae".to_string(),
+        r#"{
+          "_class_name": "MiniMaxH3ImageVAE",
+          "latent_channels": 24,
+          "vit_decoder_2d": true,
+          "vit_decoder_kwargs": {
+            "dim_head": 64,
+            "heads": 16,
+            "num_layers": 24,
+            "ffn_use_gated": true
+          }
+        }"#
+          .to_string(),
+      ),
+    ];
+
+    let ok_st = SafetensorsSummary {
+      l2_estimated_params: Some(33_140_000_000),
+      ..SafetensorsSummary::default()
+    };
+    let bp = build_diffusion_pipeline_blueprint(
+      "MiniMax/MiniMax-H3-Image",
+      "ModelScope",
+      model_index,
+      &comps,
+      Some(ok_st),
+    )
+    .expect("minimax h3 image");
+
+    let diff = bp.diffusion.as_ref().expect("diffusion spec");
+    assert!(!diff.is_video, "MiniMaxH3DiTModel must NOT be misclassified as 3D video");
+    assert_eq!(bp.modality_badge_label(), "Image 图像生成");
+    assert!(diff.patch_summary.contains("2D Patchify"));
+    // Real DiT = 33.14B, real Qwen3-VL TE = 33.36B, real VAE = 584M -> total ~67.1B
+    assert!(
+      bp.params.active_params > 32_000_000_000 && bp.params.active_params < 34_200_000_000,
+      "DiT active_params should match ~33.14B, got {}",
+      bp.params.active_params
+    );
+    assert!(
+      bp.params.total_params > 65_500_000_000 && bp.params.total_params < 68_500_000_000,
+      "Pipeline total_params should match ~67.08B, got {}",
+      bp.params.total_params
+    );
+    assert!(bp.parse_warning.is_none(), "unexpected warning: {:?}", bp.parse_warning);
+
+    // 红灯验证：若去噪主干 L2 与 L1 偏差 > 20%，Diffusers 管线也必须触发告警
+    let bad_st = SafetensorsSummary {
+      l2_estimated_params: Some(15_000_000_000),
+      ..SafetensorsSummary::default()
+    };
+    let bp_bad = build_diffusion_pipeline_blueprint(
+      "MiniMax/MiniMax-H3-Image",
+      "ModelScope",
+      model_index,
+      &comps,
+      Some(bad_st),
+    )
+    .expect("minimax h3 mismatch");
+    assert!(
+      bp_bad.parse_warning.as_deref().is_some_and(|w| w.contains("去噪主干参数量偏差较大")),
+      "expected diffusers L1/L2 warning, got {:?}",
+      bp_bad.parse_warning
+    );
+
+    // 校验正交模态标签区分 LLM vs VLM
+    let llm_bp = load_builtin_preset("llama-3.1-8b").unwrap();
+    assert_eq!(llm_bp.modality_badge_label(), "LLM 语言模型");
+    let vlm_cfg = r#"{
+      "architectures": ["Qwen2_5_VLForConditionalGeneration"],
+      "model_type": "qwen2_5_vl",
+      "vision_config": { "hidden_size": 1280, "depth": 32, "num_heads": 16, "intermediate_size": 3420 },
+      "text_config": { "hidden_size": 3584, "num_hidden_layers": 28, "num_attention_heads": 28, "num_key_value_heads": 4, "intermediate_size": 18944, "vocab_size": 152064 }
+    }"#;
+    let vlm_bp =
+      build_model_blueprint("Qwen/Qwen2.5-VL-7B", "HF", vlm_cfg, None, None, None).unwrap();
+    assert_eq!(vlm_bp.modality_badge_label(), "VLM 图文多模态");
+  }
+
+  #[test]
+  fn parses_hunyuan_hy4_and_deepseek_v41_flash_with_v5_rope_gated_mla_low_rank_and_engram() {
+    // 1) Tencent-Hunyuan/Hy4 (Transformers v5 nested rope_parameters 10M M-RoPE, gated_mla, indexer_types 20/78, dfly 5L, hc_mult=4)
+    let hy4_cfg = r#"{
+      "architectures": ["HYV4VLForConditionalGeneration"],
+      "model_type": "hy_v4_vl",
+      "dtype": "bfloat16",
+      "first_k_dense_replace": 1,
+      "gated_mla": true,
+      "hc_mult": 4,
+      "hidden_act": "silu",
+      "hidden_size": 6144,
+      "intermediate_size": 18432,
+      "kv_lora_rank": 512,
+      "q_lora_rank": 2048,
+      "qk_nope_head_dim": 192,
+      "qk_rope_head_dim": 64,
+      "v_head_dim": 256,
+      "num_attention_heads": 64,
+      "num_key_value_heads": 8,
+      "num_hidden_layers": 78,
+      "vocab_size": 120832,
+      "max_position_embeddings": 1048576,
+      "n_routed_experts": 256,
+      "n_shared_experts": 1,
+      "num_experts_per_tok": 8,
+      "moe_intermediate_size": 2048,
+      "index_head_dim": 128,
+      "index_n_heads": 32,
+      "index_topk": 2048,
+      "indexer_types": ["full","full","shared","shared","shared","full","shared","shared"],
+      "rope_parameters": {
+        "mrope_interleaved": true,
+        "mrope_section": [12, 10, 10],
+        "rope_theta": 10000000,
+        "rope_type": "default"
+      },
+      "dfly_num_hidden_layers": 5,
+      "vision_config": {
+        "model_type": "hy_v4_vl",
+        "hidden_size": 1536,
+        "intermediate_size": 6144,
+        "num_hidden_layers": 40,
+        "num_attention_heads": 16,
+        "patch_size": 16,
+        "spatial_merge_size": 2
+      }
+    }"#;
+    let hy4_st = SafetensorsSummary {
+      detected_num_layers: Some(78),
+      detected_num_experts: Some(256),
+      l2_estimated_params: Some(774_464_797_563),
+      has_vision_tower: true,
+      ..SafetensorsSummary::default()
+    };
+    let hy4 =
+      build_model_blueprint("Tencent-Hunyuan/Hy4", "ModelScope", hy4_cfg, None, None, Some(hy4_st))
+        .expect("hy4");
+    assert_eq!(hy4.modality_badge_label(), "VLM 图文多模态");
+    assert_eq!(hy4.family_badge_label(), "MLA + DSA Sparse");
+    assert_eq!(hy4.rope_summary, "M-RoPE θ=10M [12,10,10]");
+    assert_eq!(hy4.num_nextn_predict_layers, 5);
+    assert!(
+      hy4.params.total_params > 768_000_000_000 && hy4.params.total_params < 776_000_000_000,
+      "Hy4 total_params should include gated_mla (~771B), got {}",
+      hy4.params.total_params
+    );
+    assert!(
+      hy4.params.active_params > 49_000_000_000 && hy4.params.active_params < 53_000_000_000,
+      "Hy4 active_params should include gated_mla (~50.8B), got {}",
+      hy4.params.active_params
+    );
+    assert!(hy4.params.mtp_head > 2_000_000_000);
+    assert!(hy4.parse_warning.is_none(), "Hy4 unexpected warning: {:?}", hy4.parse_warning);
+
+    // 2) deepseek-ai/DeepSeek-V4.1-Flash-1017 (q_lora_rank + o_lora_rank + o_groups + MQA + DSA + Engram 196.6B + dspark MTP)
+    let ds41_cfg = r#"{
+      "architectures": ["DeepseekV41ForCausalLM"],
+      "model_type": "deepseek_v41",
+      "dtype": "bfloat16",
+      "quantization_config": {
+        "quant_method": "fp8",
+        "weight_block_size": [32, 32],
+        "expert_dtype": "fp4"
+      },
+      "text_config": {
+        "model_type": "deepseek_v41_text",
+        "vocab_size": 129280,
+        "hidden_size": 5120,
+        "moe_intermediate_size": 2304,
+        "num_hidden_layers": 40,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 1,
+        "head_dim": 512,
+        "qk_rope_head_dim": 64,
+        "q_lora_rank": 1280,
+        "o_lora_rank": 1024,
+        "o_groups": 8,
+        "hidden_act": "silu",
+        "tie_word_embeddings": false,
+        "max_position_embeddings": 1048576,
+        "rope_theta": 10000,
+        "rope_scaling": { "rope_type": "yarn", "factor": 16 },
+        "n_routed_experts": 384,
+        "n_shared_experts": 1,
+        "num_experts_per_tok": 6,
+        "sliding_window": 128,
+        "kv_source_layer_ids": [2, 8, 14, 20],
+        "index_source_layer_ids": [2, 8, 14, 20, 24, 28, 32, 36],
+        "index_n_heads": 32,
+        "index_head_dim": 128,
+        "index_topk": 512,
+        "hc_mult": 4,
+        "engram_layer_ids": [1, 14],
+        "engram_num_embeddings": [384006168, 384016682],
+        "engram_head_dim": 256,
+        "num_nextn_predict_layers": 3,
+        "dspark_n_routed_experts": 128
+      },
+      "vision_config": {
+        "model_type": "deepseek_v41_vision",
+        "num_hidden_layers": 32,
+        "hidden_size": 1024,
+        "num_attention_heads": 16,
+        "intermediate_size": 2816,
+        "patch_size": 14
+      }
+    }"#;
+    let ds41_st = SafetensorsSummary {
+      detected_num_layers: Some(40),
+      detected_num_experts: Some(384),
+      l2_estimated_params: Some(762_000_000_000),
+      has_vision_tower: true,
+      ..SafetensorsSummary::default()
+    };
+    let ds41 = build_model_blueprint(
+      "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "HF",
+      ds41_cfg,
+      None,
+      None,
+      Some(ds41_st),
+    )
+    .expect("ds41");
+    assert_eq!(ds41.modality_badge_label(), "VLM 图文多模态");
+    assert_eq!(ds41.family_badge_label(), "DeepSeek DSA + MoE");
+    // Total includes 543.6B experts + 196.6B Engram + ~8B trunk = ~748B
+    assert!(
+      ds41.params.total_params > 740_000_000_000 && ds41.params.total_params < 760_000_000_000,
+      "DS-V4.1 total_params should be ~748B, got {}",
+      ds41.params.total_params
+    );
+    // Active excludes Engram lookup table & uses low-rank q/o projections -> ~16.7B
+    assert!(
+      ds41.params.active_params > 15_000_000_000 && ds41.params.active_params < 18_500_000_000,
+      "DS-V4.1 active_params should be ~16.7B, got {}",
+      ds41.params.active_params
+    );
+    assert!(ds41.params.attention < 6_000_000_000, "low-rank o_lora should keep attn ~5.1B");
+    assert!(ds41.parse_warning.is_none(), "DS-V4.1 unexpected warning: {:?}", ds41.parse_warning);
   }
 }

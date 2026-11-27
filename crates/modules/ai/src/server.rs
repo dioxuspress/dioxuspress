@@ -899,7 +899,7 @@ mod tests {
     server_task.abort();
   }
 
-  /// 真实在线多架构端到端校验（拉取 HuggingFace 真实 config.json + 57 MiB 流式 L2 Safetensors 索引与 Range Header）。
+  /// 真实在线多架构端到端校验（拉取 HuggingFace / ModelScope 真实 config.json + 流式 L2 Safetensors 索引与 Range Header）。
   /// 默认 `#[ignore]` 以保持离线 CI 确定性；执行方式：
   /// `cargo test --features server -p module-ai live_hub_multi_architecture_verification -- --ignored --nocapture`
   #[tokio::test]
@@ -908,38 +908,138 @@ mod tests {
     let cases = [
       (
         "moonshotai/Kimi-K3.1-Pro",
+        "hf",
+        "VLM 图文多模态",
         "Hybrid Linear + DSA",
         2_600_000_000_000u64,
         2_950_000_000_000u64,
       ),
-      ("moonshotai/Kimi-K2-Instruct", "MLA + Sparse MoE", 950_000_000_000, 1_100_000_000_000),
-      ("deepseek-ai/DeepSeek-V3.2", "DeepSeek DSA + MoE", 650_000_000_000, 700_000_000_000),
-      ("Qwen/Qwen3-Next-80B-A3B-Instruct", "Hybrid Linear / SSM", 75_000_000_000, 86_000_000_000),
-      ("Qwen/Qwen2.5-VL-7B-Instruct", "Qwen Dense (GQA)", 7_500_000_000, 9_000_000_000),
-      ("zai-org/GLM-4.5-Air", "GLM Sparse MoE", 100_000_000_000, 118_000_000_000),
-      ("MiniMaxAI/MiniMax-M2.5", "Sparse MoE (GQA)", 215_000_000_000, 245_000_000_000),
-      ("nvidia/Nemotron-H-8B-Base-8K", "Hybrid Linear / SSM", 7_200_000_000, 8_800_000_000),
+      (
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        "hf",
+        "VLM 图文多模态",
+        "DeepSeek DSA + MoE",
+        730_000_000_000,
+        770_000_000_000,
+      ),
+      (
+        "Tencent-Hunyuan/Hy4",
+        "modelscope",
+        "VLM 图文多模态",
+        "MLA + DSA Sparse",
+        760_000_000_000,
+        785_000_000_000,
+      ),
+      (
+        "MiniMax/MiniMax-H3-Image",
+        "modelscope",
+        "Image 图像生成",
+        "Diffusion / DiT Pipeline",
+        64_000_000_000,
+        70_000_000_000,
+      ),
+      (
+        "moonshotai/Kimi-K2-Instruct",
+        "hf",
+        "LLM 语言模型",
+        "MLA + Sparse MoE",
+        950_000_000_000,
+        1_100_000_000_000,
+      ),
+      (
+        "deepseek-ai/DeepSeek-V3.2",
+        "hf",
+        "LLM 语言模型",
+        "DeepSeek DSA + MoE",
+        650_000_000_000,
+        700_000_000_000,
+      ),
+      (
+        "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        "hf",
+        "LLM 语言模型",
+        "Hybrid Linear / SSM",
+        75_000_000_000,
+        86_000_000_000,
+      ),
+      (
+        "Qwen/Qwen2.5-VL-7B-Instruct",
+        "hf",
+        "VLM 图文多模态",
+        "Qwen Dense (GQA)",
+        7_500_000_000,
+        9_000_000_000,
+      ),
+      (
+        "zai-org/GLM-4.5-Air",
+        "hf",
+        "LLM 语言模型",
+        "GLM Sparse MoE",
+        100_000_000_000,
+        118_000_000_000,
+      ),
+      (
+        "MiniMaxAI/MiniMax-M2.5",
+        "hf",
+        "LLM 语言模型",
+        "Sparse MoE (GQA)",
+        215_000_000_000,
+        245_000_000_000,
+      ),
+      (
+        "nvidia/Nemotron-H-8B-Base-8K",
+        "hf",
+        "LLM 语言模型",
+        "Hybrid Linear / SSM",
+        7_200_000_000,
+        8_800_000_000,
+      ),
       (
         "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "hf",
+        "LLM 语言模型",
         "Mixtral Sparse MoE",
         44_000_000_000,
         49_000_000_000,
       ),
-      ("state-spaces/mamba-2.8b-hf", "Hybrid Linear / SSM", 2_500_000_000, 3_100_000_000),
-      ("openai/whisper-large-v3", "ASR Audio-Text", 1_400_000_000, 1_750_000_000),
-      ("BAAI/bge-reranker-v2-m3", "Encoder / Embedding", 500_000_000, 650_000_000),
+      (
+        "state-spaces/mamba-2.8b-hf",
+        "hf",
+        "LLM 语言模型",
+        "Hybrid Linear / SSM",
+        2_500_000_000,
+        3_100_000_000,
+      ),
+      (
+        "openai/whisper-large-v3",
+        "hf",
+        "Audio ASR 语音",
+        "ASR Audio-Text",
+        1_400_000_000,
+        1_750_000_000,
+      ),
+      (
+        "BAAI/bge-reranker-v2-m3",
+        "hf",
+        "Reranker 重排",
+        "Encoder / Embedding",
+        500_000_000,
+        650_000_000,
+      ),
       (
         "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+        "hf",
+        "Video 视频生成",
         "Diffusion / DiT Pipeline",
         5_500_000_000,
         8_500_000_000,
       ),
     ];
 
-    for (repo, expected_badge, min_params, max_params) in cases {
-      let bp = imp::resolve_model_blueprint(repo, "hf", "")
+    for (repo, src, expected_modality, expected_badge, min_params, max_params) in cases {
+      let bp = imp::resolve_model_blueprint(repo, src, "")
         .await
-        .unwrap_or_else(|e| panic!("failed to fetch {repo}: {e}"));
+        .unwrap_or_else(|e| panic!("failed to fetch {repo} ({src}): {e}"));
       let l2_info = bp
         .safetensors
         .as_ref()
@@ -956,7 +1056,8 @@ mod tests {
         })
         .unwrap_or_else(|| "none".to_string());
       println!(
-        "OK {repo:35} badge={:22} total={:9} active={:9} segs={} vis={} warnings={} | L2: {l2_info}",
+        "OK {repo:36} mod={:14} badge={:22} total={:9} active={:9} segs={} vis={} warnings={} | L2: {l2_info}",
+        bp.modality_badge_label(),
         bp.family_badge_label(),
         crate::arch::format_count(bp.params.total_params),
         crate::arch::format_count(bp.params.active_params),
@@ -967,6 +1068,7 @@ mod tests {
       if let Some(ref w) = bp.parse_warning {
         println!("   {w}");
       }
+      assert_eq!(bp.modality_badge_label(), expected_modality, "modality mismatch for {repo}");
       assert_eq!(bp.family_badge_label(), expected_badge, "badge mismatch for {repo}");
       assert!(
         bp.params.total_params >= min_params && bp.params.total_params <= max_params,

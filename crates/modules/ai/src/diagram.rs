@@ -1337,6 +1337,7 @@ pub fn MicroSubgraphDiagram(
         nope_layer_interval,
         is_causal,
         has_cross_attn,
+        ..
       }) => rsx! {
         GqaSubgraphSvg {
           hidden_size: d,
