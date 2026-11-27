@@ -1108,7 +1108,7 @@ pub fn build_blueprint_tensor_graph_with_collapse(
   title.push_str(&bp.repo_id);
   title.push_str(" · 全网张量维流图");
   let mut subtitle = String::with_capacity(96);
-  subtitle.push_str(bp.family.badge_label());
+  subtitle.push_str(bp.family_badge_label());
   subtitle.push_str(" · ");
   push_u64(&mut subtitle, bp.num_hidden_layers);
   subtitle.push_str("L × ");
@@ -1166,7 +1166,12 @@ fn append_segment_subgraph(
       qk_nope_head_dim,
       qk_rope_head_dim,
       v_head_dim,
+      mla_flags,
+      sparse_index_topk,
+      ..
     } => {
+      let is_nope = (*mla_flags & crate::arch::MLA_FLAG_NOPE) != 0;
+      let is_gated = (*mla_flags & crate::arch::MLA_FLAG_GATED) != 0;
       let qk_dim = qk_nope_head_dim + qk_rope_head_dim;
       let kv_a_dim = kv_lora_rank + qk_rope_head_dim;
       let kv_b_head = qk_nope_head_dim + v_head_dim;
@@ -1188,10 +1193,10 @@ fn append_segment_subgraph(
           OpKind::ConvOrLinear,
           &preset.fmt_heads(*num_heads, qk_dim),
           &fmt_num("q_b ", *num_heads, "H"),
-          "Query Up Proj + Decoupled RoPE (q_b_proj)",
+          "Query Up Proj (q_b_proj)",
           *qr,
           num_heads * qk_dim,
-          "Split q_nope + Decoupled RoPE q_pe",
+          if is_nope { "NoPE Query 投影" } else { "Split q_nope + RoPE q_pe" },
           -3,
           row + 1,
         );
@@ -1232,7 +1237,11 @@ fn append_segment_subgraph(
         "Latent KV Up Proj (kv_b_proj, Absorbable)",
         *kv_lora_rank,
         num_heads * kv_b_head,
-        "仅对 512d c_KV 上投影；64d k_pe 经 RoPE 旁路直通 MLA",
+        if is_nope {
+          "潜空间 c_KV 上投影 (NoPE)"
+        } else {
+          "仅对 c_KV 上投影；k_pe 经 RoPE 旁路直通 MLA"
+        },
         3,
         row + 1,
       );
@@ -1240,25 +1249,42 @@ fn append_segment_subgraph(
       g.edge(kva, kvb);
       row += 2;
 
+      let mla_note = if *sparse_index_topk > 0 {
+        fmt_num("DSA Top-", *sparse_index_topk, "")
+      } else {
+        fmt_num("MLA ", *num_heads, "H")
+      };
+      let mla_title = if *sparse_index_topk > 0 {
+        "DeepSeek Sparse Attention (DSA)"
+      } else {
+        "Multi-Head Latent Attention (MLA)"
+      };
+      let mla_formula = if *sparse_index_topk > 0 {
+        "SparseSoftmax(TopK_Indexer(Q·Kᵀ)/√d) · V"
+      } else {
+        "Softmax((q_nope·k_nopeᵀ + q_pe·k_peᵀ)/√d) · V"
+      };
       let mla = g.add(
         OpKind::Attention,
         &preset.fmt_seq(o_in),
-        &fmt_num("MLA ", *num_heads, "H"),
-        "Multi-Head Latent Attention (MLA)",
-        "Softmax((q_nope·k_nopeᵀ + q_pe·k_peᵀ)/√d) · V",
+        &mla_note,
+        mla_title,
+        mla_formula,
         &fmt_param("本层 Attention 总参: ", attn_params),
         0,
         row,
       );
       g.edge(q_leaf, mla);
       g.edge(kvb, mla);
-      g.edge_aux(kva, mla, "k_pe 64d");
+      if !is_nope && *qk_rope_head_dim > 0 {
+        g.edge_aux(kva, mla, "k_pe 64d");
+      }
       row += 1;
 
       let op = g.add_proj(
         OpKind::ConvOrLinear,
         seq_d,
-        "o_proj",
+        if is_gated { "g⊙o_proj" } else { "o_proj" },
         "Attention Output Projection (o_proj)",
         o_in,
         d,
@@ -1387,84 +1413,89 @@ fn append_segment_subgraph(
       state_dim,
       conv_kernel,
       expand_factor,
+      ..
     } => {
-      let d_inner = (num_heads * head_dim).max((*expand_factor).max(1) * d);
-      let seq_in = preset.fmt_seq(d_inner);
-      let conv = g.add_proj(
-        OpKind::ConvOrLinear,
-        &seq_in,
-        &fmt_num("Conv k=", *conv_kernel, ""),
-        "Input Proj + Causal Conv1d",
-        d,
-        d_inner,
-        "O(1) 短局部卷积缓存",
-        -3,
-        row,
-      );
-      let ssm = g.add(
-        OpKind::Attention,
-        &seq_in,
-        &fmt_num("state=", *state_dim, "d"),
-        "Recurrent State Update (Linear / SSM)",
-        kind,
-        &fmt_param("固定状态 elems/seq: ", seg.attention.fixed_state_elements_per_seq(d)),
-        -3,
-        row + 1,
-      );
-      let gate = g.add_proj(
-        OpKind::MaxPool,
-        &seq_in,
-        "SiLU Gate",
-        "Parallel Output Gate",
-        d,
-        d_inner,
-        "逐元素门控调制",
-        3,
-        row,
-      );
-      g.edge(attn_in, conv);
-      g.edge(conv, ssm);
-      g.edge(attn_in, gate);
-      row += 2;
+      if *num_heads == 0 {
+        prev
+      } else {
+        let d_inner = (num_heads * head_dim).max((*expand_factor).max(1) * d);
+        let seq_in = preset.fmt_seq(d_inner);
+        let conv = g.add_proj(
+          OpKind::ConvOrLinear,
+          &seq_in,
+          &fmt_num("Conv k=", *conv_kernel, ""),
+          "Input Proj + Causal Conv1d",
+          d,
+          d_inner,
+          "O(1) 短局部卷积缓存",
+          -3,
+          row,
+        );
+        let ssm = g.add(
+          OpKind::Attention,
+          &seq_in,
+          &fmt_num("state=", *state_dim, "d"),
+          "Recurrent State Update (Linear / SSM)",
+          kind,
+          &fmt_param("固定状态 elems/seq: ", seg.attention.fixed_state_elements_per_seq(d)),
+          -3,
+          row + 1,
+        );
+        let gate = g.add_proj(
+          OpKind::MaxPool,
+          &seq_in,
+          "SiLU Gate",
+          "Parallel Output Gate",
+          d,
+          d_inner,
+          "逐元素门控调制",
+          3,
+          row,
+        );
+        g.edge(attn_in, conv);
+        g.edge(conv, ssm);
+        g.edge(attn_in, gate);
+        row += 2;
 
-      let mul = g.add(
-        OpKind::Merge,
-        &seq_in,
-        "Gate ⊙",
-        "Gated Hadamard Product",
-        "y = SSM(x) ⊙ SiLU(z)",
-        "门控特征融合",
-        0,
-        row,
-      );
-      g.edge(ssm, mul);
-      g.edge(gate, mul);
-      row += 1;
+        let mul = g.add(
+          OpKind::Merge,
+          &seq_in,
+          "Gate ⊙",
+          "Gated Hadamard Product",
+          "y = SSM(x) ⊙ SiLU(z)",
+          "门控特征融合",
+          0,
+          row,
+        );
+        g.edge(ssm, mul);
+        g.edge(gate, mul);
+        row += 1;
 
-      let op = g.add_proj(
-        OpKind::ConvOrLinear,
-        seq_d,
-        "out_proj",
-        "SSM Output Projection (out_proj)",
-        d_inner,
-        d,
-        &fmt_param("本层 Mixer 总参: ", attn_params),
-        0,
-        row,
-      );
-      g.edge(mul, op);
-      row += 1;
+        let op = g.add_proj(
+          OpKind::ConvOrLinear,
+          seq_d,
+          "out_proj",
+          "SSM Output Projection (out_proj)",
+          d_inner,
+          d,
+          &fmt_param("本层 Mixer 总参: ", attn_params),
+          0,
+          row,
+        );
+        g.edge(mul, op);
+        row += 1;
 
-      g.add_residual(
-        op,
-        prev,
-        row,
-        seq_d,
-        "SSM Skip",
-        "Residual Skip Add #1 (SSM Mixer)",
-        "h_mid = h_in + out_proj(y)",
-        "单层内 SSM 子块残差输出",
-      )
+        g.add_residual(
+          op,
+          prev,
+          row,
+          seq_d,
+          "SSM Skip",
+          "Residual Skip Add #1 (SSM Mixer)",
+          "h_mid = h_in + out_proj(y)",
+          "单层内 SSM 子块残差输出",
+        )
+      }
     }
   };
 
@@ -1610,8 +1641,10 @@ fn append_segment_subgraph(
       num_shared_experts,
       shared_intermediate_size,
       scoring_func,
+      latent_dim,
       ..
     } => {
+      let expert_in = if *latent_dim > 0 && *latent_dim < d { *latent_dim } else { d };
       let has_shared = *num_shared_experts > 0 && *shared_intermediate_size > 0;
       if has_shared {
         min_q = min_q.min(-4);
@@ -1690,9 +1723,13 @@ fn append_segment_subgraph(
       let eu = g.add_proj(
         OpKind::MoeRouter,
         &eu_shape,
-        &fmt_num("×", *top_k, " Active"),
-        "Top-K Routed Experts SwiGLU",
-        d,
+        &if expert_in < d {
+          fmt_pair(expert_in, "→×", *top_k)
+        } else {
+          fmt_num("×", *top_k, " Active")
+        },
+        if expert_in < d { "Latent Top-K Routed Experts" } else { "Top-K Routed Experts SwiGLU" },
+        expert_in,
         *moe_intermediate_size,
         &fmt_param("单层总参: ", ffn_tot),
         expert_col,
@@ -1701,10 +1738,10 @@ fn append_segment_subgraph(
       let ed = g.add_proj(
         OpKind::ConvOrLinear,
         &ed_shape,
-        "exp_down",
-        "Routed Experts Down Proj",
+        if expert_in < d { "lat_up" } else { "exp_down" },
+        if expert_in < d { "Latent Experts Down + Up Proj" } else { "Routed Experts Down Proj" },
         *moe_intermediate_size,
-        d,
+        expert_in,
         "按路由权重 g_i 加权汇总",
         expert_col,
         row + 1,

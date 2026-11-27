@@ -121,17 +121,17 @@ mod imp {
     load_builtin_preset, AuxConfigFiles, ModelBlueprint,
   };
   use crate::safetensors_meta::{
-    parse_safetensors_header_bytes, parse_safetensors_header_len, parse_safetensors_index_json,
-    select_representative_shards, summarize_index_and_headers, summarize_single_header,
-    RawTensorMeta, SafetensorsSummary, MAX_SAFETENSORS_HEADER_BYTES,
+    finalize_streaming_index, parse_safetensors_header_bytes, parse_safetensors_header_len,
+    parse_safetensors_index_streaming, summarize_single_header, RawTensorMeta, SafetensorsSummary,
+    MAX_SAFETENSORS_HEADER_BYTES,
   };
 
   use super::{is_safe_hub_segment, normalize_repo_request, ModelHubSource};
 
   /// `config.json` / `tokenizer_config.json` 单文件上限（2 MiB）。
   const MAX_CONFIG_BYTES: usize = 2 * 1024 * 1024;
-  /// `model.safetensors.index.json` 单文件上限（12 MiB，兼容 671B~1T MoE 模型的数万条分片映射）。
-  const MAX_INDEX_BYTES: usize = 12 * 1024 * 1024;
+  /// `model.safetensors.index.json` 单文件上限（96 MiB，兼容 3T~5T 级超大规模 MoE 的数十万条分片映射，配合流式骨架折叠低内存解析）。
+  const MAX_INDEX_BYTES: usize = 96 * 1024 * 1024;
   /// 首次 Range 探测读取窗口（64 KiB，95% 以上的 Safetensors Header 一次往返即可读完）。
   const INITIAL_HEADER_PROBE_BYTES: usize = 64 * 1024;
   /// 缓存容量与过期时间。
@@ -192,7 +192,7 @@ mod imp {
         reqwest::Client::builder()
           .user_agent("DioxusPress-ModelVisualizer/0.1 (+https://rustineverything.app)")
           .connect_timeout(Duration::from_secs(8))
-          .timeout(Duration::from_secs(20))
+          .timeout(Duration::from_secs(35))
           .redirect(policy)
           .build()
           .map_err(|e| format!("初始化 HTTP 客户端失败: {e}"))
@@ -371,14 +371,14 @@ mod imp {
     let preprocessor_json = pre_res.ok();
     let pooling_json = pool_res.ok();
 
-    // L2：若存在多分片 `model.safetensors.index.json`，挑最多 3 个代表性分片并发做 Range 采样；
+    // L2：若存在多分片 `model.safetensors.index.json`，流式按骨架折叠并挑最多 5 个代表性分片做 Range 采样；
     // 否则尝试单文件 `model.safetensors` 的 Range Header 读取。
     let safetensors: Option<SafetensorsSummary> = match idx_res {
-      Ok(raw_idx) => match parse_safetensors_index_json(&raw_idx) {
-        Ok((total_size, weight_map)) => {
-          let sample_shards = select_representative_shards(&weight_map);
-          let sampled = sample_shard_headers(client, endpoint, &sample_shards).await;
-          Some(summarize_index_and_headers(total_size, &weight_map, &sampled))
+      Ok(raw_idx) => match parse_safetensors_index_streaming(&raw_idx) {
+        Ok(scan) => {
+          drop(raw_idx);
+          let sampled = sample_shard_headers(client, endpoint, scan.sample_shards()).await;
+          Some(finalize_streaming_index(scan, &sampled))
         }
         Err(e) => {
           tracing::warn!(repo = %repo_id, error = %e, "ai visualizer: failed to parse safetensors index");
@@ -493,7 +493,8 @@ mod imp {
         fetch_utf8_capped(client, &std_idx_url, endpoint.bearer_token.as_deref(), MAX_INDEX_BYTES),
       );
       if let Ok(raw_idx) = d_idx_res.or(m_idx_res) {
-        if let Ok((total_size, weight_map)) = parse_safetensors_index_json(&raw_idx) {
+        if let Ok(scan) = parse_safetensors_index_streaming(&raw_idx) {
+          drop(raw_idx);
           let sub_ep = HubEndpoint {
             label: endpoint.label,
             base_resolve_url: format!(
@@ -502,9 +503,8 @@ mod imp {
             ),
             bearer_token: endpoint.bearer_token.clone(),
           };
-          let sample_shards = select_representative_shards(&weight_map);
-          let sampled = sample_shard_headers(client, &sub_ep, &sample_shards).await;
-          Some(summarize_index_and_headers(total_size, &weight_map, &sampled))
+          let sampled = sample_shard_headers(client, &sub_ep, scan.sample_shards()).await;
+          Some(finalize_streaming_index(scan, &sampled))
         } else {
           None
         }
@@ -897,5 +897,88 @@ mod tests {
     assert!(bp.safetensors.is_some());
 
     server_task.abort();
+  }
+
+  /// 真实在线多架构端到端校验（拉取 HuggingFace 真实 config.json + 57 MiB 流式 L2 Safetensors 索引与 Range Header）。
+  /// 默认 `#[ignore]` 以保持离线 CI 确定性；执行方式：
+  /// `cargo test --features server -p module-ai live_hub_multi_architecture_verification -- --ignored --nocapture`
+  #[tokio::test]
+  #[ignore]
+  async fn live_hub_multi_architecture_verification() {
+    let cases = [
+      (
+        "moonshotai/Kimi-K3.1-Pro",
+        "Hybrid Linear + DSA",
+        2_600_000_000_000u64,
+        2_950_000_000_000u64,
+      ),
+      ("moonshotai/Kimi-K2-Instruct", "MLA + Sparse MoE", 950_000_000_000, 1_100_000_000_000),
+      ("deepseek-ai/DeepSeek-V3.2", "DeepSeek DSA + MoE", 650_000_000_000, 700_000_000_000),
+      ("Qwen/Qwen3-Next-80B-A3B-Instruct", "Hybrid Linear / SSM", 75_000_000_000, 86_000_000_000),
+      ("Qwen/Qwen2.5-VL-7B-Instruct", "Qwen Dense (GQA)", 7_500_000_000, 9_000_000_000),
+      ("zai-org/GLM-4.5-Air", "GLM Sparse MoE", 100_000_000_000, 118_000_000_000),
+      ("MiniMaxAI/MiniMax-M2.5", "Sparse MoE (GQA)", 215_000_000_000, 245_000_000_000),
+      ("nvidia/Nemotron-H-8B-Base-8K", "Hybrid Linear / SSM", 7_200_000_000, 8_800_000_000),
+      (
+        "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "Mixtral Sparse MoE",
+        44_000_000_000,
+        49_000_000_000,
+      ),
+      ("state-spaces/mamba-2.8b-hf", "Hybrid Linear / SSM", 2_500_000_000, 3_100_000_000),
+      ("openai/whisper-large-v3", "ASR Audio-Text", 1_400_000_000, 1_750_000_000),
+      ("BAAI/bge-reranker-v2-m3", "Encoder / Embedding", 500_000_000, 650_000_000),
+      (
+        "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+        "Diffusion / DiT Pipeline",
+        5_500_000_000,
+        8_500_000_000,
+      ),
+    ];
+
+    for (repo, expected_badge, min_params, max_params) in cases {
+      let bp = imp::resolve_model_blueprint(repo, "hf", "")
+        .await
+        .unwrap_or_else(|e| panic!("failed to fetch {repo}: {e}"));
+      let l2_info = bp
+        .safetensors
+        .as_ref()
+        .map(|s| {
+          format!(
+            "shards={}, tensors={}, l2_est={:?}, lin={:?}, full={:?}, vis={}",
+            s.shard_count,
+            s.total_tensor_count,
+            s.l2_estimated_params.map(crate::arch::format_count),
+            s.detected_linear_attn_layers,
+            s.detected_full_attn_layers,
+            s.has_vision_tower
+          )
+        })
+        .unwrap_or_else(|| "none".to_string());
+      println!(
+        "OK {repo:35} badge={:22} total={:9} active={:9} segs={} vis={} warnings={} | L2: {l2_info}",
+        bp.family_badge_label(),
+        crate::arch::format_count(bp.params.total_params),
+        crate::arch::format_count(bp.params.active_params),
+        bp.segments.len(),
+        bp.vision.is_some(),
+        bp.parse_warning.as_ref().map(|w| w.lines().count()).unwrap_or(0)
+      );
+      if let Some(ref w) = bp.parse_warning {
+        println!("   {w}");
+      }
+      assert_eq!(bp.family_badge_label(), expected_badge, "badge mismatch for {repo}");
+      assert!(
+        bp.params.total_params >= min_params && bp.params.total_params <= max_params,
+        "total_params out of range for {repo}: got {}, expected {min_params}..={max_params}",
+        bp.params.total_params
+      );
+      let g = crate::tensor_graph::build_blueprint_tensor_graph(
+        &bp,
+        crate::tensor_graph::ShapePreset::Symbolic,
+        false,
+      );
+      assert!(!g.nodes.is_empty(), "empty DAG for {repo}");
+    }
   }
 }

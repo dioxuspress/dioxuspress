@@ -76,6 +76,26 @@ pub struct SafetensorsSummary {
   pub has_qk_norm: bool,
   /// 各种 Dtype 的张量数量分布（按数量降序）
   pub dtype_histogram: Vec<(String, usize)>,
+  /// 基于 L2 采样张量真实 Shape（含常见 4-bit 打包解压、排除 scale/zero-point）估算的全模型总参数量（仅服务端交叉核验）
+  #[cfg(feature = "server")]
+  #[serde(skip)]
+  pub l2_estimated_params: Option<u64>,
+  /// L2 从真实张量名检测到的线性注意力 / SSM 层数量（仅服务端交叉核验）
+  #[cfg(feature = "server")]
+  #[serde(skip)]
+  pub detected_linear_attn_layers: Option<u64>,
+  /// L2 从真实张量名检测到的标准/MLA 注意力层数量（仅服务端交叉核验）
+  #[cfg(feature = "server")]
+  #[serde(skip)]
+  pub detected_full_attn_layers: Option<u64>,
+  /// L2 真实权重中是否存在视觉编码器或跨模态投影层（仅服务端交叉核验）
+  #[cfg(feature = "server")]
+  #[serde(skip)]
+  pub has_vision_tower: bool,
+  /// L2 真实权重中是否存在潜空间 MoE 上下投影（仅服务端交叉核验）
+  #[cfg(feature = "server")]
+  #[serde(skip)]
+  pub has_latent_moe_proj: bool,
   /// 折叠后的结构化权重模式列表（可直接用于架构节点联动与权重树浏览）
   pub patterns: Vec<TensorPatternEntry>,
 }
@@ -383,6 +403,7 @@ mod parser {
     if name.starts_with("visual.")
       || name.contains("vision_tower")
       || name.contains("vision_model")
+      || name.contains("mm_projector")
       || name.contains("multi_modal_projector")
     {
       return "vision";
@@ -430,6 +451,8 @@ mod parser {
     } else if name.contains("experts")
       || name.contains("shared_expert")
       || name.contains("shared_experts")
+      || name.contains("routed_expert_")
+      || name.contains("block_sparse_moe.gate")
       || name.contains("mlp.gate.weight")
       || name.contains("e_score_correction_bias")
     {
@@ -480,6 +503,518 @@ mod parser {
     }
   }
 
+  /// 判断张量是否为量化辅助元数据（scale / zero-point / g_idx），不应重复计入有效模型参数量。
+  fn is_quant_aux_tensor(name: &str) -> bool {
+    name.ends_with(".weight_scale")
+      || name.ends_with(".weight_scale_inv")
+      || name.ends_with(".input_scale")
+      || name.ends_with(".scales")
+      || name.ends_with(".qzeros")
+      || name.ends_with(".g_idx")
+      || name.ends_with(".absmax")
+      || name.ends_with(".quant_map")
+      || name.ends_with(".zero_point")
+  }
+
+  /// 计算单个模式覆盖的逻辑参数个数（自动识别 4-bit 打包张量，跳过量化 scale/zero 辅助张量）。
+  fn effective_pattern_params(p: &TensorPatternEntry) -> Option<u64> {
+    if is_quant_aux_tensor(&p.example_name) {
+      return Some(0);
+    }
+    let raw = p.total_elements()?;
+    let is_packed =
+      p.example_name.ends_with(".weight_packed") || p.example_name.ends_with(".qweight");
+    let mul = if is_packed {
+      match p.dtype.as_deref() {
+        Some("U8" | "I8") => 2,
+        Some("U16" | "I16") => 4,
+        Some("U32" | "I32") => 8,
+        _ => 1,
+      }
+    } else {
+      1
+    };
+    raw.checked_mul(mul)
+  }
+
+  /// 当采样 Shape 覆盖了绝大部分真实张量时，计算基于 L2 真实维度的全模型参数总量估算。
+  fn estimate_l2_params(patterns: &[TensorPatternEntry], total_tensor_count: usize) -> Option<u64> {
+    if total_tensor_count == 0 || patterns.is_empty() {
+      return None;
+    }
+    let mut covered_tensors = 0usize;
+    let mut total_params = 0u64;
+    for p in patterns {
+      if is_quant_aux_tensor(&p.example_name) {
+        covered_tensors += p.repeat_count;
+        continue;
+      }
+      if let Some(params) = effective_pattern_params(p) {
+        covered_tensors += p.repeat_count;
+        total_params = total_params.saturating_add(params);
+      }
+    }
+    // 只有当至少 85% 的张量条数被真实 Shape 覆盖（例如代表性专家与主干层都命中采样）时才给出 L2 总参估算，避免漏采分片导致误报。
+    if total_params > 0 && covered_tensors * 100 >= total_tensor_count * 85 {
+      Some(total_params)
+    } else {
+      None
+    }
+  }
+
+  fn is_linear_attn_signal(name: &str) -> bool {
+    name.contains("conv1d")
+      || name.contains("A_log")
+      || name.contains("dt_bias")
+      || name.contains("linear_attn")
+      || name.contains(".mamba.")
+      || name.contains("time_mix")
+      || name.contains("f_a_proj")
+      || name.contains("in_proj_qkvz")
+  }
+
+  fn is_full_attn_signal(name: &str) -> bool {
+    (name.contains("self_attn") || name.contains(".attn."))
+      && (name.contains("kv_a_proj")
+        || name.contains("q_proj")
+        || name.contains("k_proj")
+        || name.contains("qkv_proj")
+        || name.contains("wqkv")
+        || name.contains(".indexer."))
+  }
+
+  fn is_vision_signal(name: &str) -> bool {
+    name.starts_with("visual.")
+      || name.contains("vision_tower")
+      || name.contains("vision_model")
+      || name.contains("mm_projector")
+      || name.contains("multi_modal_projector")
+  }
+
+  /// 流式扫描 `model.safetensors.index.json` 后的轻量骨架汇总（避免为 50 万条张量构建全量 HashMap）。
+  pub struct StreamingIndexScan {
+    total_bytes: Option<u64>,
+    shard_count: usize,
+    total_tensor_count: usize,
+    max_layer: Option<u64>,
+    max_expert: Option<u64>,
+    first_moe_layer: Option<u64>,
+    has_attn_bias: bool,
+    has_qk_norm: bool,
+    has_vision_tower: bool,
+    has_latent_moe_proj: bool,
+    linear_attn_layers: BTreeSet<u64>,
+    full_attn_layers: BTreeSet<u64>,
+    mtp_layers: BTreeSet<u64>,
+    representative_shards: Vec<String>,
+    groups: BTreeMap<String, StreamingGroupAcc>,
+  }
+
+  struct StreamingGroupAcc {
+    skeleton: String,
+    example_name: String,
+    count: usize,
+    layers: BTreeSet<u64>,
+    experts: BTreeSet<u64>,
+    shard: String,
+    is_mtp_signal: bool,
+  }
+
+  impl StreamingIndexScan {
+    pub fn sample_shards(&self) -> &[String] {
+      &self.representative_shards
+    }
+  }
+
+  /// 使用自定义 `serde::de::Visitor` 流式扫描 `model.safetensors.index.json`：
+  /// 边解析 `weight_map` 边按骨架折叠，即使面对 50 万+ 条张量的 3T 模型也仅占用 < 1 MiB 结构体内存。
+  pub fn parse_safetensors_index_streaming(raw_json: &str) -> Result<StreamingIndexScan, String> {
+    use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, Visitor};
+    use std::fmt;
+
+    struct ScanState {
+      total_bytes: Option<u64>,
+      shards: BTreeSet<String>,
+      total_tensor_count: usize,
+      max_layer_non_mtp: Option<u64>,
+      max_expert: Option<u64>,
+      first_moe_layer: Option<u64>,
+      has_attn_bias: bool,
+      has_qk_norm: bool,
+      has_vision_tower: bool,
+      has_latent_moe_proj: bool,
+      linear_attn_layers: BTreeSet<u64>,
+      full_attn_layers: BTreeSet<u64>,
+      mtp_layers: BTreeSet<u64>,
+      first_trunk_shard: Option<String>,
+      hetero_attn_shard: Option<String>,
+      first_moe_shard: Option<String>,
+      vision_shard: Option<String>,
+      tail_shard: Option<String>,
+      fallback_shard: Option<String>,
+      groups: BTreeMap<String, StreamingGroupAcc>,
+    }
+
+    impl ScanState {
+      fn record(&mut self, name: String, shard: String) {
+        self.total_tensor_count += 1;
+        if !self.shards.contains(&shard) {
+          self.shards.insert(shard.clone());
+        }
+        if self.fallback_shard.is_none() && is_safe_shard_filename(&shard) {
+          self.fallback_shard = Some(shard.clone());
+        }
+        if is_safe_shard_filename(&shard) {
+          if self.first_trunk_shard.is_none()
+            && !is_vision_signal(&name)
+            && (name.contains("embed_tokens")
+              || name.contains("layers.0.self_attn")
+              || name.contains("transformer_blocks.0.")
+              || name.contains("blocks.0."))
+          {
+            self.first_trunk_shard = Some(shard.clone());
+          }
+          if self.hetero_attn_shard.is_none()
+            && (name.contains("kv_a_proj") || name.contains(".indexer."))
+            && self.first_trunk_shard.as_deref() != Some(shard.as_str())
+          {
+            self.hetero_attn_shard = Some(shard.clone());
+          }
+          if self.first_moe_shard.is_none()
+            && (name.contains(".experts.0.") || name.contains(".experts."))
+          {
+            self.first_moe_shard = Some(shard.clone());
+          }
+          if self.vision_shard.is_none() && is_vision_signal(&name) {
+            self.vision_shard = Some(shard.clone());
+          }
+          if name.contains("lm_head") || name.contains("proj_out") || name.ends_with(".norm.weight")
+          {
+            self.tail_shard = Some(shard.clone());
+          }
+        }
+
+        if (name.contains("self_attn") || name.contains(".attn.")) && name.ends_with(".bias") {
+          self.has_attn_bias = true;
+        }
+        if name.contains("q_norm.") || name.contains("k_norm.") {
+          self.has_qk_norm = true;
+        }
+        if is_vision_signal(&name) {
+          self.has_vision_tower = true;
+        }
+        if name.contains("routed_expert_down_proj") || name.contains("routed_expert_up_proj") {
+          self.has_latent_moe_proj = true;
+        }
+
+        let sp = canonical_skeleton(&name);
+        let is_mtp_sig = name.contains("eh_proj")
+          || name.contains("enorm")
+          || name.contains("hnorm")
+          || name.contains("shared_head");
+        if is_mtp_sig {
+          if let Some(l) = sp.layer_idx {
+            self.mtp_layers.insert(l);
+          }
+        }
+        if let Some(l) = sp.layer_idx {
+          if !is_mtp_sig && !is_vision_signal(&name) {
+            self.max_layer_non_mtp = Some(self.max_layer_non_mtp.map_or(l, |cur| cur.max(l)));
+            if name.contains(".experts.")
+              || name.contains("mlp.gate.weight")
+              || name.contains("block_sparse_moe.gate.weight")
+            {
+              self.first_moe_layer = Some(self.first_moe_layer.map_or(l, |cur| cur.min(l)));
+            }
+            if is_linear_attn_signal(&name) {
+              self.linear_attn_layers.insert(l);
+            } else if is_full_attn_signal(&name) {
+              self.full_attn_layers.insert(l);
+            }
+          }
+        }
+        if let Some(e) = sp.expert_idx {
+          self.max_expert = Some(self.max_expert.map_or(e, |cur| cur.max(e)));
+        }
+
+        let entry = self.groups.entry(sp.skeleton.clone()).or_insert_with(|| StreamingGroupAcc {
+          skeleton: sp.skeleton,
+          example_name: name,
+          count: 0,
+          layers: BTreeSet::new(),
+          experts: BTreeSet::new(),
+          shard,
+          is_mtp_signal: is_mtp_sig,
+        });
+        entry.count += 1;
+        if let Some(l) = sp.layer_idx {
+          entry.layers.insert(l);
+        }
+        if let Some(e) = sp.expert_idx {
+          entry.experts.insert(e);
+        }
+      }
+    }
+
+    struct WeightMapSeed<'a>(&'a mut ScanState);
+    impl<'de> DeserializeSeed<'de> for WeightMapSeed<'_> {
+      type Value = ();
+      fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        struct MapVis<'a>(&'a mut ScanState);
+        impl<'de> Visitor<'de> for MapVis<'_> {
+          type Value = ();
+          fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a weight_map JSON object")
+          }
+          fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            while let Some((k, v)) = map.next_entry::<String, String>()? {
+              self.0.record(k, v);
+            }
+            Ok(())
+          }
+        }
+        deserializer.deserialize_map(MapVis(self.0))
+      }
+    }
+
+    struct MetaSeed<'a>(&'a mut Option<u64>);
+    impl<'de> DeserializeSeed<'de> for MetaSeed<'_> {
+      type Value = ();
+      fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        struct MetaVis<'a>(&'a mut Option<u64>);
+        impl<'de> Visitor<'de> for MetaVis<'_> {
+          type Value = ();
+          fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a metadata JSON object")
+          }
+          fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            while let Some(k) = map.next_key::<String>()? {
+              if k == "total_size" {
+                let val: Value = map.next_value()?;
+                *self.0 = val.as_u64().or_else(|| val.as_str().and_then(|s| s.parse::<u64>().ok()));
+              } else {
+                let _ = map.next_value::<IgnoredAny>()?;
+              }
+            }
+            Ok(())
+          }
+        }
+        deserializer.deserialize_map(MetaVis(self.0))
+      }
+    }
+
+    struct RootVis(ScanState);
+    impl<'de> Visitor<'de> for RootVis {
+      type Value = ScanState;
+      fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a safetensors index JSON object")
+      }
+      fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<ScanState, A::Error> {
+        while let Some(k) = map.next_key::<String>()? {
+          if k == "metadata" {
+            map.next_value_seed(MetaSeed(&mut self.0.total_bytes))?;
+          } else if k == "weight_map" {
+            map.next_value_seed(WeightMapSeed(&mut self.0))?;
+          } else {
+            let _ = map.next_value::<IgnoredAny>()?;
+          }
+        }
+        Ok(self.0)
+      }
+    }
+
+    let state = ScanState {
+      total_bytes: None,
+      shards: BTreeSet::new(),
+      total_tensor_count: 0,
+      max_layer_non_mtp: None,
+      max_expert: None,
+      first_moe_layer: None,
+      has_attn_bias: false,
+      has_qk_norm: false,
+      has_vision_tower: false,
+      has_latent_moe_proj: false,
+      linear_attn_layers: BTreeSet::new(),
+      full_attn_layers: BTreeSet::new(),
+      mtp_layers: BTreeSet::new(),
+      first_trunk_shard: None,
+      hetero_attn_shard: None,
+      first_moe_shard: None,
+      vision_shard: None,
+      tail_shard: None,
+      fallback_shard: None,
+      groups: BTreeMap::new(),
+    };
+
+    let mut de = serde_json::Deserializer::from_str(raw_json);
+    let mut state = de
+      .deserialize_map(RootVis(state))
+      .map_err(|e| format!("流式解析 model.safetensors.index.json 失败: {e}"))?;
+
+    // 排除纯 MTP 层对最大层号和注意力层的干扰
+    for l in &state.mtp_layers {
+      state.linear_attn_layers.remove(l);
+      state.full_attn_layers.remove(l);
+    }
+    // 若某层同时出现线性注意力信号（如 KDA 既有 q_proj 又有 q_conv1d/A_log），归入线性注意力层
+    for l in &state.linear_attn_layers {
+      state.full_attn_layers.remove(l);
+    }
+
+    let max_layer = state
+      .groups
+      .values()
+      .filter(|g| !g.is_mtp_signal && !is_vision_signal(&g.example_name))
+      .flat_map(|g| g.layers.iter().copied())
+      .filter(|l| !state.mtp_layers.contains(l))
+      .max()
+      .or(state.max_layer_non_mtp);
+
+    let mut representative_shards: Vec<String> = Vec::new();
+    for cand in [
+      state.first_trunk_shard,
+      state.hetero_attn_shard,
+      state.first_moe_shard,
+      state.vision_shard,
+      state.tail_shard,
+      state.fallback_shard,
+    ]
+    .into_iter()
+    .flatten()
+    {
+      if !representative_shards.iter().any(|s| s == &cand) {
+        representative_shards.push(cand);
+      }
+      if representative_shards.len() >= 5 {
+        break;
+      }
+    }
+
+    Ok(StreamingIndexScan {
+      total_bytes: state.total_bytes,
+      shard_count: state.shards.len().max(1),
+      total_tensor_count: state.total_tensor_count,
+      max_layer,
+      max_expert: state.max_expert,
+      first_moe_layer: state.first_moe_layer,
+      has_attn_bias: state.has_attn_bias,
+      has_qk_norm: state.has_qk_norm,
+      has_vision_tower: state.has_vision_tower,
+      has_latent_moe_proj: state.has_latent_moe_proj,
+      linear_attn_layers: state.linear_attn_layers,
+      full_attn_layers: state.full_attn_layers,
+      mtp_layers: state.mtp_layers,
+      representative_shards,
+      groups: state.groups,
+    })
+  }
+
+  /// 将流式索引扫描结果与最多 5 个采样分片 Header 合并为 [`SafetensorsSummary`]。
+  pub fn finalize_streaming_index(
+    scan: StreamingIndexScan,
+    sampled_headers: &[RawTensorMeta],
+  ) -> SafetensorsSummary {
+    let mut by_skeleton: HashMap<String, &RawTensorMeta> = HashMap::new();
+    for item in sampled_headers {
+      let skel = canonical_skeleton(&item.name).skeleton;
+      by_skeleton.entry(skel).or_insert(item);
+    }
+
+    let mut header_inspected_count = 0usize;
+    let mut dtype_map: HashMap<String, usize> = HashMap::new();
+    let stage_rank = |s: &str| match s {
+      "embedding" => 0,
+      "vision" => 1,
+      "audio" => 1,
+      "attention" => 2,
+      "norm" => 3,
+      "ffn" => 4,
+      "moe" => 5,
+      "mtp" => 6,
+      "lm_head" => 7,
+      _ => 8,
+    };
+
+    let mut patterns: Vec<TensorPatternEntry> = scan
+      .groups
+      .into_values()
+      .map(|g| {
+        let inferred = by_skeleton.get(&g.skeleton).copied();
+        let shape = inferred.and_then(|m| m.shape.clone());
+        let dtype = inferred.and_then(|m| m.dtype.clone());
+        let byte_len = inferred.and_then(|m| m.byte_len);
+        if shape.is_some() || dtype.is_some() {
+          header_inspected_count += g.count;
+        }
+        if let Some(ref dt) = dtype {
+          *dtype_map.entry(dt.clone()).or_insert(0) += g.count;
+        }
+
+        let is_mtp_group = g.is_mtp_signal
+          || (!g.layers.is_empty() && g.layers.iter().all(|l| scan.mtp_layers.contains(l)));
+        let stage = if is_mtp_group {
+          "mtp"
+        } else {
+          classify_tensor_stage(&g.example_name, None, g.layers.first().copied())
+        };
+
+        let mut pat = g.skeleton;
+        if !g.layers.is_empty() {
+          pat = pat.replace("<L>", &format_index_set(&g.layers));
+        }
+        if !g.experts.is_empty() {
+          pat = pat.replace("<E>", &format_index_set(&g.experts));
+        }
+        TensorPatternEntry {
+          pattern: pat,
+          example_name: g.example_name,
+          stage: stage.to_string(),
+          repeat_count: g.count,
+          shape,
+          dtype,
+          single_byte_len: byte_len,
+          example_shard: Some(g.shard),
+        }
+      })
+      .collect();
+
+    patterns.sort_by(|a, b| {
+      stage_rank(&a.stage).cmp(&stage_rank(&b.stage)).then_with(|| a.pattern.cmp(&b.pattern))
+    });
+
+    let mut dtype_histogram: Vec<(String, usize)> = dtype_map.into_iter().collect();
+    dtype_histogram.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    let l2_estimated_params = estimate_l2_params(&patterns, scan.total_tensor_count);
+    let source_kind = if sampled_headers.is_empty() {
+      format!("model.safetensors.index.json ({} shards)", scan.shard_count)
+    } else {
+      format!("model.safetensors.index.json + sampled headers ({} shards)", scan.shard_count)
+    };
+
+    SafetensorsSummary {
+      source_kind,
+      total_bytes: scan.total_bytes,
+      shard_count: scan.shard_count,
+      total_tensor_count: scan.total_tensor_count,
+      header_inspected_count,
+      detected_num_layers: scan.max_layer.map(|l| l + 1),
+      detected_num_experts: scan.max_expert.map(|e| e + 1),
+      detected_first_moe_layer: scan.first_moe_layer,
+      has_attn_bias: scan.has_attn_bias,
+      has_qk_norm: scan.has_qk_norm,
+      dtype_histogram,
+      l2_estimated_params,
+      detected_linear_attn_layers: (!scan.linear_attn_layers.is_empty())
+        .then_some(scan.linear_attn_layers.len() as u64),
+      detected_full_attn_layers: (!scan.full_attn_layers.is_empty())
+        .then_some(scan.full_attn_layers.len() as u64),
+      has_vision_tower: scan.has_vision_tower,
+      has_latent_moe_proj: scan.has_latent_moe_proj,
+      patterns,
+    }
+  }
+
   fn build_summary(
     source_kind: String,
     total_bytes: Option<u64>,
@@ -493,6 +1028,10 @@ mod parser {
     let mut first_moe_layer: Option<u64> = None;
     let mut has_attn_bias = false;
     let mut has_qk_norm = false;
+    let mut has_vision_tower = false;
+    let mut has_latent_moe_proj = false;
+    let mut linear_attn_layers: BTreeSet<u64> = BTreeSet::new();
+    let mut full_attn_layers: BTreeSet<u64> = BTreeSet::new();
     let mut dtype_map: HashMap<String, usize> = HashMap::new();
 
     struct GroupAcc {
@@ -536,14 +1075,29 @@ mod parser {
       if t.name.contains("q_norm.") || t.name.contains("k_norm.") {
         has_qk_norm = true;
       }
+      if is_vision_signal(&t.name) {
+        has_vision_tower = true;
+      }
+      if t.name.contains("routed_expert_down_proj") || t.name.contains("routed_expert_up_proj") {
+        has_latent_moe_proj = true;
+      }
 
       let sp = canonical_skeleton(&t.name);
       let is_mtp_layer = sp.layer_idx.is_some_and(|l| mtp_layers.contains(&l));
       if let Some(l) = sp.layer_idx {
-        if !is_mtp_layer {
+        if !is_mtp_layer && !is_vision_signal(&t.name) {
           max_layer = Some(max_layer.map_or(l, |cur| cur.max(l)));
+          if is_linear_attn_signal(&t.name) {
+            linear_attn_layers.insert(l);
+          } else if is_full_attn_signal(&t.name) {
+            full_attn_layers.insert(l);
+          }
         }
-        if (t.name.contains(".experts.") || t.name.contains("mlp.gate.weight")) && !is_mtp_layer {
+        if (t.name.contains(".experts.")
+          || t.name.contains("mlp.gate.weight")
+          || t.name.contains("block_sparse_moe.gate.weight"))
+          && !is_mtp_layer
+        {
           first_moe_layer = Some(first_moe_layer.map_or(l, |cur| cur.min(l)));
         }
       }
@@ -625,6 +1179,11 @@ mod parser {
       stage_rank(&a.stage).cmp(&stage_rank(&b.stage)).then_with(|| a.pattern.cmp(&b.pattern))
     });
 
+    for l in &linear_attn_layers {
+      full_attn_layers.remove(l);
+    }
+    let l2_estimated_params = estimate_l2_params(&patterns, total_tensor_count);
+
     SafetensorsSummary {
       source_kind,
       total_bytes,
@@ -637,6 +1196,13 @@ mod parser {
       has_attn_bias,
       has_qk_norm,
       dtype_histogram,
+      l2_estimated_params,
+      detected_linear_attn_layers: (!linear_attn_layers.is_empty())
+        .then_some(linear_attn_layers.len() as u64),
+      detected_full_attn_layers: (!full_attn_layers.is_empty())
+        .then_some(full_attn_layers.len() as u64),
+      has_vision_tower,
+      has_latent_moe_proj,
       patterns,
     }
   }
@@ -644,9 +1210,10 @@ mod parser {
 
 #[cfg(feature = "server")]
 pub use parser::{
-  parse_safetensors_header_bytes, parse_safetensors_header_json, parse_safetensors_header_len,
-  parse_safetensors_index_json, select_representative_shards, summarize_index_and_headers,
-  summarize_single_header, RawTensorMeta,
+  finalize_streaming_index, parse_safetensors_header_bytes, parse_safetensors_header_json,
+  parse_safetensors_header_len, parse_safetensors_index_json, parse_safetensors_index_streaming,
+  select_representative_shards, summarize_index_and_headers, summarize_single_header,
+  RawTensorMeta, StreamingIndexScan,
 };
 
 #[cfg(all(test, feature = "server"))]
@@ -736,5 +1303,135 @@ mod tests {
     assert_eq!(moe_pat.repeat_count, 8);
     assert_eq!(moe_pat.shape, Some(vec![2048, 7168]));
     assert_eq!(moe_pat.dtype.as_deref(), Some("F8_E4M3"));
+  }
+
+  #[test]
+  fn streaming_index_handles_hetero_kda_dsa_latent_mxfp4_and_estimates_params() {
+    let raw_idx = r#"{
+      "metadata": {"total_size": 1561217377280},
+      "weight_map": {
+        "vision_tower.encoder.blocks.0.wqkv.weight": "model-00095.safetensors",
+        "mm_projector.proj.0.weight": "model-00096.safetensors",
+        "language_model.model.embed_tokens.weight": "model-00001.safetensors",
+        "language_model.model.layers.0.self_attn.q_conv1d.weight": "model-00001.safetensors",
+        "language_model.model.layers.0.self_attn.q_proj.weight": "model-00001.safetensors",
+        "language_model.model.layers.1.self_attn.q_conv1d.weight": "model-00002.safetensors",
+        "language_model.model.layers.1.block_sparse_moe.routed_expert_down_proj.weight": "model-00002.safetensors",
+        "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_packed": "model-00002.safetensors",
+        "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_scale": "model-00002.safetensors",
+        "language_model.model.layers.1.block_sparse_moe.experts.1.w1.weight_packed": "model-00002.safetensors",
+        "language_model.model.layers.1.block_sparse_moe.experts.1.w1.weight_scale": "model-00002.safetensors",
+        "language_model.model.layers.2.self_attn.kv_a_proj_with_mqa.weight": "model-00004.safetensors",
+        "language_model.model.layers.2.self_attn.indexer.wk.weight": "model-00004.safetensors",
+        "language_model.lm_head.weight": "model-00096.safetensors"
+      }
+    }"#;
+
+    let scan = parse_safetensors_index_streaming(raw_idx).expect("streaming index scan");
+    let shards = scan.sample_shards();
+    assert!(shards.contains(&"model-00001.safetensors".to_string()));
+    assert!(shards.contains(&"model-00002.safetensors".to_string()));
+    assert!(shards.contains(&"model-00004.safetensors".to_string()));
+    assert!(shards.contains(&"model-00095.safetensors".to_string()));
+
+    let sampled = vec![
+      RawTensorMeta {
+        name: "vision_tower.encoder.blocks.0.wqkv.weight".to_string(),
+        shape: Some(vec![4608, 1024]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(4608 * 1024 * 2),
+        shard: Some("model-00095.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "mm_projector.proj.0.weight".to_string(),
+        shape: Some(vec![4096, 4096]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(4096 * 4096 * 2),
+        shard: Some("model-00096.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "language_model.model.embed_tokens.weight".to_string(),
+        shape: Some(vec![163840, 7168]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(163840 * 7168 * 2),
+        shard: Some("model-00001.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "language_model.model.layers.0.self_attn.q_conv1d.weight".to_string(),
+        shape: Some(vec![12288, 1, 4]),
+        dtype: Some("F32".to_string()),
+        byte_len: Some(12288 * 4 * 4),
+        shard: Some("model-00001.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "language_model.model.layers.0.self_attn.q_proj.weight".to_string(),
+        shape: Some(vec![12288, 7168]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(12288 * 7168 * 2),
+        shard: Some("model-00001.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "language_model.model.layers.1.block_sparse_moe.routed_expert_down_proj.weight"
+          .to_string(),
+        shape: Some(vec![3584, 7168]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(3584 * 7168 * 2),
+        shard: Some("model-00002.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_packed"
+          .to_string(),
+        shape: Some(vec![3072, 1792]),
+        dtype: Some("U8".to_string()),
+        byte_len: Some(3072 * 1792),
+        shard: Some("model-00002.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_scale"
+          .to_string(),
+        shape: Some(vec![3072, 112]),
+        dtype: Some("U8".to_string()),
+        byte_len: Some(3072 * 112),
+        shard: Some("model-00002.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "language_model.model.layers.2.self_attn.kv_a_proj_with_mqa.weight".to_string(),
+        shape: Some(vec![576, 7168]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(576 * 7168 * 2),
+        shard: Some("model-00004.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "language_model.model.layers.2.self_attn.indexer.wk.weight".to_string(),
+        shape: Some(vec![128, 7168]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(128 * 7168 * 2),
+        shard: Some("model-00004.safetensors".to_string()),
+      },
+      RawTensorMeta {
+        name: "language_model.lm_head.weight".to_string(),
+        shape: Some(vec![163840, 7168]),
+        dtype: Some("BF16".to_string()),
+        byte_len: Some(163840 * 7168 * 2),
+        shard: Some("model-00096.safetensors".to_string()),
+      },
+    ];
+
+    let summary = finalize_streaming_index(scan, &sampled);
+    assert_eq!(summary.detected_num_layers, Some(3));
+    assert_eq!(summary.detected_num_experts, Some(2));
+    assert_eq!(summary.detected_first_moe_layer, Some(1));
+    assert_eq!(summary.detected_linear_attn_layers, Some(2)); // layers 0, 1
+    assert_eq!(summary.detected_full_attn_layers, Some(1)); // layer 2
+    assert!(summary.has_vision_tower);
+    assert!(summary.has_latent_moe_proj);
+    // 2 个 MXFP4 打包专家各 3072 * 1792 * 2 = 11,010,048，且 weight_scale 不重复计入
+    let expected_experts = 2 * 3072 * 1792 * 2;
+    let l2_est = summary.l2_estimated_params.expect("l2_estimated_params should be computed");
+    assert!(l2_est > expected_experts);
+    assert!(summary
+      .patterns
+      .iter()
+      .any(|p| p.stage == "vision" && p.pattern.contains("mm_projector")));
   }
 }
