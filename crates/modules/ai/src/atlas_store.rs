@@ -360,7 +360,7 @@ pub fn build_curated_summary(
     tags,
     highlights,
     highlights_en,
-    family_badge: blueprint.family.badge_label().to_string(),
+    family_badge: blueprint.family_badge_label().to_string(),
     total_params: blueprint.params.total_params,
     active_params: blueprint.params.active_params,
     num_layers: blueprint.num_hidden_layers,
@@ -885,13 +885,13 @@ pub fn draft_from_blueprint(bp: &ModelBlueprint) -> CuratedModelUpsertInput {
     "{vendor} 开源模型（{total_str} 总参 / {active_str} 激活）：{} 层 × {} 维 {} 架构。",
     bp.num_hidden_layers,
     bp.hidden_size,
-    bp.family.badge_label()
+    bp.family_badge_label()
   );
   let summary_en = format!(
     "{vendor} open model ({total_str} total / {active_str} active): {}L × {}d {} architecture.",
     bp.num_hidden_layers,
     bp.hidden_size,
-    bp.family.badge_label()
+    bp.family_badge_label()
   );
   CuratedModelUpsertInput {
     slug,
@@ -1180,7 +1180,7 @@ pub async fn polish_draft_via_llm(
     "repo_id": draft.hf_repo,
     "vendor": draft.vendor,
     "modality": draft.modality.as_str(),
-    "family": bp.family.badge_label(),
+    "family": bp.family_badge_label(),
     "total_params": format_count(bp.params.total_params),
     "active_params": format_count(bp.params.active_params),
     "num_layers": bp.num_hidden_layers,

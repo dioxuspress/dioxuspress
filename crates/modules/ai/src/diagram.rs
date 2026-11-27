@@ -1139,6 +1139,7 @@ fn InlineAttentionDetail(hidden_size: u64, attention: AttentionSpec) -> Element 
       qk_nope_head_dim,
       qk_rope_head_dim,
       v_head_dim,
+      ..
     } => {
       let q_dim = qk_nope_head_dim + qk_rope_head_dim;
       let q_total = num_heads * q_dim;
@@ -1180,6 +1181,7 @@ fn InlineAttentionDetail(hidden_size: u64, attention: AttentionSpec) -> Element 
       state_dim,
       conv_kernel,
       expand_factor,
+      ..
     } => {
       let d_inner = (num_heads * head_dim).max(expand_factor.max(1) * hidden_size);
       rsx! {
@@ -1359,6 +1361,7 @@ pub fn MicroSubgraphDiagram(
         qk_nope_head_dim,
         qk_rope_head_dim,
         v_head_dim,
+        ..
       }) => rsx! {
         MlaSubgraphSvg {
           hidden_size: d,
@@ -1377,6 +1380,7 @@ pub fn MicroSubgraphDiagram(
         state_dim,
         conv_kernel,
         expand_factor,
+        ..
       }) => rsx! {
         LinearSsmSubgraphSvg {
           hidden_size: d,

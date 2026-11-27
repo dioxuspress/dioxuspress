@@ -589,36 +589,24 @@ pub fn ModelVisualizerWorkbench(
       div { class: if embedded { "pb-4 mb-5 border-b border-slate-200 dark:border-slate-800" } else { card_class("p-4 sm:p-5 bg-white dark:bg-slate-900/80") },
         div { class: "flex flex-wrap items-start justify-between gap-3",
           div {
-            if !hide_identity_header {
-              div { class: "flex flex-wrap items-center gap-2",
+            div { class: "flex flex-wrap items-center gap-2",
+              if !hide_identity_header {
                 h2 { class: "text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white font-mono",
                   "{blueprint.repo_id}"
                 }
-                span { class: badge_class(BadgeVariant::Default, "text-xs"),
-                  "{blueprint.family.badge_label()}"
-                }
-                span { class: badge_class(BadgeVariant::Secondary, "text-xs font-mono"),
-                  "{blueprint.torch_dtype}"
-                }
-                if let Some(ref q) = blueprint.quantization_summary {
-                  span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-xs font-mono font-semibold",
-                    "{q}"
-                  }
+              }
+              span { class: badge_class(BadgeVariant::Default, "text-xs"),
+                "{blueprint.family_badge_label()}"
+              }
+              span { class: badge_class(BadgeVariant::Secondary, "text-xs font-mono"),
+                "{blueprint.torch_dtype}"
+              }
+              if let Some(ref q) = blueprint.quantization_summary {
+                span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-xs font-mono font-semibold",
+                  "{q}"
                 }
               }
-            } else {
-              div { class: "flex flex-wrap items-center gap-2",
-                span { class: badge_class(BadgeVariant::Default, "text-xs"),
-                  "{blueprint.family.badge_label()}"
-                }
-                span { class: badge_class(BadgeVariant::Secondary, "text-xs font-mono"),
-                  "{blueprint.torch_dtype}"
-                }
-                if let Some(ref q) = blueprint.quantization_summary {
-                  span { class: "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-xs font-mono font-semibold",
-                    "{q}"
-                  }
-                }
+              if hide_identity_header {
                 span { class: "text-xs text-slate-500 dark:text-slate-400 font-mono",
                   "{blueprint.repo_id}"
                 }
@@ -636,6 +624,11 @@ pub fn ModelVisualizerWorkbench(
             if let Some(ref mm) = blueprint.multimodal_note {
               div { class: "mt-2 text-xs text-indigo-600 dark:text-indigo-400 font-medium",
                 "ℹ {mm}"
+              }
+            }
+            if let Some(ref warn) = blueprint.parse_warning {
+              div { class: "mt-2 rounded-lg bg-amber-500/15 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 whitespace-pre-line",
+                "{warn}"
               }
             }
           }

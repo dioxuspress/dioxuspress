@@ -2035,7 +2035,7 @@ pub fn SaveToAtlasModal(
           if let Some(ref bp) = draft_bp() {
             div { class: "flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] font-mono text-indigo-700 dark:text-indigo-300",
               span {
-                "✓ 已就绪蓝图：{bp.repo_id} · {bp.family.badge_label()} · {format_count(bp.params.total_params)} ({bp.num_hidden_layers}L × {bp.hidden_size}d)"
+                "✓ 已就绪蓝图：{bp.repo_id} · {bp.family_badge_label()} · {format_count(bp.params.total_params)} ({bp.num_hidden_layers}L × {bp.hidden_size}d)"
               }
               Button {
                 variant: ButtonVariant::Outline,
