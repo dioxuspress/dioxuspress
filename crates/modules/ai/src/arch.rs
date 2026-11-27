@@ -670,11 +670,30 @@ impl LayerSegment {
   }
 
   pub fn range_label(&self) -> String {
-    if self.start_layer == self.end_layer {
-      format!("Layer {}", self.start_layer)
-    } else {
-      format!("Layers {}–{} (×{})", self.start_layer, self.end_layer, self.layer_count())
+    let n = self.layer_count();
+    let mut s = String::with_capacity(28);
+    if n == 1 {
+      s.push_str("Layer ");
+      push_u64(&mut s, self.start_layer);
+      return s;
     }
+    let is_interleaved = self.schedule_note.as_deref().is_some_and(|note| {
+      note.contains("混合序列架构") || note.contains("三态异构") || note.contains("交替堆叠")
+    });
+    if is_interleaved {
+      s.push_str("交替分布 (×");
+      push_u64(&mut s, n);
+      s.push_str("层)");
+    } else {
+      s.push_str("Layers ");
+      push_u64(&mut s, self.start_layer);
+      s.push('–');
+      push_u64(&mut s, self.end_layer);
+      s.push_str(" (×");
+      push_u64(&mut s, n);
+      s.push(')');
+    }
+    s
   }
 }
 
@@ -1954,7 +1973,8 @@ pub fn build_model_blueprint_with_aux(
     OutputHeadSpec::CausalLmHead
   };
 
-  let schedule_note = low_rank_dsa_note.or_else(|| build_schedule_note(&standard_attention, cfg_obj));
+  let schedule_note =
+    low_rank_dsa_note.or_else(|| build_schedule_note(&standard_attention, cfg_obj));
 
   let dense_ffn = FfnSpec::DenseGated {
     intermediate_size: dense_mlp_inter,
@@ -2309,11 +2329,8 @@ pub fn build_model_blueprint_with_aux(
   if engram_embed_params > 0 {
     params.embedding = params.embedding.saturating_add(engram_embed_params);
     params.total_params = params.total_params.saturating_add(engram_embed_params);
-    let engram_layers = cfg_obj
-      .get("engram_layer_ids")
-      .and_then(Value::as_array)
-      .map(Vec::len)
-      .unwrap_or(1);
+    let engram_layers =
+      cfg_obj.get("engram_layer_ids").and_then(Value::as_array).map(Vec::len).unwrap_or(1);
     let note = format!(
       "含 {engram_layers} 层 Engram N-gram 记忆表（+{} 查表参数，O(1) 稀疏激活）",
       format_count(engram_embed_params)
@@ -4379,7 +4396,8 @@ mod diffusion_parser {
       let ffn = u64_any(sub, &["intermediate_size", "d_ff"]).unwrap_or(d * 4);
       let heads = u64_any(sub, &["num_attention_heads", "num_heads"]).unwrap_or(0);
       let kv_heads = u64_any(sub, &["num_key_value_heads", "num_kv_heads"]).unwrap_or(heads);
-      let head_dim = u64_any(sub, &["head_dim"]).unwrap_or(if heads > 0 { d / heads } else { 0 });
+      let head_dim =
+        u64_any(sub, &["head_dim"]).unwrap_or_else(|| d.checked_div(heads).unwrap_or(0));
       let attn_per_layer = if heads > 0 && head_dim > 0 {
         let q_out = heads * head_dim;
         let kv_out = kv_heads.max(1) * head_dim;
@@ -4413,10 +4431,8 @@ mod diffusion_parser {
         .and_then(|vc| parse_vision_spec(vc, d, &PreprocessorHints::default()))
         .map(|v| v.estimated_params)
         .unwrap_or(0);
-      let est = vocab * d
-        + untied_head
-        + vision_params
-        + layers * (attn_per_layer + ffn_mats * d * ffn);
+      let est =
+        vocab * d + untied_head + vision_params + layers * (attn_per_layer + ffn_mats * d * ffn);
       return PipelineComponentSpec {
         slot: slot.to_string(),
         class_name: class_name.to_string(),
@@ -4487,8 +4503,8 @@ mod diffusion_parser {
     is_video_hint: bool,
   ) -> (PipelineComponentSpec, u64, u64, u64) {
     let cl = class_name.to_ascii_lowercase();
-    let explicit_2d =
-      cl.contains("image") || cfg_opt.and_then(|c| c.get("vit_decoder_2d")).and_then(Value::as_bool) == Some(true);
+    let explicit_2d = cl.contains("image")
+      || cfg_opt.and_then(|c| c.get("vit_decoder_2d")).and_then(Value::as_bool) == Some(true);
     let is_3d = !explicit_2d
       && (is_video_hint
         || cl.contains("wan")
@@ -4511,9 +4527,8 @@ mod diffusion_parser {
     } else {
       1
     };
-    let vit_dec_params = cfg_opt
-      .and_then(|c| c.get("vit_decoder_kwargs").and_then(Value::as_object))
-      .map(|vk| {
+    let vit_dec_params =
+      cfg_opt.and_then(|c| c.get("vit_decoder_kwargs").and_then(Value::as_object)).map(|vk| {
         let vl = u64_any(vk, &["num_layers", "depth"]).unwrap_or(24);
         let vh = u64_any(vk, &["heads", "num_heads"]).unwrap_or(16);
         let vdh = u64_any(vk, &["dim_head", "head_dim"]).unwrap_or(64);
@@ -4563,17 +4578,14 @@ mod diffusion_parser {
 
     let pipe_lc = format!("{} {}", pipeline_class, repo_id).to_ascii_lowercase();
     let explicit_image_pipe = (pipe_lc.contains("image") && !pipe_lc.contains("video"))
-      || index_root_val
-        .as_ref()
-        .and_then(Value::as_object)
-        .is_some_and(|obj| {
-          obj.values().any(|v| {
-            v.as_object()
-              .and_then(|m| m.get("partition"))
-              .and_then(Value::as_str)
-              .is_some_and(|p| p.eq_ignore_ascii_case("image"))
-          })
-        });
+      || index_root_val.as_ref().and_then(Value::as_object).is_some_and(|obj| {
+        obj.values().any(|v| {
+          v.as_object()
+            .and_then(|m| m.get("partition"))
+            .and_then(Value::as_str)
+            .is_some_and(|p| p.eq_ignore_ascii_case("image"))
+        })
+      });
     let mut is_video = !explicit_image_pipe
       && (pipe_lc.contains("video")
         || pipe_lc.contains("wan")
@@ -4957,9 +4969,9 @@ mod diffusion_parser {
               || p.example_name.contains("encoder_attn")
           })
         });
-        let l2_has_single_qkv = safetensors.as_ref().is_some_and(|st| {
-          st.patterns.iter().any(|p| p.example_name.contains("attn.qkv_proj"))
-        });
+        let l2_has_single_qkv = safetensors
+          .as_ref()
+          .is_some_and(|st| st.patterns.iter().any(|p| p.example_name.contains("attn.qkv_proj")));
         let has_cross = if l2_has_separate_cross {
           true
         } else if l2_has_single_qkv || refiner_layers > 0 {
@@ -4991,8 +5003,9 @@ mod diffusion_parser {
           let mod_in = den_obj
             .and_then(|c| u64_any(c, &["time_embed_dim", "time_embed_hidden_size"]))
             .unwrap_or(hidden_size);
-          let final_adaln =
-            den_obj.and_then(|c| u64_any(c, &["final_adaln_out_features"])).unwrap_or(2 * hidden_size);
+          let final_adaln = den_obj
+            .and_then(|c| u64_any(c, &["final_adaln_out_features"]))
+            .unwrap_or(2 * hidden_size);
           let text_d = den_obj.and_then(|c| u64_any(c, &["text_dim"])).unwrap_or(hidden_size);
           double_layers * adaln_out * mod_in
             + final_adaln * mod_in
@@ -6223,7 +6236,7 @@ mod tests {
           "adaln_out_features": 96768,
           "final_adaln_out_features": 10752
         }"#
-        .to_string(),
+          .to_string(),
       ),
       (
         "text_encoder".to_string(),
@@ -6249,7 +6262,7 @@ mod tests {
             "spatial_merge_size": 2
           }
         }"#
-        .to_string(),
+          .to_string(),
       ),
       (
         "vae".to_string(),
@@ -6264,7 +6277,7 @@ mod tests {
             "ffn_use_gated": true
           }
         }"#
-        .to_string(),
+          .to_string(),
       ),
     ];
 
@@ -6326,7 +6339,8 @@ mod tests {
       "vision_config": { "hidden_size": 1280, "depth": 32, "num_heads": 16, "intermediate_size": 3420 },
       "text_config": { "hidden_size": 3584, "num_hidden_layers": 28, "num_attention_heads": 28, "num_key_value_heads": 4, "intermediate_size": 18944, "vocab_size": 152064 }
     }"#;
-    let vlm_bp = build_model_blueprint("Qwen/Qwen2.5-VL-7B", "HF", vlm_cfg, None, None, None).unwrap();
+    let vlm_bp =
+      build_model_blueprint("Qwen/Qwen2.5-VL-7B", "HF", vlm_cfg, None, None, None).unwrap();
     assert_eq!(vlm_bp.modality_badge_label(), "VLM 图文多模态");
   }
 
@@ -6385,8 +6399,9 @@ mod tests {
       has_vision_tower: true,
       ..SafetensorsSummary::default()
     };
-    let hy4 = build_model_blueprint("Tencent-Hunyuan/Hy4", "ModelScope", hy4_cfg, None, None, Some(hy4_st))
-      .expect("hy4");
+    let hy4 =
+      build_model_blueprint("Tencent-Hunyuan/Hy4", "ModelScope", hy4_cfg, None, None, Some(hy4_st))
+        .expect("hy4");
     assert_eq!(hy4.modality_badge_label(), "VLM 图文多模态");
     assert_eq!(hy4.family_badge_label(), "MLA + DSA Sparse");
     assert_eq!(hy4.rope_summary, "M-RoPE θ=10M [12,10,10]");
