@@ -1556,8 +1556,14 @@ mod tests {
     let shards = scan.sample_shards();
     assert!(shards.contains(&"model-00001.safetensors".to_string()));
     assert!(shards.contains(&"model-00002.safetensors".to_string()));
-    assert!(shards.contains(&"model-00005.safetensors".to_string()), "engram shard must be sampled");
-    assert!(shards.contains(&"model-00047.safetensors".to_string()), "vision shard must be sampled");
+    assert!(
+      shards.contains(&"model-00005.safetensors".to_string()),
+      "engram shard must be sampled"
+    );
+    assert!(
+      shards.contains(&"model-00047.safetensors".to_string()),
+      "vision shard must be sampled"
+    );
     assert!(shards.contains(&"model-00048.safetensors".to_string()), "tail shard must be sampled");
 
     let sampled = vec![
@@ -1653,7 +1659,10 @@ mod tests {
     assert!(summary.has_vision_tower);
     assert_eq!(summary.detected_num_layers, Some(2));
     assert_eq!(summary.detected_full_attn_layers, Some(1));
-    assert!(summary.patterns.iter().any(|p| p.stage == "vision" && p.pattern.starts_with("vision.")));
+    assert!(summary
+      .patterns
+      .iter()
+      .any(|p| p.stage == "vision" && p.pattern.starts_with("vision.")));
     assert!(summary.patterns.iter().any(|p| p.stage == "mtp" && p.pattern.starts_with("mtp.")));
 
     // Exact math verification:
