@@ -4640,6 +4640,7 @@ dependencies = [
  "dioxus",
  "dioxus-shadcn",
  "dioxus-ssr",
+ "dotenvy",
  "llm",
  "reqwest",
  "sea-orm",
@@ -4648,6 +4649,7 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "widgets",
 ]
 

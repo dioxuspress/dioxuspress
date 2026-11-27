@@ -1071,18 +1071,26 @@ mod tests {
           )
         })
         .unwrap_or_else(|| "none".to_string());
+      let ver_rep = bp.verification_report();
+      let ver_tag = ver_rep
+        .as_ref()
+        .map(|v| format!("{} (broken={})", v.status.as_str(), v.circuit_broken))
+        .unwrap_or_else(|| "none".to_string());
       println!(
-        "OK {repo:36} mod={:14} badge={:22} total={:9} active={:9} segs={} vis={} warnings={} | L2: {l2_info}",
+        "OK {repo:36} mod={:14} badge={:22} total={:9} active={:9} segs={} ver={ver_tag} | L2: {l2_info}",
         bp.modality_badge_label(),
         bp.family_badge_label(),
         crate::arch::format_count(bp.params.total_params),
         crate::arch::format_count(bp.params.active_params),
         bp.segments.len(),
-        bp.vision.is_some(),
-        bp.parse_warning.as_ref().map(|w| w.lines().count()).unwrap_or(0)
       );
-      if let Some(ref w) = bp.parse_warning {
-        println!("   {w}");
+      if let Some(ref vr) = ver_rep {
+        for c in &vr.checks {
+          println!("   {c}");
+        }
+        for i in &vr.issues {
+          println!("   ⚠ {i}");
+        }
       }
       assert_eq!(bp.modality_badge_label(), expected_modality, "modality mismatch for {repo}");
       assert_eq!(bp.family_badge_label(), expected_badge, "badge mismatch for {repo}");

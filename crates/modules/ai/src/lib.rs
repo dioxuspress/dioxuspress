@@ -9,6 +9,8 @@
 pub mod arch;
 pub mod atlas;
 pub mod atlas_store;
+#[cfg(feature = "server")]
+pub mod audit;
 pub mod component_labs;
 pub mod component_labs_m2;
 pub mod components_atlas;

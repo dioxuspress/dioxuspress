@@ -51,6 +51,47 @@ impl TensorPatternEntry {
   }
 }
 
+/// L2 Safetensors 分阶段真实参数汇总（仅服务端用于 L1 × L2 分模块精确对账，零客户端 WASM 开销）。
+#[cfg(feature = "server")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct L2StageParams {
+  pub embedding: u64,
+  pub attention: u64,
+  pub ffn_moe: u64,
+  pub vision: u64,
+  pub audio: u64,
+  pub mtp: u64,
+  pub lm_head: u64,
+  pub norm: u64,
+  pub other: u64,
+  pub covered_tensors: usize,
+  pub total_tensors: usize,
+  pub attention_covered: bool,
+  pub ffn_moe_covered: bool,
+  pub embed_covered: bool,
+}
+
+/// L2 采样得到的核心投影矩阵逻辑维度（已解包量化打包倍数，仅服务端用于 Shape 断言）。
+#[cfg(feature = "server")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct L2ProjShape {
+  /// `"embed_tokens" | "lm_head" | "q_proj" | "k_proj" | "v_proj" | "wkv" | "o_proj"`
+  pub role: &'static str,
+  pub pattern: String,
+  pub logical_shape: Vec<u64>,
+  pub repeat_count: usize,
+}
+
+/// L2 中未被归入标准架构阶段的显著权重张量族（反漏算雷达）。
+#[cfg(feature = "server")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct L2UnmodeledTensor {
+  pub pattern: String,
+  pub shape: Option<Vec<u64>>,
+  pub repeat_count: usize,
+  pub total_params: u64,
+}
+
 /// 聚合后的 L2 Safetensors 真实权重摘要。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SafetensorsSummary {
@@ -80,6 +121,18 @@ pub struct SafetensorsSummary {
   #[cfg(feature = "server")]
   #[serde(skip)]
   pub l2_estimated_params: Option<u64>,
+  /// L2 分阶段真实参数汇总（仅服务端分模块对账）
+  #[cfg(feature = "server")]
+  #[serde(skip)]
+  pub l2_stage_params: L2StageParams,
+  /// L2 采样得到的核心投影矩阵逻辑维度（仅服务端 Shape 断言）
+  #[cfg(feature = "server")]
+  #[serde(skip)]
+  pub l2_proj_shapes: Vec<L2ProjShape>,
+  /// L2 中未被标准阶段覆盖的显著大体积张量族（仅服务端反漏算雷达）
+  #[cfg(feature = "server")]
+  #[serde(skip)]
+  pub l2_unmodeled_other: Vec<L2UnmodeledTensor>,
   /// L2 从真实张量名检测到的线性注意力 / SSM 层数量（仅服务端交叉核验）
   #[cfg(feature = "server")]
   #[serde(skip)]
@@ -401,6 +454,7 @@ mod parser {
       || name.contains(".mtp.")
       || name.starts_with("dfly.")
       || name.contains(".dfly.")
+      || name.contains("dfly_layers")
     {
       return "mtp";
     }
@@ -418,16 +472,21 @@ mod parser {
       || name.contains("audio_encoder")
       || name.starts_with("talker.")
       || name.starts_with("token2wav")
+      || name.contains("model.encoder.conv1.")
+      || name.contains("model.encoder.conv2.")
     {
       return "audio";
     }
     if name.contains("embed_tokens")
       || name == "embed.weight"
       || name.ends_with(".embed.weight")
+      || name.contains("backbone.embeddings.")
       || name.contains(".engram.")
       || name.starts_with("engram.")
       || name.contains("wte")
       || name.contains("word_embeddings")
+      || name.contains("position_embeddings")
+      || name.contains("token_type_embeddings")
       || name.contains("embed_positions")
       || name.starts_with("time_text_embed.")
       || name.starts_with("condition_embedder.")
@@ -448,18 +507,6 @@ mod parser {
       || name.ends_with("score.weight")
     {
       "lm_head"
-    } else if name.contains("self_attn")
-      || name.contains("encoder_attn")
-      || name.contains(".attn.")
-      || name.contains(".attn1.")
-      || name.contains(".attn2.")
-      || name.contains("attention")
-      || name.contains("linear_attn")
-      || name.contains(".mamba.")
-      || name.contains("mixer.")
-      || name.contains("time_mix")
-    {
-      "attention"
     } else if name.contains("experts")
       || name.contains("shared_expert")
       || name.contains("shared_experts")
@@ -479,21 +526,39 @@ mod parser {
       || name.contains("fc1.")
       || name.contains("fc2.")
       || name.contains("intermediate.dense")
+      || name.contains(".output.dense.")
       || name.contains("channel_mix")
+      || (name.contains("mixer.")
+        && (name.contains("up_proj") || name.contains("down_proj") || name.contains("gate_proj")))
     {
       "ffn"
-    } else if name.contains("layernorm")
+    } else if name.contains("hc_attn")
+      || name.contains("hc_mlp")
+      || name.contains("layernorm")
       || name.contains("layer_norm")
       || name.contains("LayerNorm")
       || name.contains(".norm.")
       || name.contains(".norm1.")
       || name.contains(".norm2.")
+      || name.contains("norm_f.")
       || name.contains("norm_q.")
       || name.contains("norm_k.")
       || name.contains("norm_out.")
       || name.ends_with("norm.weight")
     {
       "norm"
+    } else if name.contains("self_attn")
+      || name.contains("encoder_attn")
+      || name.contains(".attn.")
+      || name.contains(".attn1.")
+      || name.contains(".attn2.")
+      || name.contains("attention")
+      || name.contains("linear_attn")
+      || name.contains(".mamba.")
+      || name.contains("mixer.")
+      || name.contains("time_mix")
+    {
+      "attention"
     } else {
       "other"
     }
@@ -590,11 +655,102 @@ mod parser {
     raw.checked_mul(mul)
   }
 
-  /// 当采样 Shape 覆盖了绝大部分真实张量时，计算基于 L2 真实维度的全模型参数总量估算。
-  fn estimate_l2_params(patterns: &[TensorPatternEntry], total_tensor_count: usize) -> Option<u64> {
-    if total_tensor_count == 0 || patterns.is_empty() {
+  /// 判断张量是否为非参数常量 buffer（RoPE 频率表、位置 ID、Hash 路由查找表等）。
+  fn is_non_param_buffer(name: &str) -> bool {
+    name.ends_with(".inv_freq")
+      || name.ends_with(".position_ids")
+      || name.ends_with(".token_type_ids")
+      || name.ends_with(".tid2eid")
+      || name.contains("rotary_emb.cos")
+      || name.contains("rotary_emb.sin")
+  }
+
+  /// 识别主干标准 2D 投影张量角色（排除视觉/音频/MTP/线性注意力/低秩压缩器/索引器），供 L1 × L2 维度断言使用。
+  fn classify_core_proj_role(example_name: &str) -> Option<&'static str> {
+    if is_quant_aux_tensor(example_name) || is_non_param_buffer(example_name) {
       return None;
     }
+    if example_name.starts_with("visual.")
+      || example_name.starts_with("vision.")
+      || example_name.contains("vision_tower")
+      || example_name.contains("vision_model")
+      || example_name.contains("audio_tower")
+      || example_name.contains("audio_encoder")
+      || example_name.starts_with("mtp.")
+      || example_name.contains(".mtp.")
+      || example_name.starts_with("dfly.")
+      || example_name.contains(".dfly.")
+      || example_name.contains("engram")
+      || example_name.contains("linear_attn")
+      || example_name.contains(".mamba.")
+      || example_name.contains("time_mix")
+      || example_name.contains(".indexer.")
+      || example_name.contains(".compressor.")
+      || example_name.contains("shared_head")
+    {
+      return None;
+    }
+    let is_weight = example_name.ends_with(".weight")
+      || example_name.ends_with(".weight_packed")
+      || example_name.ends_with(".qweight");
+    if !is_weight {
+      return None;
+    }
+    let stem = example_name
+      .strip_suffix(".weight")
+      .or_else(|| example_name.strip_suffix(".weight_packed"))
+      .or_else(|| example_name.strip_suffix(".qweight"))?;
+
+    if stem.ends_with(".embed_tokens")
+      || stem == "embed"
+      || stem.ends_with(".embed")
+      || stem.ends_with(".word_embeddings")
+    {
+      return Some("embed_tokens");
+    }
+    if stem == "lm_head" || stem.ends_with(".lm_head") || stem == "head" || stem.ends_with(".head")
+    {
+      return Some("lm_head");
+    }
+    let in_attn = stem.contains(".self_attn.") || stem.contains(".attn.");
+    if !in_attn {
+      return None;
+    }
+    if stem.ends_with(".q_proj") {
+      Some("q_proj")
+    } else if stem.ends_with(".k_proj") {
+      Some("k_proj")
+    } else if stem.ends_with(".v_proj") {
+      Some("v_proj")
+    } else if stem.ends_with(".wkv") {
+      Some("wkv")
+    } else if stem.ends_with(".o_proj") {
+      Some("o_proj")
+    } else {
+      None
+    }
+  }
+
+  struct L2Analysis {
+    estimated_params: Option<u64>,
+    stage_params: L2StageParams,
+    proj_shapes: Vec<L2ProjShape>,
+    unmodeled_other: Vec<L2UnmodeledTensor>,
+  }
+
+  /// 一次扫描 `patterns`，产出全模型总参、分阶段参数对账汇总、核心投影逻辑 Shape 与未归类大张量族。
+  fn analyze_l2_patterns(patterns: &[TensorPatternEntry], total_tensor_count: usize) -> L2Analysis {
+    let mut stage_params =
+      L2StageParams { total_tensors: total_tensor_count, ..Default::default() };
+    if total_tensor_count == 0 || patterns.is_empty() {
+      return L2Analysis {
+        estimated_params: None,
+        stage_params,
+        proj_shapes: Vec::new(),
+        unmodeled_other: Vec::new(),
+      };
+    }
+
     let mut scale_by_stem: HashMap<&str, &TensorPatternEntry> = HashMap::new();
     for p in patterns {
       if let Some(stem) = p
@@ -607,24 +763,110 @@ mod parser {
         scale_by_stem.insert(stem, p);
       }
     }
-    let mut covered_tensors = 0usize;
+
     let mut total_params = 0u64;
+    let mut attn_total_cnt = 0usize;
+    let mut attn_cov_cnt = 0usize;
+    let mut ffn_total_cnt = 0usize;
+    let mut ffn_cov_cnt = 0usize;
+    let mut emb_total_cnt = 0usize;
+    let mut emb_cov_cnt = 0usize;
+    let mut proj_shapes: Vec<L2ProjShape> = Vec::new();
+    let mut seen_roles: BTreeSet<&'static str> = BTreeSet::new();
+    let mut unmodeled_other: Vec<L2UnmodeledTensor> = Vec::new();
+
     for p in patterns {
       if is_quant_aux_tensor(&p.example_name) {
-        covered_tensors += p.repeat_count;
+        stage_params.covered_tensors += p.repeat_count;
         continue;
       }
+      let is_buf = is_non_param_buffer(&p.example_name);
+      match p.stage.as_str() {
+        "attention" if !is_buf => attn_total_cnt += p.repeat_count,
+        "ffn" | "moe" if !is_buf => ffn_total_cnt += p.repeat_count,
+        "embedding" | "lm_head" if !is_buf => emb_total_cnt += p.repeat_count,
+        _ => {}
+      }
+
       if let Some(params) = effective_pattern_params(p, &scale_by_stem) {
-        covered_tensors += p.repeat_count;
+        stage_params.covered_tensors += p.repeat_count;
+        if is_buf {
+          continue;
+        }
         total_params = total_params.saturating_add(params);
+        match p.stage.as_str() {
+          "embedding" => {
+            stage_params.embedding = stage_params.embedding.saturating_add(params);
+            emb_cov_cnt += p.repeat_count;
+          }
+          "lm_head" => {
+            stage_params.lm_head = stage_params.lm_head.saturating_add(params);
+            emb_cov_cnt += p.repeat_count;
+          }
+          "attention" => {
+            stage_params.attention = stage_params.attention.saturating_add(params);
+            attn_cov_cnt += p.repeat_count;
+          }
+          "ffn" | "moe" => {
+            stage_params.ffn_moe = stage_params.ffn_moe.saturating_add(params);
+            ffn_cov_cnt += p.repeat_count;
+          }
+          "vision" => stage_params.vision = stage_params.vision.saturating_add(params),
+          "audio" => stage_params.audio = stage_params.audio.saturating_add(params),
+          "mtp" => stage_params.mtp = stage_params.mtp.saturating_add(params),
+          "norm" => stage_params.norm = stage_params.norm.saturating_add(params),
+          _ => {
+            stage_params.other = stage_params.other.saturating_add(params);
+            if params > 0 {
+              unmodeled_other.push(L2UnmodeledTensor {
+                pattern: p.pattern.clone(),
+                shape: p.shape.clone(),
+                repeat_count: p.repeat_count,
+                total_params: params,
+              });
+            }
+          }
+        }
+
+        if let Some(role) = classify_core_proj_role(&p.example_name) {
+          if let Some(shape) = p.shape.as_ref() {
+            if shape.len() == 2 && seen_roles.insert(role) {
+              let mul = infer_pack_multiplier(p, &scale_by_stem);
+              let mut logical = shape.clone();
+              if mul > 1 {
+                if let Some(last) = logical.last_mut() {
+                  *last = last.saturating_mul(mul);
+                }
+              }
+              proj_shapes.push(L2ProjShape {
+                role,
+                pattern: p.pattern.clone(),
+                logical_shape: logical,
+                repeat_count: p.repeat_count,
+              });
+            }
+          }
+        }
       }
     }
+
+    stage_params.attention_covered =
+      attn_total_cnt > 0 && attn_cov_cnt * 100 >= attn_total_cnt * 85;
+    stage_params.ffn_moe_covered = ffn_total_cnt > 0 && ffn_cov_cnt * 100 >= ffn_total_cnt * 85;
+    stage_params.embed_covered = emb_total_cnt > 0 && emb_cov_cnt * 100 >= emb_total_cnt * 85;
+
+    unmodeled_other.sort_by_key(|a| std::cmp::Reverse(a.total_params));
+    unmodeled_other.truncate(5);
+
     // 只有当至少 85% 的张量条数被真实 Shape 覆盖（例如代表性专家与主干层都命中采样）时才给出 L2 总参估算，避免漏采分片导致误报。
-    if total_params > 0 && covered_tensors * 100 >= total_tensor_count * 85 {
-      Some(total_params)
-    } else {
-      None
-    }
+    let estimated_params =
+      if total_params > 0 && stage_params.covered_tensors * 100 >= total_tensor_count * 85 {
+        Some(total_params)
+      } else {
+        None
+      };
+
+    L2Analysis { estimated_params, stage_params, proj_shapes, unmodeled_other }
   }
 
   fn is_linear_attn_signal(name: &str) -> bool {
@@ -747,7 +989,10 @@ mod parser {
             self.first_trunk_shard = Some(shard.clone());
           }
           if self.hetero_attn_shard.is_none()
-            && (name.contains("kv_a_proj") || name.contains(".indexer."))
+            && (name.contains("kv_a_proj")
+              || name.contains(".indexer.")
+              || name.contains("linear_attn.")
+              || (name.contains(".self_attn.q_proj") && !name.contains("layers.0.")))
             && self.first_trunk_shard.as_deref() != Some(shard.as_str())
           {
             self.hetero_attn_shard = Some(shard.clone());
@@ -1074,7 +1319,7 @@ mod parser {
     let mut dtype_histogram: Vec<(String, usize)> = dtype_map.into_iter().collect();
     dtype_histogram.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    let l2_estimated_params = estimate_l2_params(&patterns, scan.total_tensor_count);
+    let analysis = analyze_l2_patterns(&patterns, scan.total_tensor_count);
     let source_kind = if sampled_headers.is_empty() {
       format!("model.safetensors.index.json ({} shards)", scan.shard_count)
     } else {
@@ -1093,7 +1338,10 @@ mod parser {
       has_attn_bias: scan.has_attn_bias,
       has_qk_norm: scan.has_qk_norm,
       dtype_histogram,
-      l2_estimated_params,
+      l2_estimated_params: analysis.estimated_params,
+      l2_stage_params: analysis.stage_params,
+      l2_proj_shapes: analysis.proj_shapes,
+      l2_unmodeled_other: analysis.unmodeled_other,
       detected_linear_attn_layers: (!scan.linear_attn_layers.is_empty())
         .then_some(scan.linear_attn_layers.len() as u64),
       detected_full_attn_layers: (!scan.full_attn_layers.is_empty())
@@ -1277,7 +1525,7 @@ mod parser {
     for l in &linear_attn_layers {
       full_attn_layers.remove(l);
     }
-    let l2_estimated_params = estimate_l2_params(&patterns, total_tensor_count);
+    let analysis = analyze_l2_patterns(&patterns, total_tensor_count);
 
     SafetensorsSummary {
       source_kind,
@@ -1291,7 +1539,10 @@ mod parser {
       has_attn_bias,
       has_qk_norm,
       dtype_histogram,
-      l2_estimated_params,
+      l2_estimated_params: analysis.estimated_params,
+      l2_stage_params: analysis.stage_params,
+      l2_proj_shapes: analysis.proj_shapes,
+      l2_unmodeled_other: analysis.unmodeled_other,
       detected_linear_attn_layers: (!linear_attn_layers.is_empty())
         .then_some(linear_attn_layers.len() as u64),
       detected_full_attn_layers: (!full_attn_layers.is_empty())

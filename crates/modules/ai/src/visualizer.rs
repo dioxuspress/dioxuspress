@@ -12,7 +12,7 @@ use widgets::PageMeta;
 
 use crate::arch::{
   format_bytes_iec, format_count, load_builtin_preset, recommend_gpu_tier, InspectorFocus,
-  ModelBlueprint, OutputHeadSpec, PrecisionPreset, BUILTIN_PRESETS,
+  ModelBlueprint, OutputHeadSpec, PrecisionPreset, VerificationStatus, BUILTIN_PRESETS,
 };
 #[cfg(feature = "accounts")]
 use crate::atlas::{current_user_is_admin, SaveToAtlasModal};
@@ -541,9 +541,23 @@ pub fn ModelVisualizerWorkbench(
   let default_layer = blueprint.segments.last().map(|s| s.start_layer).unwrap_or(0);
   let mut selected_layer = use_signal(|| default_layer);
   let mut focus = use_signal(|| initial_focus.unwrap_or_else(|| blueprint.default_focus()));
-  // 默认首屏优先展示「全网张量维流图 (DAG)」建立端到端全景；若外部显式指定了算子焦点则直达分层工作台。
-  let mut dag_mode = use_signal(|| initial_focus.is_none());
-  let mut detail_tab = use_signal(|| DetailTab::VramSimulator);
+  let ver_report = blueprint.verification_report();
+  let is_circuit_broken = ver_report.as_ref().is_some_and(|v| v.circuit_broken);
+  let mut dag_mode = use_signal(|| initial_focus.is_none() && !is_circuit_broken);
+  let mut force_show_dag = use_signal(|| false);
+  let mut detail_tab = use_signal(|| {
+    if is_circuit_broken {
+      if blueprint.safetensors.is_some() {
+        DetailTab::SafetensorsTree
+      } else {
+        DetailTab::HyperparamsAndJson
+      }
+    } else {
+      DetailTab::VramSimulator
+    }
+  });
+  let mut show_verify_details =
+    use_signal(|| ver_report.as_ref().is_some_and(|v| !v.issues.is_empty() || v.circuit_broken));
   let initial_compact = matches!(initial_focus, None | Some(InspectorFocus::Overview));
 
   // VRAM 模拟器交互状态
@@ -609,6 +623,24 @@ pub fn ModelVisualizerWorkbench(
                   "{q}"
                 }
               }
+              if let Some(ref vr) = ver_report {
+                button {
+                  r#type: "button",
+                  class: match vr.status {
+                    VerificationStatus::Verified | VerificationStatus::CuratedVerified => {
+                      "px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-semibold cursor-pointer"
+                    }
+                    VerificationStatus::Partial => {
+                      "px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-xs font-semibold cursor-pointer"
+                    }
+                    VerificationStatus::Unverified => {
+                      "px-2 py-0.5 rounded-md bg-rose-500/15 text-rose-700 dark:text-rose-300 text-xs font-semibold cursor-pointer"
+                    }
+                  },
+                  onclick: move |_| show_verify_details.set(!show_verify_details()),
+                  "{vr.status.badge_label()}"
+                }
+              }
               if hide_identity_header {
                 span { class: "text-xs text-slate-500 dark:text-slate-400 font-mono",
                   "{blueprint.repo_id}"
@@ -629,7 +661,30 @@ pub fn ModelVisualizerWorkbench(
                 "ℹ {mm}"
               }
             }
-            if let Some(ref warn) = blueprint.parse_warning {
+            if let Some(ref vr) = ver_report {
+              if show_verify_details() {
+                div {
+                  class: match vr.status {
+                    VerificationStatus::Verified | VerificationStatus::CuratedVerified => {
+                      "mt-2 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-800 dark:text-emerald-200 space-y-1"
+                    }
+                    VerificationStatus::Partial => {
+                      "mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200 space-y-1"
+                    }
+                    VerificationStatus::Unverified => {
+                      "mt-2 rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-800 dark:text-rose-200 space-y-1"
+                    }
+                  },
+                  div { class: "font-semibold", "{vr.headline}" }
+                  for line in &vr.issues {
+                    div { class: "font-mono text-[11px]", "⚠ {line}" }
+                  }
+                  for line in &vr.checks {
+                    div { class: "font-mono text-[11px] opacity-90", "{line}" }
+                  }
+                }
+              }
+            } else if let Some(ref warn) = blueprint.parse_warning {
               div { class: "mt-2 rounded-lg bg-amber-500/15 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 whitespace-pre-line",
                 "{warn}"
               }
@@ -790,15 +845,47 @@ pub fn ModelVisualizerWorkbench(
       }
 
       if dag_mode() {
-        TensorFlowGraphView {
-          blueprint: blueprint.clone(),
-          on_drill_to_workbench: move |(layer_opt, target_focus)| {
-            if let Some(l) = layer_opt {
-              selected_layer.set(l);
+        if is_circuit_broken && !force_show_dag() {
+          div { class: "rounded-xl border border-rose-500/40 bg-rose-500/10 p-5 space-y-3",
+            div { class: "text-sm font-bold text-rose-700 dark:text-rose-300",
+              "✕ 已触发架构熔断保护：暂不自动绘制可能失真的拓扑图"
             }
-            focus.set(target_focus);
-            dag_mode.set(false);
-          },
+            p { class: "text-xs text-rose-700/90 dark:text-rose-200/90 leading-relaxed",
+              "L1 公式推导结果与 L2 Safetensors 真实权重存在显著冲突（或该模型属于尚未建模的全新架构）。为避免传达错误知识，系统已自动优先引导至「分层联动工作台」查看真实 Safetensors 权重树与原始 config.json。"
+            }
+            div { class: "flex flex-wrap gap-2",
+              button {
+                r#type: "button",
+                class: "px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 text-white dark:bg-white dark:text-slate-900 cursor-pointer",
+                onclick: move |_| {
+                  detail_tab.set(if blueprint.safetensors.is_some() {
+                    DetailTab::SafetensorsTree
+                  } else {
+                    DetailTab::HyperparamsAndJson
+                  });
+                  dag_mode.set(false);
+                },
+                "查看真实权重树与原始配置"
+              }
+              button {
+                r#type: "button",
+                class: "px-3 py-1.5 rounded-lg text-xs font-medium border border-rose-500/40 text-rose-700 dark:text-rose-300 hover:bg-rose-500/15 cursor-pointer",
+                onclick: move |_| force_show_dag.set(true),
+                "仍查看推演草图（仅供参考）"
+              }
+            }
+          }
+        } else {
+          TensorFlowGraphView {
+            blueprint: blueprint.clone(),
+            on_drill_to_workbench: move |(layer_opt, target_focus)| {
+              if let Some(l) = layer_opt {
+                selected_layer.set(l);
+              }
+              focus.set(target_focus);
+              dag_mode.set(false);
+            },
+          }
         }
       } else {
       // 2. 双栏联动工作区：左「宏观分层拓扑流 (桌面吸顶)」+ 右「总体架构 / 算子级内部子图 & 工程检视面板」
