@@ -184,6 +184,12 @@ pub enum AttentionSpec {
     /// 是否附带编码器-解码器交叉注意力 `encoder_attn`（如 Whisper / Parler-TTS / SpeechT5 解码层）
     #[serde(default)]
     has_cross_attn: bool,
+    /// 位标志：bit 0 = 共享单路 `wkv`（K/V 合一潜向量），bit 1 = `attn_output_gate`（Q+Gate 双倍投影），bit 2 = 低秩 Q/O 投影（`q_lora_rank`/`o_lora_rank`）
+    #[serde(default)]
+    gqa_flags: u8,
+    /// 独立动态稀疏注意力索引器 `index_topk`（非 MLA 架构，如 DeepSeek-V4 / V4.1，`0` 表示无独立 DSA）
+    #[serde(default)]
+    sparse_index_topk: u64,
     /// 服务端自定义精确单层注意力参数覆盖（用于低秩 Q/O 投影、非 MLA 独立 DSA Indexer 与 KV 压缩器，零客户端 WASM 开销）
     #[cfg(feature = "server")]
     #[serde(skip)]
@@ -229,6 +235,10 @@ pub enum AttentionSpec {
 pub const MLA_FLAG_NOPE: u8 = 1;
 pub const MLA_FLAG_GATED: u8 = 2;
 
+pub const GQA_FLAG_SHARED_KV: u8 = 1;
+pub const GQA_FLAG_OUTPUT_GATE: u8 = 2;
+pub const GQA_FLAG_LOW_RANK_QO: u8 = 4;
+
 fn push_u64(buf: &mut String, mut n: u64) {
   if n == 0 {
     buf.push('0');
@@ -262,6 +272,8 @@ impl AttentionSpec {
         nope_layer_interval,
         is_causal,
         has_cross_attn,
+        gqa_flags,
+        sparse_index_topk,
         ..
       } => {
         if !*is_causal {
@@ -284,8 +296,18 @@ impl AttentionSpec {
         if *qk_norm {
           s.push_str(" + QK-Norm");
         }
+        if (*gqa_flags & GQA_FLAG_SHARED_KV) != 0 {
+          s.push_str(" · Shared-KV");
+        }
+        if (*gqa_flags & GQA_FLAG_OUTPUT_GATE) != 0 {
+          s.push_str(" + OutGate");
+        }
         if *has_cross_attn {
           s.push_str(" + CrossAttn");
+        }
+        if *sparse_index_topk > 0 {
+          s.push_str(" · DSA Top-");
+          push_u64(&mut s, *sparse_index_topk);
         }
         if let (Some(w), Some(pat)) = (sliding_window, sliding_window_pattern) {
           s.push_str(" · ");
@@ -352,11 +374,13 @@ impl AttentionSpec {
   /// 单层单个 Token 在推理 KV Cache 中随序列长度增长需要缓存的标量元素个数（`LinearRecurrent` 为 `0`）。
   pub fn cached_elements_per_token(&self) -> u64 {
     match self {
-      Self::StandardGqa { num_kv_heads, head_dim, is_causal, .. } => {
-        if *is_causal {
-          2 * num_kv_heads * head_dim
-        } else {
+      Self::StandardGqa { num_kv_heads, head_dim, is_causal, gqa_flags, .. } => {
+        if !*is_causal {
           0
+        } else if (*gqa_flags & GQA_FLAG_SHARED_KV) != 0 {
+          num_kv_heads * head_dim
+        } else {
+          2 * num_kv_heads * head_dim
         }
       }
       Self::DeepSeekMla { kv_lora_rank, qk_rope_head_dim, .. } => kv_lora_rank + qk_rope_head_dim,
@@ -421,6 +445,7 @@ impl AttentionSpec {
         o_bias,
         qk_norm,
         has_cross_attn,
+        gqa_flags,
         #[cfg(feature = "server")]
         custom_attn_params,
         ..
@@ -431,10 +456,12 @@ impl AttentionSpec {
         }
         let q_out = num_q_heads * head_dim;
         let kv_out = num_kv_heads * head_dim;
+        let q_mult = if (*gqa_flags & GQA_FLAG_OUTPUT_GATE) != 0 { 2 } else { 1 };
+        let kv_mult = if (*gqa_flags & GQA_FLAG_SHARED_KV) != 0 { 1 } else { 2 };
         let mut p =
-          hidden_size * q_out + hidden_size * kv_out + hidden_size * kv_out + q_out * hidden_size;
+          q_mult * hidden_size * q_out + kv_mult * hidden_size * kv_out + q_out * hidden_size;
         if *qkv_bias {
-          p += q_out + 2 * kv_out;
+          p += q_mult * q_out + kv_mult * kv_out;
         }
         if *o_bias {
           p += hidden_size;
@@ -1701,6 +1728,8 @@ pub fn build_model_blueprint_with_aux(
   );
 
   let mut low_rank_dsa_note: Option<String> = None;
+  let mut alternating_compress_attn: Option<(u64, u64, AttentionSpec, u64, u64, AttentionSpec)> =
+    None;
   let standard_attention = if let Some(kv_rank) = kv_lora_rank {
     let q_lora_rank = u64_any(cfg_obj, &["q_lora_rank"]).filter(|&v| v > 0);
     let qk_nope_head_dim = u64_any(cfg_obj, &["qk_nope_head_dim"]).unwrap_or(128);
@@ -1800,21 +1829,27 @@ pub fn build_model_blueprint_with_aux(
       .or_else(|| detect_nope_interval(cfg_obj))
       .filter(|&iv| iv > 1);
 
-    // 通用支持非 MLA 的低秩 Q/O 投影（q_lora_rank / o_lora_rank + o_groups）与独立 DSA Indexer（如 DeepSeek-V4.1）
+    // 通用支持非 MLA 的低秩 Q/O 投影（q_lora_rank / o_lora_rank + o_groups）、共享单路 wkv、输出门控与独立 DSA Indexer（如 DeepSeek-V4 / V4.1）
     let q_lora = u64_any(cfg_obj, &["q_lora_rank"]).filter(|&v| v > 0);
     let o_lora = u64_any(cfg_obj, &["o_lora_rank"]).filter(|&v| v > 0);
     let standalone_topk = u64_any(cfg_obj, &["index_topk"]).filter(|&v| v > 0);
+    let has_output_gate = cfg_obj.get("attn_output_gate").and_then(Value::as_bool).unwrap_or(false);
+    let has_shared_wkv = o_lora.is_some()
+      || safetensors
+        .as_ref()
+        .is_some_and(|st| st.patterns.iter().any(|p| p.example_name.contains(".wkv.weight")));
+    let gqa_flags = (if has_shared_wkv { GQA_FLAG_SHARED_KV } else { 0 })
+      | (if has_output_gate { GQA_FLAG_OUTPUT_GATE } else { 0 })
+      | (if q_lora.is_some() || o_lora.is_some() { GQA_FLAG_LOW_RANK_QO } else { 0 });
+
+    let q_out = num_q_heads * head_dim;
+    let kv_out = num_kv_heads * head_dim;
+
     let custom_attn_params = if q_lora.is_some() || o_lora.is_some() || standalone_topk.is_some() {
-      let q_out = num_q_heads * head_dim;
-      let kv_out = num_kv_heads * head_dim;
       let q_p = match q_lora {
         Some(qr) => hidden_size * qr + qr + qr * q_out,
-        None => hidden_size * q_out,
+        None => hidden_size * q_out * if has_output_gate { 2 } else { 1 },
       };
-      let has_shared_wkv = o_lora.is_some()
-        || safetensors
-          .as_ref()
-          .is_some_and(|st| st.patterns.iter().any(|p| p.example_name.contains(".wkv.weight")));
       let kv_p = if has_shared_wkv { hidden_size * kv_out } else { 2 * hidden_size * kv_out };
       let o_p = match o_lora {
         Some(or) => {
@@ -1824,10 +1859,84 @@ pub fn build_model_blueprint_with_aux(
         }
         None => q_out * hidden_size,
       };
+      let base_attn_p = q_p + kv_p + o_p;
+
+      let idx_h = u64_any(cfg_obj, &["index_n_heads", "index_num_heads"]).unwrap_or(32);
+      let idx_d = u64_any(cfg_obj, &["index_head_dim"]).unwrap_or(128);
+      let q_in = q_lora.unwrap_or(hidden_size);
+
+      // 检测交替 KV 压缩率模式（如 DeepSeek-V4 `compress_ratios` 含 128× 局部滑窗压缩层与 4× DSA 稀疏检索压缩层交替）
+      let alt_ratios = cfg_obj
+        .get("compress_ratios")
+        .and_then(Value::as_array)
+        .map(|arr| {
+          arr
+            .iter()
+            .take(num_hidden_layers as usize)
+            .filter_map(Value::as_u64)
+            .filter(|&r| r > 0)
+            .collect::<Vec<_>>()
+        })
+        .filter(|v| v.len() == num_hidden_layers as usize)
+        .and_then(|v| {
+          let min_r = *v.iter().min()?;
+          let max_r = *v.iter().max()?;
+          if min_r < max_r {
+            let low_cnt = v.iter().filter(|&&r| r == min_r).count() as u64;
+            let high_cnt = v.iter().filter(|&&r| r == max_r).count() as u64;
+            if low_cnt > 0 && high_cnt > 0 && low_cnt + high_cnt == num_hidden_layers {
+              return Some((high_cnt, max_r, low_cnt, min_r));
+            }
+          }
+          None
+        });
+
+      if let Some((high_cnt, high_r, low_cnt, low_r)) = alt_ratios {
+        // 高压缩率层（如 128×）：仅含 KV compressor（wkv + wgate = 2 * kv_out * D），无独立 DSA 索引器
+        let high_comp_p = 2 * kv_out * hidden_size;
+        let high_spec = AttentionSpec::StandardGqa {
+          num_q_heads,
+          num_kv_heads,
+          head_dim,
+          qkv_bias,
+          o_bias,
+          qk_norm,
+          sliding_window,
+          sliding_window_pattern,
+          nope_layer_interval,
+          is_causal,
+          has_cross_attn,
+          gqa_flags,
+          sparse_index_topk: 0,
+          custom_attn_params: Some(base_attn_p + high_comp_p),
+        };
+        // 低压缩率层（如 4×）：双倍宽 KV compressor（4 * kv_out * D）+ 独立 DSA Indexer（含 indexer.compressor）
+        let low_comp_p = 4 * kv_out * hidden_size;
+        let low_idx_p = if standalone_topk.is_some() {
+          q_in * (idx_h * idx_d) + hidden_size * idx_h + 4 * idx_d * hidden_size
+        } else {
+          0
+        };
+        let low_spec = AttentionSpec::StandardGqa {
+          num_q_heads,
+          num_kv_heads,
+          head_dim,
+          qkv_bias,
+          o_bias,
+          qk_norm,
+          sliding_window,
+          sliding_window_pattern,
+          nope_layer_interval,
+          is_causal,
+          has_cross_attn,
+          gqa_flags,
+          sparse_index_topk: standalone_topk.unwrap_or(0),
+          custom_attn_params: Some(base_attn_p + low_comp_p + low_idx_p),
+        };
+        alternating_compress_attn = Some((high_cnt, high_r, high_spec, low_cnt, low_r, low_spec));
+      }
+
       let idx_p = if standalone_topk.is_some() {
-        let idx_h = u64_any(cfg_obj, &["index_n_heads", "index_num_heads"]).unwrap_or(32);
-        let idx_d = u64_any(cfg_obj, &["index_head_dim"]).unwrap_or(128);
-        let q_in = q_lora.unwrap_or(hidden_size);
         let one_idx = q_in * (idx_h * idx_d) + kv_out * idx_d + hidden_size * idx_h;
         let idx_layers = cfg_obj
           .get("index_source_layer_ids")
@@ -1862,7 +1971,7 @@ pub fn build_model_blueprint_with_aux(
         note_parts.push(format!("SWA({w})"));
       }
       low_rank_dsa_note = Some(format!("低秩稀疏注意力机制：{}", note_parts.join(" · ")));
-      Some(q_p + kv_p + o_p + idx_p + comp_p)
+      Some(base_attn_p + idx_p + comp_p)
     } else {
       None
     };
@@ -1879,6 +1988,8 @@ pub fn build_model_blueprint_with_aux(
       nope_layer_interval,
       is_causal,
       has_cross_attn,
+      gqa_flags,
+      sparse_index_topk: standalone_topk.unwrap_or(0),
       custom_attn_params,
     }
   };
@@ -2267,15 +2378,63 @@ pub fn build_model_blueprint_with_aux(
         });
       }
       if first_k_dense < num_hidden_layers {
-        segs.push(LayerSegment {
-          start_layer: first_k_dense,
-          end_layer: num_hidden_layers - 1,
-          title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
-          attention: standard_attention,
-          ffn: moe_ffn,
-          norms_per_layer,
-          schedule_note: schedule_note.clone(),
-        });
+        if first_k_dense == 0 {
+          if let Some((high_cnt, high_r, high_attn, low_cnt, low_r, low_attn)) =
+            alternating_compress_attn
+          {
+            let swa_tag = match &high_attn {
+              AttentionSpec::StandardGqa { sliding_window: Some(w), .. } => format!("SWA {w} + "),
+              _ => String::new(),
+            };
+            let dsa_tag = match &low_attn {
+              AttentionSpec::StandardGqa { sparse_index_topk, .. } if *sparse_index_topk > 0 => {
+                format!("DSA Top-{sparse_index_topk} + ")
+              }
+              _ => String::new(),
+            };
+            let alt_note = format!(
+              "按 compress_ratios 交替堆叠：{high_cnt} 层 {swa_tag}{high_r}× KV 压缩 + {low_cnt} 层 {dsa_tag}{low_r}× KV 压缩"
+            );
+            segs.push(LayerSegment {
+              start_layer: 0,
+              end_layer: high_cnt - 1,
+              title: format!("局部压缩稀疏专家层组 ({swa_tag}{high_r}× KV 压缩)"),
+              attention: high_attn,
+              ffn: moe_ffn.clone(),
+              norms_per_layer,
+              schedule_note: Some(alt_note.clone()),
+            });
+            segs.push(LayerSegment {
+              start_layer: high_cnt,
+              end_layer: num_hidden_layers - 1,
+              title: format!("稀疏检索专家层组 ({dsa_tag}{low_r}× KV 压缩)"),
+              attention: low_attn,
+              ffn: moe_ffn,
+              norms_per_layer,
+              schedule_note: Some(alt_note),
+            });
+          } else {
+            segs.push(LayerSegment {
+              start_layer: first_k_dense,
+              end_layer: num_hidden_layers - 1,
+              title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
+              attention: standard_attention,
+              ffn: moe_ffn,
+              norms_per_layer,
+              schedule_note: schedule_note.clone(),
+            });
+          }
+        } else {
+          segs.push(LayerSegment {
+            start_layer: first_k_dense,
+            end_layer: num_hidden_layers - 1,
+            title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
+            attention: standard_attention,
+            ffn: moe_ffn,
+            norms_per_layer,
+            schedule_note: schedule_note.clone(),
+          });
+        }
       }
     }
     segs
@@ -2366,6 +2525,35 @@ pub fn build_model_blueprint_with_aux(
     if num_nextn_predict_layers > 0 { num_nextn_predict_layers } else { dfly_layers };
   if let Some(hc_m) = u64_any(cfg_obj, &["hc_mult"]).filter(|&m| m > 1) {
     let note = format!("Hyper-Connections ({hc_m} 路残差超连接)");
+    multimodal_note = Some(match multimodal_note {
+      Some(prev) => format!("{prev} · {note}"),
+      None => note,
+    });
+  }
+  if let Some(nh) = u64_any(cfg_obj, &["num_hash_layers"]).filter(|&n| n > 0) {
+    let note = format!("前 {nh} 层 Hash 路由 MoE (tid2eid)");
+    multimodal_note = Some(match multimodal_note {
+      Some(prev) => format!("{prev} · {note}"),
+      None => note,
+    });
+  }
+  let is_block_dllm = cfg_obj.get("denoising_config").is_some_and(Value::is_object)
+    || (cfg_obj.contains_key("mask_token_id") && cfg_obj.contains_key("block_size"));
+  if is_block_dllm {
+    let mut parts = Vec::new();
+    if let Some(bs) = u64_any(cfg_obj, &["block_size"]).filter(|&b| b > 0) {
+      parts.push(format!("block={bs}"));
+    }
+    if let Some(algo) =
+      cfg_obj.get("denoising_config").and_then(|v| v.get("algorithm")).and_then(Value::as_str)
+    {
+      parts.push(algo.to_string());
+    }
+    let note = if parts.is_empty() {
+      "Block-Diffusion dLLM（非自回归块去噪语言模型）".to_string()
+    } else {
+      format!("Block-Diffusion dLLM ({})", parts.join(", "))
+    };
     multimodal_note = Some(match multimodal_note {
       Some(prev) => format!("{prev} · {note}"),
       None => note,
@@ -3453,7 +3641,10 @@ fn extract_rope_summary(cfg: &serde_json::Map<String, Value>) -> String {
 
 #[cfg(feature = "server")]
 fn extract_quantization_summary(cfg: &serde_json::Map<String, Value>) -> Option<String> {
-  let q = cfg.get("quantization_config")?.as_object()?;
+  let top_expert_dtype = cfg.get("expert_dtype").and_then(Value::as_str).filter(|s| !s.is_empty());
+  let Some(q) = cfg.get("quantization_config").and_then(Value::as_object) else {
+    return top_expert_dtype.map(|ed| format!("Experts {}", ed.to_ascii_uppercase()));
+  };
   let method = q.get("quant_method").and_then(Value::as_str).unwrap_or("quantized");
   let bits = q.get("bits").and_then(Value::as_u64);
   let fmt = q.get("fmt").and_then(Value::as_str);
@@ -3461,6 +3652,8 @@ fn extract_quantization_summary(cfg: &serde_json::Map<String, Value>) -> Option<
   let block = q.get("weight_block_size").and_then(Value::as_array).map(|a| {
     a.iter().filter_map(Value::as_u64).map(|n| n.to_string()).collect::<Vec<_>>().join("×")
   });
+  let expert_dtype =
+    q.get("expert_dtype").and_then(Value::as_str).filter(|s| !s.is_empty()).or(top_expert_dtype);
 
   let mut parts = vec![method.to_ascii_uppercase()];
   if let Some(b) = bits {
@@ -3474,6 +3667,11 @@ fn extract_quantization_summary(cfg: &serde_json::Map<String, Value>) -> Option<
   }
   if let Some(bl) = block.filter(|s| !s.is_empty()) {
     parts.push(format!("block {bl}"));
+  }
+  if let Some(ed) = expert_dtype {
+    if !ed.eq_ignore_ascii_case(method) {
+      parts.push(format!("Experts {}", ed.to_ascii_uppercase()));
+    }
   }
   Some(parts.join(" · "))
 }
@@ -3704,6 +3902,8 @@ pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
           nope_layer_interval: None,
           is_causal: true,
           has_cross_attn: false,
+          gqa_flags: 0,
+          sparse_index_topk: 0,
           #[cfg(feature = "server")]
           custom_attn_params: None,
         },
@@ -3760,6 +3960,8 @@ pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
           nope_layer_interval: None,
           is_causal: true,
           has_cross_attn: false,
+          gqa_flags: 0,
+          sparse_index_topk: 0,
           #[cfg(feature = "server")]
           custom_attn_params: None,
         },
@@ -3811,6 +4013,8 @@ pub fn load_builtin_preset(key: &str) -> Option<ModelBlueprint> {
           nope_layer_interval: None,
           is_causal: true,
           has_cross_attn: false,
+          gqa_flags: 0,
+          sparse_index_topk: 0,
           #[cfg(feature = "server")]
           custom_attn_params: None,
         },
@@ -4743,6 +4947,8 @@ mod diffusion_parser {
         nope_layer_interval: None,
         is_causal: false,
         has_cross_attn: true,
+        gqa_flags: 0,
+        sparse_index_topk: 0,
         custom_attn_params: None,
       };
       let ffn_spec = FfnSpec::DenseGated {
@@ -4867,6 +5073,8 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: true,
+            gqa_flags: 0,
+            sparse_index_topk: 0,
             custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
@@ -4898,6 +5106,8 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: false,
+            gqa_flags: 0,
+            sparse_index_topk: 0,
             custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
@@ -4936,6 +5146,8 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: true,
+            gqa_flags: 0,
+            sparse_index_topk: 0,
             custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
@@ -5036,6 +5248,8 @@ mod diffusion_parser {
             nope_layer_interval: None,
             is_causal: false,
             has_cross_attn: has_cross,
+            gqa_flags: 0,
+            sparse_index_topk: 0,
             custom_attn_params: None,
           },
           ffn: FfnSpec::DenseGated {
@@ -6503,6 +6717,167 @@ mod tests {
       ds41.params.active_params
     );
     assert!(ds41.params.attention < 6_000_000_000, "low-rank o_lora should keep attn ~5.1B");
+    assert!(
+      ds41.quantization_summary.as_deref().unwrap_or("").contains("Experts FP4"),
+      "DS-V4.1 should include nested expert_dtype FP4: {:?}",
+      ds41.quantization_summary
+    );
+    assert_eq!(ds41.segments[0].attention.cached_elements_per_token(), 512);
     assert!(ds41.parse_warning.is_none(), "DS-V4.1 unexpected warning: {:?}", ds41.parse_warning);
+  }
+
+  #[test]
+  fn parses_deepseek_v4_pro_and_clover_dllm_fine_grained_accuracy() {
+    // 1) DeepSeek-V4-Pro: top-level expert_dtype=fp4, shared wkv (512 elems/tok = 256x),
+    // alternating compress_ratios (31x SWA 128 + 30x DSA Top-1024), num_hash_layers=3, hc_mult=4
+    let mut ratios = vec![128u64, 128];
+    for i in 2..61 {
+      ratios.push(if i % 2 == 0 { 4 } else { 128 });
+    }
+    ratios.push(0); // MTP layer
+    let ds4_cfg = serde_json::json!({
+      "architectures": ["DeepseekV4ForCausalLM"],
+      "model_type": "deepseek_v4",
+      "torch_dtype": "bfloat16",
+      "expert_dtype": "fp4",
+      "quantization_config": {
+        "quant_method": "fp8",
+        "fmt": "e4m3",
+        "weight_block_size": [128, 128]
+      },
+      "vocab_size": 129280,
+      "hidden_size": 7168,
+      "moe_intermediate_size": 3072,
+      "num_hidden_layers": 61,
+      "num_attention_heads": 128,
+      "num_key_value_heads": 1,
+      "head_dim": 512,
+      "q_lora_rank": 1536,
+      "o_lora_rank": 1024,
+      "o_groups": 16,
+      "n_routed_experts": 384,
+      "n_shared_experts": 1,
+      "num_experts_per_tok": 6,
+      "sliding_window": 128,
+      "index_head_dim": 128,
+      "index_n_heads": 64,
+      "index_topk": 1024,
+      "num_nextn_predict_layers": 1,
+      "num_hash_layers": 3,
+      "hc_mult": 4,
+      "tie_word_embeddings": false,
+      "max_position_embeddings": 1048576,
+      "rope_theta": 10000,
+      "rope_scaling": { "type": "yarn", "factor": 16 },
+      "compress_ratios": ratios
+    })
+    .to_string();
+    let ds4 = build_model_blueprint(
+      "deepseek-ai/DeepSeek-V4-Pro",
+      "ModelScope",
+      &ds4_cfg,
+      None,
+      None,
+      None,
+    )
+    .expect("ds4");
+    assert_eq!(ds4.modality_badge_label(), "LLM 语言模型");
+    assert_eq!(ds4.family_badge_label(), "DeepSeek DSA + MoE");
+    assert_eq!(
+      ds4.quantization_summary.as_deref(),
+      Some("FP8 · e4m3 · block 128×128 · Experts FP4")
+    );
+    assert_eq!(ds4.segments.len(), 2, "alternating compress_ratios should produce 2 segments");
+    assert_eq!(ds4.segments[0].range_label(), "交替分布 (×31层)");
+    assert_eq!(ds4.segments[1].range_label(), "交替分布 (×30层)");
+    assert_eq!(ds4.segments[0].attention.cached_elements_per_token(), 512);
+    assert!((ds4.segments[0].attention.kv_compression_ratio() - 256.0).abs() < 0.1);
+    assert!(
+      ds4.params.attention > 19_200_000_000 && ds4.params.attention < 19_700_000_000,
+      "DS-V4-Pro attn with compressor+indexer should be ~19.46B, got {}",
+      ds4.params.attention
+    );
+    assert!(
+      ds4.params.total_params > 1_570_000_000_000 && ds4.params.total_params < 1_576_000_000_000,
+      "DS-V4-Pro total should be ~1573B, got {}",
+      ds4.params.total_params
+    );
+    let note = ds4.multimodal_note.as_deref().unwrap_or("");
+    assert!(note.contains("Hyper-Connections (4 路残差超连接)"), "note={note}");
+    assert!(note.contains("前 3 层 Hash 路由 MoE"), "note={note}");
+    let dag = crate::tensor_graph::build_blueprint_tensor_graph(
+      &ds4,
+      crate::tensor_graph::ShapePreset::Symbolic,
+      false,
+    );
+    assert!(dag.nodes.iter().any(|n| n.side_note.contains("DSA Top-1024")));
+    assert!(dag.nodes.iter().any(|n| n.side_note.contains("wkv")));
+    assert!(dag.nodes.iter().any(|n| n.side_note == "o_a→o_b"));
+
+    // 2) Clover-35B-A3B-Preview: attn_output_gate=true (+84M on 10 full attn layers) + Block-Diffusion dLLM note
+    let mut lt = Vec::new();
+    for i in 0..40 {
+      lt.push(if i % 4 == 3 { "full_attention" } else { "linear_attention" });
+    }
+    let clover_cfg = serde_json::json!({
+      "architectures": ["CloverMoeModelLM"],
+      "model_type": "clover_moe",
+      "dtype": "bfloat16",
+      "vocab_size": 248320,
+      "hidden_size": 2048,
+      "num_hidden_layers": 40,
+      "num_attention_heads": 16,
+      "num_key_value_heads": 2,
+      "head_dim": 256,
+      "attn_output_gate": true,
+      "layer_types": lt,
+      "linear_conv_kernel_dim": 4,
+      "linear_key_head_dim": 128,
+      "linear_num_key_heads": 16,
+      "linear_num_value_heads": 32,
+      "linear_value_head_dim": 128,
+      "num_experts": 256,
+      "num_experts_per_tok": 8,
+      "moe_intermediate_size": 512,
+      "num_shared_experts": 1,
+      "shared_expert_intermediate_size": 512,
+      "tie_word_embeddings": false,
+      "max_position_embeddings": 131072,
+      "block_size": 32,
+      "mask_token_id": 151669,
+      "denoising_config": { "algorithm": "low_confidence", "threshold": 0.95 },
+      "rope_parameters": { "partial_rotary_factor": 0.25, "rope_theta": 10000000, "rope_type": "default" }
+    })
+    .to_string();
+    let clover = build_model_blueprint(
+      "Diffuspace/Clover-35B-A3B-Preview",
+      "HF",
+      &clover_cfg,
+      None,
+      None,
+      None,
+    )
+    .expect("clover");
+    assert_eq!(clover.modality_badge_label(), "LLM 语言模型");
+    assert_eq!(clover.family_badge_label(), "Hybrid Linear / SSM");
+    assert!(
+      clover.params.total_params > 34_600_000_000 && clover.params.total_params < 34_750_000_000,
+      "Clover total with attn_output_gate should be ~34.65B, got {}",
+      clover.params.total_params
+    );
+    assert!(
+      clover.params.active_params > 3_420_000_000 && clover.params.active_params < 3_520_000_000,
+      "Clover active with attn_output_gate should be ~3.45B, got {}",
+      clover.params.active_params
+    );
+    assert!(
+      clover
+        .multimodal_note
+        .as_deref()
+        .unwrap_or("")
+        .contains("Block-Diffusion dLLM (block=32, low_confidence)"),
+      "Clover note={:?}",
+      clover.multimodal_note
+    );
   }
 }
