@@ -397,7 +397,11 @@ impl AttentionSpec {
         if *num_heads == 0 {
           return 0;
         }
-        let d_inner = (num_heads * head_dim).max((*expand_factor).max(1) * hidden_size);
+        let d_inner = if *num_heads > 0 && *head_dim > 0 {
+          num_heads * head_dim
+        } else {
+          (*expand_factor).max(1) * hidden_size
+        };
         num_heads * head_dim * state_dim + d_inner * conv_kernel.saturating_sub(1)
       }
       _ => 0,
@@ -524,7 +528,11 @@ impl AttentionSpec {
         if *num_heads == 0 {
           return 0;
         }
-        let d_inner = (num_heads * head_dim).max((*expand_factor).max(1) * hidden_size);
+        let d_inner = if *num_heads > 0 && *head_dim > 0 {
+          num_heads * head_dim
+        } else {
+          (*expand_factor).max(1) * hidden_size
+        };
         let base = if *expand_factor >= 2 {
           3 * hidden_size * d_inner + 2 * hidden_size * state_dim + d_inner * conv_kernel
         } else {
@@ -644,6 +652,7 @@ impl FfnSpec {
         num_shared_experts,
         shared_intermediate_size,
         has_shared_gate,
+        act_fn,
         latent_dim,
         ..
       } => {
@@ -651,11 +660,17 @@ impl FfnSpec {
         let expert_dim =
           if *latent_dim > 0 && *latent_dim < hidden_size { *latent_dim } else { hidden_size };
         let latent_proj = if expert_dim < hidden_size { 2 * hidden_size * expert_dim } else { 0 };
-        let one_routed = 3 * expert_dim * moe_intermediate_size;
+        let matrices: u64 =
+          if act_fn.eq_ignore_ascii_case("relu2") || act_fn.eq_ignore_ascii_case("squared_relu") {
+            2
+          } else {
+            3
+          };
+        let one_routed = matrices * expert_dim * moe_intermediate_size;
         let routed_total = num_routed_experts * one_routed;
         let routed_active = (*top_k).min(*num_routed_experts) * one_routed;
         let shared = if *num_shared_experts > 0 && *shared_intermediate_size > 0 {
-          3 * hidden_size * shared_intermediate_size
+          matrices * hidden_size * shared_intermediate_size
             + if *has_shared_gate { hidden_size } else { 0 }
         } else {
           0
@@ -1828,10 +1843,11 @@ pub fn build_model_blueprint_with_aux(
   let has_cross_attn = is_whisper_like || root_obj.contains_key("decoder");
 
   // 1. 识别 Attention 形态（MLA/DSA vs Hybrid/Pure Linear SSM vs Standard/Low-Rank GQA）
-  let kv_lora_rank = u64_any(cfg_obj, &["kv_lora_rank"]);
+  let explicit_disable_mla = cfg_obj.get("use_mla").and_then(Value::as_bool) == Some(false);
+  let kv_lora_rank = u64_any(cfg_obj, &["kv_lora_rank"]).filter(|_| !explicit_disable_mla);
   let is_mla = kv_lora_rank.is_some()
-    || arch_joined.contains("deepseek_v2")
-    || arch_joined.contains("deepseek_v3");
+    || (!explicit_disable_mla
+      && (arch_joined.contains("deepseek_v2") || arch_joined.contains("deepseek_v3")));
 
   let linear_ssm_plan = detect_linear_ssm(
     cfg_obj,
@@ -1844,7 +1860,7 @@ pub fn build_model_blueprint_with_aux(
   );
 
   let mut low_rank_dsa_note: Option<String> = None;
-  let mut alternating_compress_attn: Option<(u64, u64, AttentionSpec, u64, u64, AttentionSpec)> =
+  let mut alternating_compress_attn: Option<(u64, u64, AttentionSpec, u64, i64, AttentionSpec)> =
     None;
   let standard_attention = if let Some(kv_rank) = kv_lora_rank {
     let q_lora_rank = u64_any(cfg_obj, &["q_lora_rank"]).filter(|&v| v > 0);
@@ -1856,7 +1872,9 @@ pub fn build_model_blueprint_with_aux(
       .or_else(|| cfg_obj.get("gated_mla"))
       .or_else(|| root_obj.get("gated_mla"))
       .and_then(Value::as_bool)
-      .unwrap_or(false);
+      .unwrap_or(false)
+      || cfg_obj.get("gated_attention_proj_granularity_type").and_then(Value::as_str)
+        == Some("element_wise");
     // 兼容顶层 DSA（DeepSeek-V3.2 / Hy4: index_topk / index_n_heads / index_head_dim）与嵌套 dsa_config（Kimi-K3.1）
     let dsa_obj = cfg_obj.get("dsa_config").and_then(Value::as_object);
     let sparse_index_topk = dsa_obj
@@ -1945,21 +1963,27 @@ pub fn build_model_blueprint_with_aux(
       .or_else(|| detect_nope_interval(cfg_obj))
       .filter(|&iv| iv > 1);
 
-    // 通用支持非 MLA 的低秩 Q/O 投影（q_lora_rank / o_lora_rank + o_groups）、共享单路 wkv、输出门控与独立 DSA Indexer（如 DeepSeek-V4 / V4.1）
+    // 通用支持非 MLA 的低秩 Q/O 投影（q_lora_rank / o_lora_rank + o_groups）、共享单路 wkv、输出门控与独立 DSA Indexer（如 DeepSeek-V4 / V4.1 / ERNIE-5.5）
     let q_lora = u64_any(cfg_obj, &["q_lora_rank"]).filter(|&v| v > 0);
     let o_lora = u64_any(cfg_obj, &["o_lora_rank"]).filter(|&v| v > 0);
     let standalone_topk = u64_any(cfg_obj, &["index_topk"]).filter(|&v| v > 0);
-    let has_output_gate = cfg_obj.get("attn_output_gate").and_then(Value::as_bool).unwrap_or(false);
+    let has_output_gate = cfg_obj.get("attn_output_gate").and_then(Value::as_bool).unwrap_or(false)
+      || safetensors
+        .as_ref()
+        .is_some_and(|st| st.patterns.iter().any(|p| p.example_name.contains(".gate_attn.weight")));
+    let has_use_gated_attn =
+      cfg_obj.get("use_gated_attn").and_then(Value::as_bool).unwrap_or(false);
     let has_shared_wkv = o_lora.is_some()
       || safetensors
         .as_ref()
         .is_some_and(|st| st.patterns.iter().any(|p| p.example_name.contains(".wkv.weight")));
     let gqa_flags = (if has_shared_wkv { GQA_FLAG_SHARED_KV } else { 0 })
-      | (if has_output_gate { GQA_FLAG_OUTPUT_GATE } else { 0 })
+      | (if has_output_gate || has_use_gated_attn { GQA_FLAG_OUTPUT_GATE } else { 0 })
       | (if q_lora.is_some() || o_lora.is_some() { GQA_FLAG_LOW_RANK_QO } else { 0 });
 
     let q_out = num_q_heads * head_dim;
     let kv_out = num_kv_heads * head_dim;
+    let d_rel = u64_any(cfg_obj, &["d_rel"]).unwrap_or(0);
 
     let custom_attn_params = if q_lora.is_some() || o_lora.is_some() || standalone_topk.is_some() {
       let q_p = match q_lora {
@@ -1967,89 +1991,163 @@ pub fn build_model_blueprint_with_aux(
         None => hidden_size * q_out * if has_output_gate { 2 } else { 1 },
       };
       let kv_p = if has_shared_wkv { hidden_size * kv_out } else { 2 * hidden_size * kv_out };
+      let o_groups = u64_any(cfg_obj, &["o_groups"]).unwrap_or(1).max(1);
       let o_p = match o_lora {
         Some(or) => {
-          let o_groups = u64_any(cfg_obj, &["o_groups"]).unwrap_or(1).max(1);
           let o_mid = or * o_groups;
           (q_out / o_groups) * o_mid + o_mid * hidden_size
         }
         None => q_out * hidden_size,
       };
-      let base_attn_p = q_p + kv_p + o_p;
+      let gated_attn_p = if has_use_gated_attn {
+        let g_in = if cfg_obj.get("gated_attn_use_q_lora").and_then(Value::as_bool).unwrap_or(false)
+        {
+          q_lora.unwrap_or(hidden_size)
+        } else {
+          hidden_size
+        };
+        let g_out = match o_lora {
+          Some(or) => or * o_groups,
+          None => q_out,
+        };
+        g_in * g_out
+      } else {
+        0
+      };
+      let base_attn_p = q_p + kv_p + o_p + gated_attn_p;
 
       let idx_h = u64_any(cfg_obj, &["index_n_heads", "index_num_heads"]).unwrap_or(32);
       let idx_d = u64_any(cfg_obj, &["index_head_dim"]).unwrap_or(128);
       let q_in = q_lora.unwrap_or(hidden_size);
 
-      // 检测交替 KV 压缩率模式（如 DeepSeek-V4 `compress_ratios` 含 128× 局部滑窗压缩层与 4× DSA 稀疏检索压缩层交替）
-      let alt_ratios = cfg_obj
+      // 检测交替 KV 压缩率模式：
+      // 1) 正/正交替（如 DeepSeek-V4: 128× SWA 压缩层 vs 4× DSA 压缩层）
+      // 2) 正/负混合 MLA（如 ERNIE-5.5: 128× 压缩层 vs -2 Hybrid MLA+DSA 层）
+      let raw_ratios: Option<Vec<i64>> = cfg_obj
         .get("compress_ratios")
         .and_then(Value::as_array)
         .map(|arr| {
-          arr
-            .iter()
-            .take(num_hidden_layers as usize)
-            .filter_map(Value::as_u64)
-            .filter(|&r| r > 0)
-            .collect::<Vec<_>>()
+          arr.iter().take(num_hidden_layers as usize).filter_map(Value::as_i64).collect::<Vec<_>>()
         })
-        .filter(|v| v.len() == num_hidden_layers as usize)
-        .and_then(|v| {
-          let min_r = *v.iter().min()?;
-          let max_r = *v.iter().max()?;
-          if min_r < max_r {
-            let low_cnt = v.iter().filter(|&&r| r == min_r).count() as u64;
-            let high_cnt = v.iter().filter(|&&r| r == max_r).count() as u64;
-            if low_cnt > 0 && high_cnt > 0 && low_cnt + high_cnt == num_hidden_layers {
-              return Some((high_cnt, max_r, low_cnt, min_r));
+        .filter(|v| v.len() == num_hidden_layers as usize);
+
+      if let Some(ratios) = raw_ratios {
+        let pos_vals: Vec<u64> =
+          ratios.iter().copied().filter(|&r| r > 0).map(|r| r as u64).collect();
+        let neg_cnt = ratios.iter().filter(|&&r| r < 0).count() as u64;
+        if neg_cnt > 0
+          && !pos_vals.is_empty()
+          && (pos_vals.len() as u64) + neg_cnt == num_hidden_layers
+        {
+          let high_r = *pos_vals.iter().max().unwrap_or(&128);
+          let high_cnt = pos_vals.len() as u64;
+          let high_comp_p = 2 * kv_out * hidden_size;
+          let high_spec = AttentionSpec::StandardGqa {
+            num_q_heads,
+            num_kv_heads,
+            head_dim,
+            qkv_bias,
+            o_bias,
+            qk_norm,
+            sliding_window,
+            sliding_window_pattern,
+            nope_layer_interval,
+            is_causal,
+            has_cross_attn,
+            gqa_flags,
+            sparse_index_topk: 0,
+            custom_attn_params: Some(base_attn_p + high_comp_p),
+          };
+          let mla_heads =
+            u64_any(cfg_obj, &["hybrid_mla_num_attention_heads"]).unwrap_or(num_q_heads).max(1);
+          let mla_q_lora =
+            u64_any(cfg_obj, &["hybrid_mla_q_lora_rank"]).or(q_lora).filter(|&v| v > 0);
+          let mla_kv_lora =
+            u64_any(cfg_obj, &["hybrid_mla_kv_lora_rank", "kv_lora_rank"]).unwrap_or(512).max(1);
+          let mla_qk_nope = u64_any(cfg_obj, &["hybrid_mla_qk_nope_head_dim"]).unwrap_or(192);
+          let mla_qk_rope =
+            u64_any(cfg_obj, &["hybrid_mla_qk_rope_head_dim", "qk_rope_head_dim"]).unwrap_or(64);
+          let mla_v_dim = u64_any(cfg_obj, &["hybrid_mla_v_head_dim"]).unwrap_or(256);
+          let mla_q_in = mla_q_lora.unwrap_or(hidden_size);
+          let mla_idx_p = if standalone_topk.is_some() {
+            mla_q_in * (idx_h * idx_d) + hidden_size * idx_d + hidden_size * idx_h
+          } else {
+            0
+          };
+          let mla_gate_p = if has_use_gated_attn {
+            let g_in =
+              if cfg_obj.get("gated_attn_use_q_lora").and_then(Value::as_bool).unwrap_or(false) {
+                mla_q_in
+              } else {
+                hidden_size
+              };
+            g_in * (mla_heads * mla_v_dim)
+          } else {
+            0
+          };
+          let low_spec = AttentionSpec::DeepSeekMla {
+            num_heads: mla_heads,
+            q_lora_rank: mla_q_lora,
+            kv_lora_rank: mla_kv_lora,
+            qk_nope_head_dim: mla_qk_nope,
+            qk_rope_head_dim: mla_qk_rope,
+            v_head_dim: mla_v_dim,
+            mla_flags: 0,
+            sparse_index_topk: standalone_topk.unwrap_or(0),
+            indexer_params: mla_idx_p + mla_gate_p,
+          };
+          alternating_compress_attn = Some((high_cnt, high_r, high_spec, neg_cnt, -2, low_spec));
+        } else if neg_cnt == 0 && pos_vals.len() == num_hidden_layers as usize {
+          if let (Some(&min_r), Some(&max_r)) = (pos_vals.iter().min(), pos_vals.iter().max()) {
+            if min_r < max_r {
+              let low_cnt = pos_vals.iter().filter(|&&r| r == min_r).count() as u64;
+              let high_cnt = pos_vals.iter().filter(|&&r| r == max_r).count() as u64;
+              if low_cnt > 0 && high_cnt > 0 && low_cnt + high_cnt == num_hidden_layers {
+                let high_comp_p = 2 * kv_out * hidden_size;
+                let high_spec = AttentionSpec::StandardGqa {
+                  num_q_heads,
+                  num_kv_heads,
+                  head_dim,
+                  qkv_bias,
+                  o_bias,
+                  qk_norm,
+                  sliding_window,
+                  sliding_window_pattern,
+                  nope_layer_interval,
+                  is_causal,
+                  has_cross_attn,
+                  gqa_flags,
+                  sparse_index_topk: 0,
+                  custom_attn_params: Some(base_attn_p + high_comp_p),
+                };
+                let low_comp_p = 4 * kv_out * hidden_size;
+                let low_idx_p = if standalone_topk.is_some() {
+                  q_in * (idx_h * idx_d) + hidden_size * idx_h + 4 * idx_d * hidden_size
+                } else {
+                  0
+                };
+                let low_spec = AttentionSpec::StandardGqa {
+                  num_q_heads,
+                  num_kv_heads,
+                  head_dim,
+                  qkv_bias,
+                  o_bias,
+                  qk_norm,
+                  sliding_window,
+                  sliding_window_pattern,
+                  nope_layer_interval,
+                  is_causal,
+                  has_cross_attn,
+                  gqa_flags,
+                  sparse_index_topk: standalone_topk.unwrap_or(0),
+                  custom_attn_params: Some(base_attn_p + low_comp_p + low_idx_p),
+                };
+                alternating_compress_attn =
+                  Some((high_cnt, max_r, high_spec, low_cnt, min_r as i64, low_spec));
+              }
             }
           }
-          None
-        });
-
-      if let Some((high_cnt, high_r, low_cnt, low_r)) = alt_ratios {
-        // 高压缩率层（如 128×）：仅含 KV compressor（wkv + wgate = 2 * kv_out * D），无独立 DSA 索引器
-        let high_comp_p = 2 * kv_out * hidden_size;
-        let high_spec = AttentionSpec::StandardGqa {
-          num_q_heads,
-          num_kv_heads,
-          head_dim,
-          qkv_bias,
-          o_bias,
-          qk_norm,
-          sliding_window,
-          sliding_window_pattern,
-          nope_layer_interval,
-          is_causal,
-          has_cross_attn,
-          gqa_flags,
-          sparse_index_topk: 0,
-          custom_attn_params: Some(base_attn_p + high_comp_p),
-        };
-        // 低压缩率层（如 4×）：双倍宽 KV compressor（4 * kv_out * D）+ 独立 DSA Indexer（含 indexer.compressor）
-        let low_comp_p = 4 * kv_out * hidden_size;
-        let low_idx_p = if standalone_topk.is_some() {
-          q_in * (idx_h * idx_d) + hidden_size * idx_h + 4 * idx_d * hidden_size
-        } else {
-          0
-        };
-        let low_spec = AttentionSpec::StandardGqa {
-          num_q_heads,
-          num_kv_heads,
-          head_dim,
-          qkv_bias,
-          o_bias,
-          qk_norm,
-          sliding_window,
-          sliding_window_pattern,
-          nope_layer_interval,
-          is_causal,
-          has_cross_attn,
-          gqa_flags,
-          sparse_index_topk: standalone_topk.unwrap_or(0),
-          custom_attn_params: Some(base_attn_p + low_comp_p + low_idx_p),
-        };
-        alternating_compress_attn = Some((high_cnt, high_r, high_spec, low_cnt, low_r, low_spec));
+        }
       }
 
       let idx_p = if standalone_topk.is_some() {
@@ -2077,8 +2175,7 @@ pub fn build_model_blueprint_with_aux(
         note_parts.push(format!("q_lora={qr}"));
       }
       if let Some(or) = o_lora {
-        let og = u64_any(cfg_obj, &["o_groups"]).unwrap_or(1);
-        note_parts.push(format!("o_lora={or}×{og}g"));
+        note_parts.push(format!("o_lora={or}×{o_groups}g"));
       }
       if let Some(tk) = standalone_topk {
         note_parts.push(format!("DSA Top-{tk}"));
@@ -2088,6 +2185,15 @@ pub fn build_model_blueprint_with_aux(
       }
       low_rank_dsa_note = Some(format!("低秩稀疏注意力机制：{}", note_parts.join(" · ")));
       Some(base_attn_p + idx_p + comp_p)
+    } else if d_rel > 0 {
+      let q_mult = if has_output_gate { 2 } else { 1 };
+      let kv_mult = if has_shared_wkv { 1 } else { 2 };
+      Some(
+        q_mult * hidden_size * q_out
+          + kv_mult * hidden_size * kv_out
+          + q_out * hidden_size
+          + hidden_size * (num_q_heads * d_rel),
+      )
     } else {
       None
     };
@@ -2220,7 +2326,9 @@ pub fn build_model_blueprint_with_aux(
     .unwrap_or(2);
     let moe_inter = u64_any(cfg_obj, &["moe_intermediate_size"]).unwrap_or(intermediate_size);
     let n_shared_cfg = u64_any(cfg_obj, &["n_shared_experts", "num_shared_experts"]).unwrap_or(0);
-    let shared_inter_cfg = u64_any(cfg_obj, &["shared_expert_intermediate_size"]).unwrap_or(0);
+    let shared_inter_cfg =
+      u64_any(cfg_obj, &["shared_expert_intermediate_size", "moe_shared_expert_intermediate_size"])
+        .unwrap_or(0);
     let (num_shared_experts, shared_intermediate_size, has_shared_gate) = if n_shared_cfg > 0 {
       let sh_inter = if shared_inter_cfg > 0 { shared_inter_cfg } else { n_shared_cfg * moe_inter };
       (n_shared_cfg, sh_inter, false)
@@ -2250,10 +2358,12 @@ pub fn build_model_blueprint_with_aux(
       .and_then(Value::as_str)
       .unwrap_or(if is_llama4 { "sigmoid" } else { "softmax" })
       .to_string();
-    let latent_dim =
-      u64_any(cfg_obj, &["routed_expert_hidden_size", "moe_latent_dim", "expert_latent_dim"])
-        .filter(|&ld| ld > 0 && ld < hidden_size)
-        .unwrap_or(0);
+    let latent_dim = u64_any(
+      cfg_obj,
+      &["routed_expert_hidden_size", "moe_latent_size", "moe_latent_dim", "expert_latent_dim"],
+    )
+    .filter(|&ld| ld > 0 && ld < hidden_size)
+    .unwrap_or(0);
 
     Some(FfnSpec::SparseMoe {
       num_routed_experts,
@@ -2481,6 +2591,75 @@ pub fn build_model_blueprint_with_aux(
           schedule_note: schedule_note.clone(),
         });
       }
+    } else if let Some((high_cnt, high_r, high_attn, low_cnt, low_r, low_attn)) =
+      alternating_compress_attn
+    {
+      let swa_tag = match &high_attn {
+        AttentionSpec::StandardGqa { sliding_window: Some(w), .. } => format!("SWA {w} + "),
+        _ => String::new(),
+      };
+      let low_label = match &low_attn {
+        AttentionSpec::DeepSeekMla { sparse_index_topk, .. } if *sparse_index_topk > 0 => {
+          format!("Hybrid MLA + DSA Top-{sparse_index_topk}")
+        }
+        AttentionSpec::DeepSeekMla { .. } => "Hybrid MLA".to_string(),
+        AttentionSpec::StandardGqa { sparse_index_topk, .. } if *sparse_index_topk > 0 => {
+          format!("DSA Top-{sparse_index_topk} + {low_r}× KV 压缩")
+        }
+        _ => format!("{low_r}× KV 压缩"),
+      };
+      let alt_note = format!(
+        "按 compress_ratios 交替堆叠：{high_cnt} 层 {swa_tag}{high_r}× KV 压缩 + {low_cnt} 层 {low_label}"
+      );
+      if first_k_dense > 0 && first_k_dense < high_cnt {
+        segs.push(LayerSegment {
+          start_layer: 0,
+          end_layer: first_k_dense - 1,
+          title: "前置稠密预热层 (Dense SwiGLU)".to_string(),
+          attention: high_attn.clone(),
+          ffn: dense_ffn.clone(),
+          norms_per_layer,
+          schedule_note: Some(alt_note.clone()),
+        });
+        let moe_high = high_cnt - first_k_dense;
+        segs.push(LayerSegment {
+          start_layer: first_k_dense,
+          end_layer: high_cnt - 1,
+          title: format!("局部压缩稀疏专家层组 ({swa_tag}{high_r}× KV 压缩 ×{moe_high})"),
+          attention: high_attn,
+          ffn: moe_ffn.clone(),
+          norms_per_layer,
+          schedule_note: Some(alt_note.clone()),
+        });
+        segs.push(LayerSegment {
+          start_layer: high_cnt,
+          end_layer: num_hidden_layers - 1,
+          title: format!("全局/稀疏检索专家层组 ({low_label} ×{low_cnt})"),
+          attention: low_attn,
+          ffn: moe_ffn,
+          norms_per_layer,
+          schedule_note: Some(alt_note),
+        });
+      } else {
+        segs.push(LayerSegment {
+          start_layer: 0,
+          end_layer: high_cnt - 1,
+          title: format!("局部压缩稀疏专家层组 ({swa_tag}{high_r}× KV 压缩)"),
+          attention: high_attn,
+          ffn: moe_ffn.clone(),
+          norms_per_layer,
+          schedule_note: Some(alt_note.clone()),
+        });
+        segs.push(LayerSegment {
+          start_layer: high_cnt,
+          end_layer: num_hidden_layers - 1,
+          title: format!("稀疏检索专家层组 ({low_label})"),
+          attention: low_attn,
+          ffn: moe_ffn,
+          norms_per_layer,
+          schedule_note: Some(alt_note),
+        });
+      }
     } else {
       if first_k_dense > 0 {
         segs.push(LayerSegment {
@@ -2494,63 +2673,15 @@ pub fn build_model_blueprint_with_aux(
         });
       }
       if first_k_dense < num_hidden_layers {
-        if first_k_dense == 0 {
-          if let Some((high_cnt, high_r, high_attn, low_cnt, low_r, low_attn)) =
-            alternating_compress_attn
-          {
-            let swa_tag = match &high_attn {
-              AttentionSpec::StandardGqa { sliding_window: Some(w), .. } => format!("SWA {w} + "),
-              _ => String::new(),
-            };
-            let dsa_tag = match &low_attn {
-              AttentionSpec::StandardGqa { sparse_index_topk, .. } if *sparse_index_topk > 0 => {
-                format!("DSA Top-{sparse_index_topk} + ")
-              }
-              _ => String::new(),
-            };
-            let alt_note = format!(
-              "按 compress_ratios 交替堆叠：{high_cnt} 层 {swa_tag}{high_r}× KV 压缩 + {low_cnt} 层 {dsa_tag}{low_r}× KV 压缩"
-            );
-            segs.push(LayerSegment {
-              start_layer: 0,
-              end_layer: high_cnt - 1,
-              title: format!("局部压缩稀疏专家层组 ({swa_tag}{high_r}× KV 压缩)"),
-              attention: high_attn,
-              ffn: moe_ffn.clone(),
-              norms_per_layer,
-              schedule_note: Some(alt_note.clone()),
-            });
-            segs.push(LayerSegment {
-              start_layer: high_cnt,
-              end_layer: num_hidden_layers - 1,
-              title: format!("稀疏检索专家层组 ({dsa_tag}{low_r}× KV 压缩)"),
-              attention: low_attn,
-              ffn: moe_ffn,
-              norms_per_layer,
-              schedule_note: Some(alt_note),
-            });
-          } else {
-            segs.push(LayerSegment {
-              start_layer: first_k_dense,
-              end_layer: num_hidden_layers - 1,
-              title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
-              attention: standard_attention,
-              ffn: moe_ffn,
-              norms_per_layer,
-              schedule_note: schedule_note.clone(),
-            });
-          }
-        } else {
-          segs.push(LayerSegment {
-            start_layer: first_k_dense,
-            end_layer: num_hidden_layers - 1,
-            title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
-            attention: standard_attention,
-            ffn: moe_ffn,
-            norms_per_layer,
-            schedule_note: schedule_note.clone(),
-          });
-        }
+        segs.push(LayerSegment {
+          start_layer: first_k_dense,
+          end_layer: num_hidden_layers - 1,
+          title: "稀疏混合专家主干 (Sparse MoE)".to_string(),
+          attention: standard_attention,
+          ffn: moe_ffn,
+          norms_per_layer,
+          schedule_note: schedule_note.clone(),
+        });
       }
     }
     segs
@@ -2648,6 +2779,28 @@ pub fn build_model_blueprint_with_aux(
   }
   if let Some(nh) = u64_any(cfg_obj, &["num_hash_layers"]).filter(|&n| n > 0) {
     let note = format!("前 {nh} 层 Hash 路由 MoE (tid2eid)");
+    multimodal_note = Some(match multimodal_note {
+      Some(prev) => format!("{prev} · {note}"),
+      None => note,
+    });
+  }
+  if let Some(loop_obj) = cfg_obj.get("loop_config").and_then(Value::as_object) {
+    let passes = u64_any(loop_obj, &["num_passes"]).unwrap_or(1);
+    if passes > 1 {
+      let s = u64_any(loop_obj, &["core_start"]).unwrap_or(0);
+      let e = u64_any(loop_obj, &["core_end"]).unwrap_or(num_hidden_layers);
+      let note =
+        format!("Looped Transformer (Layers {s}–{} ×{passes} passes)", e.saturating_sub(1));
+      multimodal_note = Some(match multimodal_note {
+        Some(prev) => format!("{prev} · {note}"),
+        None => note,
+      });
+    }
+  }
+  if let Some(blk) =
+    u64_any(cfg_obj, &["attn_res_block_size", "n_layers_per_attn_res_block"]).filter(|&b| b > 0)
+  {
+    let note = format!("Attention Residuals (block={blk})");
     multimodal_note = Some(match multimodal_note {
       Some(prev) => format!("{prev} · {note}"),
       None => note,
@@ -3087,6 +3240,43 @@ mod multimodal_parsers {
       }
     }
 
+    // 0b) 周期分组混合线性注意力（如 Bailing-Hybrid / Ling-3.2: `layer_group_size` + KDA + MLA）
+    if let Some(grp) = u64_any(cfg, &["layer_group_size"]).filter(|&g| g > 1 && g < num_layers) {
+      if cfg.contains_key("no_kda_lora")
+        || cfg.contains_key("short_conv_kernel_size")
+        || model_type.contains("bailing")
+      {
+        let lin_head_dim = u64_any(cfg, &["head_dim"]).unwrap_or(hidden_size / num_q_heads).max(1);
+        let conv = u64_any(cfg, &["short_conv_kernel_size", "conv_kernel"]).unwrap_or(4);
+        let d_inner = num_q_heads * lin_head_dim;
+        let full_count = (num_layers / grp) + (num_layers % grp);
+        let no_kda_lora = cfg.get("no_kda_lora").and_then(Value::as_bool).unwrap_or(false);
+        // KDA 基础公式含 4 路 (q/k/v/o)；no_kda_lora=true 使用全秩 f_proj + g_proj (+2*H*D)，否则使用双低秩门控
+        let extra_params = if no_kda_lora {
+          2 * hidden_size * d_inner + hidden_size * num_q_heads + 2 * d_inner * conv
+        } else {
+          2 * (hidden_size * lin_head_dim + d_inner * lin_head_dim)
+            + hidden_size * num_q_heads
+            + 2 * d_inner * conv
+        };
+        return Some(LinearSsmPlan {
+          kind_short: "KDA Linear Attn",
+          spec: AttentionSpec::LinearRecurrent {
+            kind: "KDA Linear Attn".to_string(),
+            num_heads: num_q_heads,
+            head_dim: lin_head_dim,
+            state_dim: lin_head_dim,
+            conv_kernel: conv,
+            expand_factor: 1,
+            extra_params,
+          },
+          full_attn_layers: full_count,
+          has_separate_ffn: true,
+          pattern_split: None,
+        });
+      }
+    }
+
     // 1) Qwen3-Next: Gated DeltaNet + Full GQA (default 3:1)
     if model_type == "qwen3_next" || cfg.contains_key("linear_num_value_heads") {
       let v_heads = u64_any(cfg, &["linear_num_value_heads"]).unwrap_or(num_q_heads).max(1);
@@ -3371,10 +3561,18 @@ mod multimodal_parsers {
         | "n_shared_experts"
         | "num_shared_experts"
         | "shared_expert_intermediate_size"
+        | "moe_shared_expert_intermediate_size"
         | "routed_expert_hidden_size"
+        | "moe_latent_size"
         | "moe_latent_dim"
         | "expert_latent_dim"
         | "latent_moe_use_norm"
+        | "layer_group_size"
+        | "no_kda_lora"
+        | "short_conv_kernel_size"
+        | "use_mla"
+        | "use_gated_attn"
+        | "gated_attn_use_q_lora"
         | "first_k_dense_replace"
         | "expert_layer_offset"
         | "interleave_moe_layer_step"
@@ -3929,6 +4127,7 @@ fn compute_param_breakdown(
         num_shared_experts,
         shared_intermediate_size,
         has_shared_gate,
+        act_fn,
         latent_dim,
         ..
       } => {
@@ -3936,11 +4135,17 @@ fn compute_param_breakdown(
         let expert_dim =
           if *latent_dim > 0 && *latent_dim < hidden_size { *latent_dim } else { hidden_size };
         let latent_proj = if expert_dim < hidden_size { 2 * hidden_size * expert_dim } else { 0 };
-        let one_expert = 3 * expert_dim * moe_intermediate_size;
+        let matrices: u64 =
+          if act_fn.eq_ignore_ascii_case("relu2") || act_fn.eq_ignore_ascii_case("squared_relu") {
+            2
+          } else {
+            3
+          };
+        let one_expert = matrices * expert_dim * moe_intermediate_size;
         let routed_tot = num_routed_experts * one_expert;
         let routed_act = (*top_k).min(*num_routed_experts) * one_expert;
         let shared = if *num_shared_experts > 0 && *shared_intermediate_size > 0 {
-          3 * hidden_size * shared_intermediate_size
+          matrices * hidden_size * shared_intermediate_size
             + if *has_shared_gate { hidden_size } else { 0 }
         } else {
           0
@@ -7622,6 +7827,216 @@ mod tests {
         .contains("Block-Diffusion dLLM (block=32, low_confidence)"),
       "Clover note={:?}",
       clover.multimodal_note
+    );
+  }
+
+  #[test]
+  fn upgrades_nemotron_relu2_moe_ling_kda_ernie_latent_moe_and_nvfp4_unpack() {
+    use crate::safetensors_meta::{
+      finalize_streaming_index, parse_safetensors_index_streaming, RawTensorMeta,
+    };
+
+    // 1) Nemotron-H MoE (mlp_hidden_act="relu2"): 2 矩阵非门控 MoE + moe_shared_expert_intermediate_size
+    let nemotron_cfg = serde_json::json!({
+      "architectures": ["NemotronHForCausalLM"],
+      "model_type": "nemotron_h",
+      "hidden_size": 2688,
+      "num_hidden_layers": 52,
+      "hybrid_override_pattern": "MEMEM*EMEMEM*EMEMEM*EMEMEM*EMEMEM*EMEMEMEM*EMEMEMEME",
+      "num_attention_heads": 32,
+      "num_key_value_heads": 2,
+      "head_dim": 128,
+      "mamba_num_heads": 64,
+      "mamba_head_dim": 64,
+      "ssm_state_size": 128,
+      "conv_kernel": 4,
+      "expand": 2,
+      "mlp_hidden_act": "relu2",
+      "intermediate_size": 1856,
+      "moe_intermediate_size": 1856,
+      "moe_shared_expert_intermediate_size": 3712,
+      "n_routed_experts": 128,
+      "n_shared_experts": 1,
+      "num_experts_per_tok": 6,
+      "vocab_size": 327680,
+      "tie_word_embeddings": false
+    })
+    .to_string();
+    let nem = build_model_blueprint(
+      "nvidia/Nemotron-Labs-Image-30B-A3B",
+      "HF",
+      &nemotron_cfg,
+      None,
+      None,
+      None,
+    )
+    .expect("nemotron");
+    assert!(
+      nem.params.total_params > 31_800_000_000 && nem.params.total_params < 32_700_000_000,
+      "Nemotron relu2 MoE total should be ~32.2B, got {}",
+      nem.params.total_params
+    );
+    assert!(
+      nem.params.moe_routed > 29_000_000_000 && nem.params.moe_routed < 29_700_000_000,
+      "Nemotron relu2 MoE routed should be ~29.38B, got {}",
+      nem.params.moe_routed
+    );
+
+    // 2) Ling-3.2-air (bailing_hybrid): layer_group_size=6 (35 KDA + 7 MLA) + no_kda_lora=true 全秩门控
+    let ling_cfg = serde_json::json!({
+      "architectures": ["BailingMoeV3VLForConditionalGeneration"],
+      "model_type": "bailing_moe_v3_vl",
+      "text_config": {
+        "model_type": "bailing_hybrid",
+        "hidden_size": 2560,
+        "num_hidden_layers": 42,
+        "intermediate_size": 6144,
+        "first_k_dense_replace": 2,
+        "moe_intermediate_size": 768,
+        "moe_shared_expert_intermediate_size": 768,
+        "num_experts": 512,
+        "num_experts_per_tok": 8,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 32,
+        "head_dim": 128,
+        "kv_lora_rank": 512,
+        "qk_nope_head_dim": 128,
+        "qk_rope_head_dim": 64,
+        "v_head_dim": 128,
+        "layer_group_size": 6,
+        "short_conv_kernel_size": 4,
+        "no_kda_lora": true,
+        "vocab_size": 157184
+      }
+    })
+    .to_string();
+    let ling = build_model_blueprint("inclusionAI/Ling-3.2-air", "HF", &ling_cfg, None, None, None)
+      .expect("ling");
+    assert_eq!(ling.family, ArchFamily::HybridLinearSsm);
+    assert!(
+      ling.params.attention > 2_350_000_000 && ling.params.attention < 2_550_000_000,
+      "Ling-3.2 KDA+MLA attn with full-rank f/g_proj should be ~2.43B, got {}",
+      ling.params.attention
+    );
+
+    // 3) ERNIE-5.5-Flash-Preview: moe_latent_size=2048 + use_mla=false + compress_ratios (37×128 + 6×-2 MLA+DSA)
+    let mut ratios = vec![128i64; 43];
+    for i in [7usize, 14, 21, 28, 35, 42] {
+      ratios[i] = -2;
+    }
+    let ernie_cfg = serde_json::json!({
+      "architectures": ["Ernie5_5_MoeForCausalLM"],
+      "model_type": "ernie5_5_moe",
+      "hidden_size": 4096,
+      "num_hidden_layers": 43,
+      "first_k_dense_replace": 1,
+      "intermediate_size": 14336,
+      "moe_intermediate_size": 2048,
+      "moe_latent_size": 2048,
+      "n_routed_experts": 512,
+      "n_shared_experts": 1,
+      "num_experts_per_tok": 10,
+      "num_attention_heads": 64,
+      "num_key_value_heads": 1,
+      "head_dim": 512,
+      "q_lora_rank": 1024,
+      "o_lora_rank": 1024,
+      "o_groups": 8,
+      "kv_lora_rank": 512,
+      "use_mla": false,
+      "use_gated_attn": true,
+      "gated_attn_use_q_lora": true,
+      "compress_ratios": ratios,
+      "hybrid_mla_num_attention_heads": 64,
+      "hybrid_mla_q_lora_rank": 1024,
+      "hybrid_mla_kv_lora_rank": 512,
+      "hybrid_mla_qk_nope_head_dim": 192,
+      "hybrid_mla_qk_rope_head_dim": 64,
+      "hybrid_mla_v_head_dim": 256,
+      "index_n_heads": 64,
+      "index_head_dim": 128,
+      "index_topk": 2048,
+      "sliding_window": 128,
+      "vocab_size": 201216,
+      "tie_word_embeddings": false
+    })
+    .to_string();
+    let ernie =
+      build_model_blueprint("baidu/ERNIE-5.5-Flash-Preview", "MS", &ernie_cfg, None, None, None)
+        .expect("ernie");
+    assert_eq!(ernie.segments.len(), 3, "Layer 0 dense + 36 compressed MoE + 6 hybrid MLA MoE");
+    assert!(
+      ernie.params.total_params > 276_000_000_000 && ernie.params.total_params < 284_000_000_000,
+      "ERNIE-5.5 Latent MoE total should be ~279.5B, got {}",
+      ernie.params.total_params
+    );
+    assert!(
+      ernie.params.attention > 5_000_000_000 && ernie.params.attention < 5_400_000_000,
+      "ERNIE-5.5 hybrid compressed+MLA attn should be ~5.21B, got {}",
+      ernie.params.attention
+    );
+
+    // 4) NVFP4 (U8 + F8_E4M3 block=16 + _weight_scale) 通用解包 + 排除 model.visual.* 投影断言 + 诚实保留 loop_config partial
+    let nvfp4_headers = vec![
+      RawTensorMeta {
+        name: "model.llm.embed.weight".into(),
+        dtype: Some("BF16".into()),
+        shape: Some(vec![201024, 2304]),
+        byte_len: None,
+        shard: Some("s1".into()),
+      },
+      RawTensorMeta {
+        name: "model.llm.unembed.weight".into(),
+        dtype: Some("BF16".into()),
+        shape: Some(vec![201024, 2304]),
+        byte_len: None,
+        shard: Some("s1".into()),
+      },
+      RawTensorMeta {
+        name: "model.visual.backbone.layers.0.self_attn.q_proj.weight".into(),
+        dtype: Some("BF16".into()),
+        shape: Some(vec![1024, 1024]),
+        byte_len: None,
+        shard: Some("s1".into()),
+      },
+      RawTensorMeta {
+        name: "model.llm.layers.0.mlp.experts.w13_weight".into(),
+        dtype: Some("U8".into()),
+        shape: Some(vec![128, 2304, 1152]),
+        byte_len: None,
+        shard: Some("s1".into()),
+      },
+      RawTensorMeta {
+        name: "model.llm.layers.0.mlp.experts.w13_weight_scale".into(),
+        dtype: Some("F8_E4M3".into()),
+        shape: Some(vec![128, 2304, 144]),
+        byte_len: None,
+        shard: Some("s1".into()),
+      },
+    ];
+    let nvfp4_idx = serde_json::json!({
+      "metadata": { "total_size": 19_525_870_752u64 },
+      "weight_map": {
+        "model.llm.embed.weight": "s1.safetensors",
+        "model.llm.unembed.weight": "s1.safetensors",
+        "model.visual.backbone.layers.0.self_attn.q_proj.weight": "s1.safetensors",
+        "model.llm.layers.0.mlp.experts.w13_weight": "s1.safetensors",
+        "model.llm.layers.0.mlp.experts.w13_weight_scale": "s1.safetensors"
+      }
+    })
+    .to_string();
+    let scan = parse_safetensors_index_streaming(&nvfp4_idx).expect("streaming index");
+    let st = finalize_streaming_index(scan, &nvfp4_headers);
+    assert_eq!(st.l2_stage_params.lm_head, 201024 * 2304, "unembed classified as lm_head");
+    assert_eq!(st.l2_stage_params.vision, 1024 * 1024, "model.visual.* classified as vision");
+    assert_eq!(
+      st.l2_stage_params.ffn_moe,
+      128 * 2304 * 1152 * 2,
+      "NVFP4 U8 + F8_E4M3 (block=16) unpacked 2x"
+    );
+    assert!(
+      !st.l2_proj_shapes.iter().any(|p| p.role == "q_proj"),
+      "model.visual.* q_proj must NOT be checked as LLM core projection"
     );
   }
 }

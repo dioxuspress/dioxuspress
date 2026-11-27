@@ -460,7 +460,10 @@ mod parser {
     }
     if name.starts_with("visual.")
       || name.starts_with("vision.")
+      || name.contains(".visual.")
+      || name.contains(".vision.")
       || name.starts_with("aligner.")
+      || name.starts_with("linear_proj.")
       || name.contains("vision_tower")
       || name.contains("vision_model")
       || name.contains("mm_projector")
@@ -499,6 +502,8 @@ mod parser {
     } else if name.contains("lm_head")
       || name == "head.weight"
       || name.ends_with(".head.weight")
+      || name.contains(".unembed.")
+      || name.ends_with("unembed.weight")
       || name.contains("output.weight")
       || name.contains("proj_out")
       || name.contains("conv_out.")
@@ -511,7 +516,9 @@ mod parser {
       || name.contains("shared_expert")
       || name.contains("shared_experts")
       || name.contains("routed_expert_")
-      || name.contains("block_sparse_moe.gate")
+      || name.contains("block_sparse_moe.")
+      || name.contains("fc1_latent_proj")
+      || name.contains("fc2_latent_proj")
       || name.contains("mlp.gate.weight")
       || name.contains("e_score_correction_bias")
     {
@@ -534,6 +541,10 @@ mod parser {
       "ffn"
     } else if name.contains("hc_attn")
       || name.contains("hc_mlp")
+      || name.contains("hyper_connection")
+      || name.contains("mhc_contract")
+      || name.contains(".attn_res.")
+      || name.contains("attn_res_")
       || name.contains("layernorm")
       || name.contains("layer_norm")
       || name.contains("LayerNorm")
@@ -580,11 +591,16 @@ mod parser {
     }
   }
 
-  /// 判断张量是否为量化辅助元数据（scale / zero-point / g_idx），不应重复计入有效模型参数量。
+  /// 判断张量是否为量化辅助元数据（scale / zero-point / amax / g_idx），不应重复计入有效模型参数量。
   fn is_quant_aux_tensor(name: &str) -> bool {
     name.ends_with(".scale")
       || name.ends_with(".weight_scale")
+      || name.ends_with("_weight_scale")
       || name.ends_with(".weight_scale_inv")
+      || name.ends_with("_scale_inv")
+      || name.ends_with("_weight_amax")
+      || name.ends_with("_outer_scale_denominator")
+      || name.ends_with(".amax")
       || name.ends_with(".input_scale")
       || name.ends_with(".scales")
       || name.ends_with(".qzeros")
@@ -594,7 +610,7 @@ mod parser {
       || name.ends_with(".zero_point")
   }
 
-  /// 基于张量名后缀或伴随微缩放张量（如 OCP MX `F8_E8M0` block=32）数学比值推导量化打包倍数。
+  /// 基于张量名后缀或伴随微缩放张量（OCP MX `F8_E8M0` block=32 或 NVIDIA NVFP4 `F8_E4M3` block=16）数学比值推导量化打包倍数。
   fn infer_pack_multiplier(
     p: &TensorPatternEntry,
     scale_by_stem: &HashMap<&str, &TensorPatternEntry>,
@@ -610,23 +626,28 @@ mod parser {
       };
     }
 
-    // 通用微缩放 FP4/INT4 解包：当权重存为整数打包格式（I8/U8/I32/U32）且伴随 F8_E8M0 (block=32) 缩放表时，
-    // 校验 `scale_last * 32 == weight_last * k` 精确反推打包倍数 k（如 DeepSeek-V4.1 I8 [2304, 2560] + F8_E8M0 [2304, 160] => k=2）。
+    // 通用微缩放 FP4/INT4 解包：
+    // - OCP MXFP4：`I8/U8` + `F8_E8M0`（block=32），校验 `scale_last * 32 == weight_last * k`
+    // - NVIDIA NVFP4 / ModelOpt：`U8/I8` + `F8_E4M3`（block=16），校验 `scale_last * 16 == weight_last * k`
     let max_k: u64 = match p.dtype.as_deref() {
       Some("U8" | "I8") => 2,
       Some("U16" | "I16") => 4,
       Some("U32" | "I32") => 8,
       _ => return 1,
     };
-    let Some(stem) = p.pattern.strip_suffix(".weight") else {
+    let Some(stem) =
+      p.pattern.strip_suffix(".weight").or_else(|| p.pattern.strip_suffix("_weight"))
+    else {
       return 1;
     };
     let Some(sc) = scale_by_stem.get(stem) else {
       return 1;
     };
-    if sc.dtype.as_deref() != Some("F8_E8M0") {
-      return 1;
-    }
+    let block_sz: u64 = match sc.dtype.as_deref() {
+      Some("F8_E8M0") => 32,
+      Some("F8_E4M3") => 16,
+      _ => return 1,
+    };
     let (Some(w_shape), Some(s_shape)) = (p.shape.as_ref(), sc.shape.as_ref()) else {
       return 1;
     };
@@ -635,7 +656,7 @@ mod parser {
     }
     let w_last = *w_shape.last().unwrap_or(&0);
     let s_last = *s_shape.last().unwrap_or(&0);
-    if w_last > 0 && s_last > 0 && s_last.saturating_mul(32) == w_last.saturating_mul(max_k) {
+    if w_last > 0 && s_last > 0 && s_last.saturating_mul(block_sz) == w_last.saturating_mul(max_k) {
       max_k
     } else {
       1
@@ -672,6 +693,8 @@ mod parser {
     }
     if example_name.starts_with("visual.")
       || example_name.starts_with("vision.")
+      || example_name.contains(".visual.")
+      || example_name.contains(".vision.")
       || example_name.contains("vision_tower")
       || example_name.contains("vision_model")
       || example_name.contains("audio_tower")
@@ -708,7 +731,12 @@ mod parser {
     {
       return Some("embed_tokens");
     }
-    if stem == "lm_head" || stem.ends_with(".lm_head") || stem == "head" || stem.ends_with(".head")
+    if stem == "lm_head"
+      || stem.ends_with(".lm_head")
+      || stem == "unembed"
+      || stem.ends_with(".unembed")
+      || stem == "head"
+      || stem.ends_with(".head")
     {
       return Some("lm_head");
     }
@@ -757,6 +785,7 @@ mod parser {
         .pattern
         .strip_suffix(".scale")
         .or_else(|| p.pattern.strip_suffix(".weight_scale"))
+        .or_else(|| p.pattern.strip_suffix("_weight_scale"))
         .or_else(|| p.pattern.strip_suffix(".weight_scale_inv"))
         .or_else(|| p.pattern.strip_suffix(".scales"))
       {
@@ -895,7 +924,10 @@ mod parser {
   fn is_vision_signal(name: &str) -> bool {
     name.starts_with("visual.")
       || name.starts_with("vision.")
+      || name.contains(".visual.")
+      || name.contains(".vision.")
       || name.starts_with("aligner.")
+      || name.starts_with("linear_proj.")
       || name.contains("vision_tower")
       || name.contains("vision_model")
       || name.contains("mm_projector")
@@ -958,6 +990,7 @@ mod parser {
       full_attn_layers: BTreeSet<u64>,
       mtp_layers: BTreeSet<u64>,
       first_trunk_shard: Option<String>,
+      embed_shard: Option<String>,
       hetero_attn_shard: Option<String>,
       first_moe_shard: Option<String>,
       vision_shard: Option<String>,
@@ -977,18 +1010,29 @@ mod parser {
           self.fallback_shard = Some(shard.clone());
         }
         if is_safe_shard_filename(&shard) {
-          if self.first_trunk_shard.is_none()
+          if self.embed_shard.is_none()
             && !is_vision_signal(&name)
             && (name.contains("embed_tokens")
               || name == "embed.weight"
-              || name.contains("layers.0.self_attn")
+              || name.ends_with(".embed.weight")
+              || name.contains("word_embeddings")
+              || name.contains("backbone.embeddings."))
+          {
+            self.embed_shard = Some(shard.clone());
+          }
+          if self.first_trunk_shard.is_none()
+            && !is_vision_signal(&name)
+            && (name.contains("layers.0.self_attn")
               || name.contains("layers.0.attn.")
+              || name.contains("layers.0.attention.")
+              || name.contains("layers.0.mixer.")
               || name.contains("transformer_blocks.0.")
               || name.contains("blocks.0."))
           {
             self.first_trunk_shard = Some(shard.clone());
           }
           if self.hetero_attn_shard.is_none()
+            && !is_vision_signal(&name)
             && (name.contains("kv_a_proj")
               || name.contains(".indexer.")
               || name.contains("linear_attn.")
@@ -1015,6 +1059,7 @@ mod parser {
           }
           if name.contains("lm_head")
             || name == "head.weight"
+            || name.contains("unembed")
             || name.contains("proj_out")
             || name.ends_with(".norm.weight")
           {
@@ -1031,7 +1076,11 @@ mod parser {
         if is_vision_signal(&name) {
           self.has_vision_tower = true;
         }
-        if name.contains("routed_expert_down_proj") || name.contains("routed_expert_up_proj") {
+        if name.contains("routed_expert_down_proj")
+          || name.contains("routed_expert_up_proj")
+          || name.contains("fc1_latent_proj")
+          || name.contains("fc2_latent_proj")
+        {
           self.has_latent_moe_proj = true;
         }
 
@@ -1170,6 +1219,7 @@ mod parser {
       full_attn_layers: BTreeSet::new(),
       mtp_layers: BTreeSet::new(),
       first_trunk_shard: None,
+      embed_shard: None,
       hetero_attn_shard: None,
       first_moe_shard: None,
       vision_shard: None,
@@ -1206,6 +1256,7 @@ mod parser {
     let mut representative_shards: Vec<String> = Vec::new();
     for cand in [
       state.first_trunk_shard,
+      state.embed_shard,
       state.hetero_attn_shard,
       state.first_moe_shard,
       state.extra_module_shard,
@@ -1219,7 +1270,7 @@ mod parser {
       if !representative_shards.iter().any(|s| s == &cand) {
         representative_shards.push(cand);
       }
-      if representative_shards.len() >= 6 {
+      if representative_shards.len() >= 7 {
         break;
       }
     }
