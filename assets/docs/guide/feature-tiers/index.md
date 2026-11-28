@@ -14,11 +14,10 @@ DioxusPress 采用「每个业务领域独立 Crate + 组合根按 Feature 装�
 
 | 档位名称 | 编译参数（`crates/app`） | 包含能力 | 运行时必需环境变量 |
 | :--- | :--- | :--- | :--- |
-| **`basic`**（文档/博客站） | `--no-default-features` | 文档、博客、案例、播客、常规专题板块、Tantivy 搜索、About、主题/明暗/双语、Sitemap/RSS（不编入 `module-ai`，WASM 体积更轻量） | 仅 `BASE_URL`（**无需数据库**） |
-| **`ai`**（正交特性） | `--no-default-features --features ai` | `basic` + AI 板块、大模型架构图鉴（`/models`）、配置文件全景解剖（`/models/configs`）、算子/数学实验室与 `<ModelArch />` MDX 组件；与 `accounts` 同开时自动启用图鉴数据库与后台管理 | 单独启用仍**无需数据库** |
+| **`basic`**（文档/博客站） | `--no-default-features` | 文档、博客、案例、播客、Tantivy 搜索、About、主题/明暗/双语、Sitemap/RSS | 仅 `BASE_URL`（**无需数据库**） |
 | **`accounts`**（互动社区） | `--no-default-features --features accounts` | `basic` + OAuth2 登录、论坛话题、文章评论、图片上传、LLM 内容审核、`/admin` 后台 | + `DATABASE_URL`、`JWT_SECRET` |
 | **`course`**（知识付费） | `--no-default-features --features course` | `accounts` + 实战课程目录、免费试读/付费墙、段落划线标注、会员权益手动发放 | 同上 |
-| **`full`**（默认完整版） | 默认（无需额外参数） | `course` + `papers` + `ai` + 微信支付 / 支付宝 / Stripe 在线下单、异步回调自动发货、订单中心与文章打赏 | 同上 + 支付商户密钥 |
+| **`full`**（默认完整版） | 默认（无需额外参数） | `course` + 微信支付 / 支付宝 / Stripe 在线下单、异步回调自动发货、订单中心与文章打赏 | 同上 + 支付商户密钥 |
 
 ## 双重开关机制：编译期裁剪 × 运行时启停
 
@@ -33,8 +32,7 @@ DioxusPress 将模块控制拆为两层，互不冲突：
     "docs": { "enabled": true },
     "blog": { "enabled": true },
     "cases": { "enabled": true },
-    "podcast": { "enabled": false },
-    "embedded": { "enabled": false }
+    "podcast": { "enabled": false }
   }
 }
 ```

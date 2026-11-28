@@ -6,24 +6,20 @@
 
 | 层 | feature | 包含 | 运行时依赖 |
 | --- | --- | --- | --- |
-| basic | （无，始终编译） | 博客、文档、播客、案例、4 个常规专题板块（嵌入式 / Web3 / WASM / CLI）、搜索、About、主题 / 明暗 / 中英、SEO（sitemap / feed） | 无数据库、无 `JWT_SECRET` |
-| AI 实验室（正交） | `ai` | `/ai`、大模型图鉴 `/models`、配置文件解剖 `/models/configs`、算子/数学实验室、`/ai/visualizer` 与 `<ModelArch />` MDX 组件；配合 `accounts` 时自动级联 `module-ai/accounts` 启用数据库持久化和后台管理 | 单独启用**无数据库**；配合 `accounts` 复用同上 |
+| basic | （无，始终编译） | 博客、文档、播客、案例、搜索、About、主题 / 明暗 / 中英、SEO（sitemap / feed） | 无数据库、无 `JWT_SECRET` |
 | 账号 | `accounts` | 登录（OAuth）、论坛、博客评论、图片上传、内容审核、管理后台（用户 / 评论 / 话题 / 审核） | Postgres、`JWT_SECRET` |
 | 课程 | `course` = `accounts` + 课程 | 课程 / 课时 / 付费墙、标注、学习进度、权益（admin 手动开通）、Pro 会员 | 同上 |
 | 在线支付 | `payments` = `course` + 网关 | 微信 / 支付宝下单、回调发货、对账、我的订单 | 同上 + 商户密钥 |
 | 打赏 | 随 `payments`（DT4） | 博客 / 播客页打赏，见 §6 | 同上 |
-| 论文资讯（正交） | `papers` = `accounts` + 论文 | 论文速递 `/papers` 与 `/papers/feed.xml` | 同 `accounts` |
 
-`default = ["web", "payments", "papers"]`，即通用的完整建站框架（不含垂直领域的 `ai` 模块）。`ai` 为显式 opt-in 扩展特性（通过 `--features ai` 开启，Docker 中如需内置 `models-audit` 巡检工具同步传 `--build-arg INCLUDE_MODELS_AUDIT=1`）。
+`default = ["web", "payments"]`，即通用完整建站框架。私有或垂直站点可通过将 `dioxuspress_app` 作为依赖库引入，在外部宿主壳中挂载自有路由、数据库迁移与 `board` 板块。
 
 ```toml
 # crates/app/Cargo.toml
-accounts = ["dep:module-forum", "dep:module-comments", "dep:module-admin", "dep:module-uploads", "dep:migration", "module-ai?/accounts"]
+accounts = ["dep:module-forum", "dep:module-comments", "dep:module-admin", "dep:module-uploads", "dep:migration"]
 course   = ["accounts", "dep:module-course"]
 payments = ["course", "module-course/payments"]
-papers   = ["accounts", "dep:module-papers"]
-ai       = ["dep:module-ai"]
-server   = [..., "module-forum?/server", "module-course?/server", "module-papers?/server", "module-ai?/server", ...]   # 弱依赖：开了层才级联
+server   = [..., "module-forum?/server", "module-course?/server", ...]   # 弱依赖：开了层才级联
 ```
 
 基础层用 `cargo build -p app --no-default-features --features web`（server 侧同理换 `server`）。dx 用同一组 feature 构建 web 与 server 两端（见 §5「两端 feature 必须一致」）。

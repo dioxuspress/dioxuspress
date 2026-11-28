@@ -8,7 +8,6 @@ pub mod components;
 pub mod i18n;
 pub mod routes;
 pub mod server;
-pub mod taxonomy;
 
 use crate::components::theme_picker::use_theme_version_provider;
 use crate::i18n::init_i18n;
@@ -206,19 +205,6 @@ pub fn core_compiled_modules() -> Vec<&'static str> {
   }
   if cfg!(feature = "course") {
     ids.push("course");
-  }
-  ids
-}
-
-/// 默认二进制的完整编译模块列表（docs/FEATURE_TIERS.md DL2）。
-fn compiled_modules() -> Vec<&'static str> {
-  let mut ids = core_compiled_modules();
-  ids.extend(["embedded", "web3", "wasm", "cli"]);
-  if cfg!(feature = "ai") {
-    ids.push("ai");
-  }
-  if cfg!(feature = "papers") {
-    ids.push("papers");
   }
   ids
 }
@@ -536,25 +522,7 @@ pub fn run_client(app: fn() -> Element) {
 
 /// DioxusPress 默认开箱二进制入口（供 `crates/app/src/main.rs` 调用）。
 pub fn run_default_app() {
-  let extras = compiled_modules();
-  register_core_components_and_sources(&extras);
-
-  #[cfg(feature = "ai")]
-  module_ai::register_components();
-
-  #[cfg(all(feature = "server", feature = "ai"))]
-  {
-    app_core::engines::doc_source::register_async_doc_source(module_ai::atlas_store::search_docs);
-    app_core::engines::doc_source::register_doc_source(module_ai::components_atlas::search_docs);
-    app_core::engines::doc_source::register_doc_source(module_ai::math_atlas::search_docs);
-    app_core::engines::doc_source::register_doc_source(module_ai::ml_atlas::search_docs);
-  }
-
-  #[cfg(all(feature = "server", feature = "papers"))]
-  app_core::engines::doc_source::register_async_doc_source(module_papers::server::search_docs);
-
-  #[cfg(feature = "server")]
-  board::server::register_hub_provider(build_board_hub);
+  register_core_components_and_sources(&[]);
 
   #[cfg(feature = "server")]
   run_server(App, ServerExtensions::default());
@@ -739,17 +707,6 @@ fn App() -> Element {
 }
 
 #[cfg(feature = "server")]
-fn find_board(board_id: &str) -> Option<board::Board> {
-  #[cfg(feature = "ai")]
-  if module_ai::BOARD.id == board_id {
-    return Some(module_ai::BOARD);
-  }
-  [module_embedded::BOARD, module_wasm::BOARD, module_cli::BOARD, module_web3::BOARD]
-    .into_iter()
-    .find(|b| b.id == board_id)
-}
-
-#[cfg(feature = "server")]
 fn format_stars(stars: i64) -> String {
   if stars >= 1000 {
     format!("★ {:.1}k", stars as f64 / 1000.0)
@@ -869,27 +826,19 @@ pub fn build_board_hub_for(
   resources
 }
 
-#[cfg(feature = "server")]
-fn build_board_hub(board_id: &str, lang: app_core::i18n::Language) -> board::BoardHubResources {
-  let Some(b) = find_board(board_id) else {
-    return board::BoardHubResources::default();
-  };
-  build_board_hub_for(&[b], board_id, lang)
-}
-
 #[cfg(all(test, feature = "server"))]
 mod startup_tests {
-  use super::{build_board_hub, compiled_modules, find_board, resolve_startup_base_url};
+  use super::{build_board_hub_for, core_compiled_modules, resolve_startup_base_url};
 
   #[test]
-  fn board_hub_resolves_known_boards_and_ignores_unknown() {
-    for id in ["embedded", "wasm", "cli", "web3"] {
-      assert!(find_board(id).is_some(), "missing board {id}");
+  fn core_compiled_modules_matches_tier_features() {
+    let ids = core_compiled_modules();
+    for id in ["blog", "podcast", "cases", "docs", "about"] {
+      assert!(ids.contains(&id), "missing core module {id}");
     }
-    assert_eq!(find_board("ai").is_some(), cfg!(feature = "ai"));
-    assert_eq!(compiled_modules().contains(&"ai"), cfg!(feature = "ai"));
-    assert!(find_board("nonexistent").is_none());
-    assert!(build_board_hub("nonexistent", app_core::i18n::Language::Zh).is_empty());
+    assert_eq!(ids.contains(&"forum"), cfg!(feature = "accounts"));
+    assert_eq!(ids.contains(&"course"), cfg!(feature = "course"));
+    assert!(build_board_hub_for(&[], "nonexistent", app_core::i18n::Language::Zh).is_empty());
   }
 
   #[test]

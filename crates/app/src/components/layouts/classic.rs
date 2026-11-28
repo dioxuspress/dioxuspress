@@ -29,6 +29,7 @@ use module_search::search::SearchButton;
 pub fn ClassicShell(
   current_path: String,
   #[props(default)] ecosystems: Vec<NavEcosystem>,
+  #[props(default)] extra_nav_links: Vec<FooterBoardLink>,
   #[props(default)] footer_boards: Vec<FooterBoardLink>,
   children: Element,
 ) -> Element {
@@ -50,11 +51,12 @@ pub fn ClassicShell(
   let on_blog = enabled.iter().any(|s| s == "blog");
   let on_podcast = enabled.iter().any(|s| s == "podcast");
   let on_cases = enabled.iter().any(|s| s == "cases");
-  let on_ai = enabled.iter().any(|s| s == "ai");
   let on_course = enabled.iter().any(|s| s == "course");
   let on_forum = enabled.iter().any(|s| s == "forum");
   let on_docs = enabled.iter().any(|s| s == "docs");
   let on_about = enabled.iter().any(|s| s == "about");
+  let extra_links: Vec<FooterBoardLink> =
+    extra_nav_links.into_iter().filter(|l| enabled.iter().any(|s| s == l.module_id)).collect();
   // 页脚「专题」列：由宿主站点注入并按开关过滤。
   let boards: Vec<FooterBoardLink> =
     footer_boards.into_iter().filter(|b| enabled.iter().any(|s| s == b.module_id)).collect();
@@ -103,8 +105,8 @@ pub fn ClassicShell(
                               for eco in ecosystems.iter() {
                                   EcosystemMenu { key: "{eco.id}", eco: eco.clone(), current_path: current_path.clone(), enabled: enabled.clone() }
                               }
-                              if on_ai {
-                                  Link { to: "/models", class: link_class("/models"), "{t(lang(), \"nav.models\")}" }
+                              for item in extra_links.iter() {
+                                  Link { key: "{item.path}", to: item.path, class: link_class(item.path), "{t(lang(), item.label_key)}" }
                               }
                               if on_cases {
                                   Link { to: "/case", class: link_class("/case"), "{t(lang(), \"nav.cases\")}" }
@@ -281,8 +283,8 @@ pub fn ClassicShell(
                       div {
                           p { class: "text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3", "{t(lang(), \"footer.col.content\")}" }
                           div { class: "flex flex-col gap-2 text-slate-600 dark:text-slate-300",
-                              if on_ai {
-                                  Link { to: "/models", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.models\")}" }
+                              for item in extra_links.iter() {
+                                  Link { key: "f-{item.path}", to: item.path, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), item.label_key)}" }
                               }
                               if on_cases {
                                   Link { to: "/case", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.cases\")}" }

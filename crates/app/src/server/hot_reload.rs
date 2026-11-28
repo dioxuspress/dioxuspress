@@ -36,13 +36,6 @@ pub fn invalidate_all_in_memory_caches() -> u64 {
   app_core::engines::module::invalidate_default_module_engine();
   module_docs::server::invalidate_doc_caches();
   module_blog::server::invalidate_blog_cache();
-  #[cfg(feature = "ai")]
-  {
-    module_ai::atlas::invalidate_models_cache();
-    module_ai::components_atlas::invalidate_components_cache();
-    module_ai::math_atlas::invalidate_math_cache();
-    module_ai::ml_atlas::invalidate_ml_cache();
-  }
   if let Some(cb) = EXTRA_HOT_RELOAD.get() {
     cb();
   }

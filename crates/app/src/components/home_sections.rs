@@ -10,10 +10,8 @@ use dioxus::router::Link;
 use dioxus_shadcn::{Spinner, SpinnerSize};
 
 use crate::components::layouts::NavEcosystem;
-use crate::components::module_gate::use_enabled_modules;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n};
-use crate::taxonomy::{ecosystem_by_id, ecosystem_of_case_category};
 use module_blog::server::{latest_blog_posts, BlogPostSummary};
 use module_cases::server::{list_cases, CaseSummary};
 #[cfg(feature = "course")]
@@ -29,7 +27,7 @@ pub fn EcosystemPillars(
   #[props(default)] ecosystems: Option<Vec<NavEcosystem>>,
 ) -> Element {
   let lang = use_i18n();
-  let items = ecosystems.unwrap_or_else(crate::taxonomy::nav_ecosystems);
+  let items = ecosystems.unwrap_or_default();
   if items.is_empty() {
     return rsx! {};
   }
@@ -382,194 +380,6 @@ fn ForumColumn() -> Element {
                           span { "{tpc.author}" }
                       }
                   }
-              }
-          }
-      }
-  }
-}
-
-// ── 生态落地页 ────────────────────────────────────────────
-
-/// 生态落地页 `/ecosystem/:id`：生态简介 + 领域入口 + 该生态精选案例。
-/// 完成「生态为主」IA 的闭环——导航/pillars 的生态标题有真实落地页。
-#[component]
-pub fn EcosystemPage(id: String) -> Element {
-  let lang = use_i18n();
-  let enabled = use_enabled_modules();
-  let Some(eco) = ecosystem_by_id(&id) else {
-    return rsx! { widgets::NotFound { message: t(lang(), "eco.not_found") } };
-  };
-
-  rsx! {
-      widgets::PageMeta {
-          title: t(lang(), eco.label_key),
-          description: t(lang(), eco.blurb_key),
-          path: format!("/ecosystem/{id}"),
-      }
-      // 头部
-      section { class: "py-16 sm:py-20 bg-gradient-to-b from-slate-950 to-slate-900",
-          div { class: "max-w-6xl mx-auto px-4 sm:px-6 lg:px-8",
-              h1 { class: "text-3xl md:text-4xl font-extrabold tracking-tight text-flow-light", "{t(lang(), eco.label_key)}" }
-              p { class: "mt-4 text-lg text-slate-300 max-w-2xl", "{t(lang(), eco.blurb_key)}" }
-          }
-      }
-
-      // 应用领域
-      section { class: "py-16 bg-white dark:bg-slate-950",
-          Container {
-              h2 { class: "text-xl font-bold text-slate-900 dark:text-white mb-6", "{t(lang(), \"mega.col.domains\")}" }
-              div { class: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4",
-                  for d in eco.domains.iter().filter(|d| enabled.iter().any(|e| e == d.module_id)) {
-                      Link {
-                          key: "{d.id}",
-                          to: d.route.to_string(),
-                          class: "group flex items-center justify-between rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 px-4 py-3 hover:border-[var(--color-primary)] transition-colors",
-                          span { class: "font-medium text-slate-800 dark:text-slate-100 group-hover:text-[var(--color-primary)] transition-colors", "{t(lang(), d.label_key)}" }
-                          svg { class: "w-4 h-4 text-slate-300 dark:text-slate-600 group-hover:text-[var(--color-primary)] group-hover:translate-x-0.5 transition-all", fill: "none", stroke: "currentColor", view_box: "0 0 24 24", stroke_width: "2",
-                              path { stroke_linecap: "round", stroke_linejoin: "round", d: "M9 5l7 7-7 7" }
-                          }
-                      }
-                  }
-              }
-          }
-      }
-
-      // 该生态精选案例
-      if enabled.iter().any(|e| e == "cases") {
-          section { class: "py-16 bg-slate-50/60 dark:bg-slate-900/40 border-t border-slate-200/70 dark:border-slate-800",
-              Container {
-                  SectionHeader {
-                      title: t(lang(), "home.featured.title"),
-                      subtitle: t(lang(), "home.featured.subtitle"),
-                      all_label: t(lang(), "home.featured.all"),
-                      to: "/case".to_string(),
-                  }
-                  SuspenseBoundary {
-                      fallback: |_| loading_spinner(),
-                      EcosystemCasesInner { eco_id: id.clone() }
-                  }
-              }
-          }
-      }
-
-      // AI 生态落地页：展示最新 4 篇前沿论文速递（仅 papers 模块启用时渲染）
-      if id == "ai" && enabled.iter().any(|e| e == "papers") {
-          {ecosystem_ai_papers_section()}
-      }
-  }
-}
-
-fn ecosystem_ai_papers_section() -> Element {
-  #[cfg(feature = "papers")]
-  {
-    rsx! { EcosystemAiPapersSection {} }
-  }
-  #[cfg(not(feature = "papers"))]
-  {
-    rsx! {}
-  }
-}
-
-#[cfg(feature = "papers")]
-#[component]
-fn EcosystemAiPapersSection() -> Element {
-  let lang = use_i18n();
-  rsx! {
-      section { class: "py-16 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800",
-          Container {
-              SectionHeader {
-                  title: lang().pick("前沿论文速递", "Latest AI Papers").to_string(),
-                  subtitle: lang().pick(
-                      "每日从 Hugging Face Daily Papers 精选并精读 arXiv 全文，整理带出处的要点与思维导图",
-                      "Daily curated arXiv paper digests from Hugging Face Daily Papers with cited key points",
-                  ).to_string(),
-                  all_label: lang().pick("查看全部论文", "All Papers").to_string(),
-                  to: "/papers".to_string(),
-              }
-              SuspenseBoundary {
-                  fallback: |_| loading_spinner(),
-                  EcosystemAiPapersInner {}
-              }
-          }
-      }
-  }
-}
-
-#[cfg(feature = "papers")]
-#[component]
-fn EcosystemAiPapersInner() -> Element {
-  let lang_sig = use_i18n();
-  let lang = lang_sig();
-  let res = use_server_future(move || {
-    let code = match lang_sig() {
-      crate::i18n::Language::En => "en",
-      crate::i18n::Language::Zh => "zh",
-    }
-    .to_string();
-    async move {
-      module_papers::server::list_papers_page(
-        code,
-        String::new(),
-        "latest".to_string(),
-        false,
-        1,
-        4,
-      )
-      .await
-      .map(|p| p.items)
-      .unwrap_or_default()
-    }
-  })?;
-  let papers = res().unwrap_or_default();
-  rsx! {
-      if papers.is_empty() {
-          p { class: "text-center text-slate-400 py-8 text-sm", {lang.pick("暂无论文数据", "No papers yet")} }
-      } else {
-          div { class: "grid grid-cols-1 md:grid-cols-2 gap-5",
-              for p in papers.into_iter() {
-                  Link {
-                      key: "{p.arxiv_id}",
-                      to: format!("/papers/{}", p.arxiv_id),
-                      class: "group flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-900/50 p-5 hover:border-[var(--color-primary)] hover:shadow-md transition-all",
-                      div { class: "flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 tabular-nums mb-2",
-                          span { "{p.date}" }
-                          div { class: "flex items-center gap-2",
-                              if p.has_code {
-                                  span { class: "rounded-full bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/70 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300", "Code" }
-                              }
-                              span { "▲ {p.hf_upvotes}" }
-                          }
-                      }
-                      h3 { class: "font-bold text-slate-900 dark:text-white group-hover:text-[var(--color-primary)] transition-colors line-clamp-2", "{p.title}" }
-                      if !p.tldr.is_empty() {
-                          p { class: "mt-1.5 text-sm text-slate-600 dark:text-slate-400 line-clamp-2 flex-1", "{p.tldr}" }
-                      }
-                  }
-              }
-          }
-      }
-  }
-}
-
-#[component]
-fn EcosystemCasesInner(eco_id: String) -> Element {
-  let lang = use_i18n();
-  let res =
-    use_server_future(|| async move { list_cases(None, None, None).await.unwrap_or_default() })?;
-  let picks: Vec<CaseSummary> = res()
-    .unwrap_or_default()
-    .into_iter()
-    .filter(|c| ecosystem_of_case_category(&c.category) == Some(eco_id.as_str()))
-    .take(9)
-    .collect();
-
-  rsx! {
-      if picks.is_empty() {
-          p { class: "text-center text-slate-400 py-10", "{t(lang(), \"home.featured.empty\")}" }
-      } else {
-          div { class: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6",
-              for c in picks.into_iter() {
-                  CaseCard { key: "{c.slug}", case: c }
               }
           }
       }

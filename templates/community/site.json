@@ -56,13 +56,7 @@
     "about": { "enabled": true },
     "cases": { "enabled": false },
     "podcast": { "enabled": false },
-    "course": { "enabled": false },
-    "papers": { "enabled": false },
-    "embedded": { "enabled": false },
-    "ai": { "enabled": false },
-    "web3": { "enabled": false },
-    "wasm": { "enabled": false },
-    "cli": { "enabled": false }
+    "course": { "enabled": false }
   },
   "footer": {
     "tagline": "DioxusPress Community Starter · 开放共创的技术交流社区",

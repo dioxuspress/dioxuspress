@@ -27,10 +27,7 @@ pub struct SeoExtensions {
   pub extra_content_entries: Option<ExtraContentEntriesFn>,
 }
 
-/// 收集全部启用模块的内容条目（blog + 5 个内容板块）。
-///
-/// sitemap 与 feed 共用：按 `site.json::modules.<id>.enabled` 过滤，
-/// 新增内容板块只需在这里加一行。
+/// 收集全部启用模块的内容条目（博客正文；宿主站点自定义板块通过 `SeoExtensions::extra_content_entries` 注入）。
 async fn collect_content_entries(is_on: impl Fn(&str) -> bool) -> Vec<ContentEntry> {
   let mut entries: Vec<ContentEntry> = Vec::new();
 
@@ -45,34 +42,11 @@ async fn collect_content_entries(is_on: impl Fn(&str) -> bool) -> Vec<ContentEnt
     }));
   }
 
-  // 内容板块条目，按开关收录。
-  for b in [
-    module_embedded::BOARD,
-    #[cfg(feature = "ai")]
-    module_ai::BOARD,
-    module_web3::BOARD,
-    module_wasm::BOARD,
-    module_cli::BOARD,
-  ] {
-    if !is_on(b.id) {
-      continue;
-    }
-    for a in board::server::list_board_articles(b.id.to_string()).await.unwrap_or_default() {
-      entries.push(ContentEntry {
-        url_path: format!("{}/{}", b.route, a.slug),
-        title: a.title,
-        description: a.description,
-        date: a.date,
-        tags: a.tags,
-      });
-    }
-  }
-
   entries
 }
 
-/// 详情页（文档 / 案例 / 课程详情与公开课节 / 论文）：只进 sitemap，不进 feed。
-/// 第二项是 lastmod（文档取文件 mtime、论文取更新时间），没有就空。需要购买的课节不收录。
+/// 详情页（文档 / 案例 / 课程详情与公开课节）：只进 sitemap，不进 feed。
+/// 第二项是 lastmod（文档取文件 mtime），没有就空。需要购买的课节不收录。
 async fn collect_detail_paths(is_on: impl Fn(&str) -> bool) -> Vec<(String, Option<String>)> {
   let mut paths = Vec::new();
   if is_on("docs") {
@@ -94,17 +68,6 @@ async fn collect_detail_paths(is_on: impl Fn(&str) -> bool) -> Vec<(String, Opti
     let cases = module_cases::server::list_cases(None, None, None).await.unwrap_or_default();
     paths.extend(cases.into_iter().map(|c| (format!("/case/{}", c.slug), None)));
   }
-  #[cfg(feature = "ai")]
-  if is_on("ai") {
-    let models = module_ai::atlas_store::list_curated_models_merged().await;
-    paths.extend(models.into_iter().map(|m| (format!("/models/{}", m.slug), None)));
-    let comps = module_ai::components_atlas::load_all_components();
-    paths.extend(comps.iter().map(|c| (format!("/ai/components/{}", c.meta.slug), None)));
-    let math_items = module_ai::math_atlas::load_all_math_entries();
-    paths.extend(math_items.iter().map(|m| (format!("/ai/math/{}", m.meta.slug), None)));
-    let ml_items = module_ai::ml_atlas::load_all_ml_entries();
-    paths.extend(ml_items.iter().map(|m| (format!("/ai/ml/{}", m.meta.slug), None)));
-  }
   #[cfg(feature = "course")]
   if is_on("course") {
     let courses = module_course::server::list_courses().await.unwrap_or_default();
@@ -115,10 +78,6 @@ async fn collect_detail_paths(is_on: impl Fn(&str) -> bool) -> Vec<(String, Opti
         paths.extend(course.open_lesson_paths().into_iter().map(|p| (p, None)));
       }
     }
-  }
-  #[cfg(feature = "papers")]
-  if is_on("papers") {
-    paths.extend(module_papers::server::sitemap_paths().await);
   }
   paths
 }
@@ -179,22 +138,6 @@ async fn sitemap_handler(base: String, ext: Arc<SeoExtensions>) -> axum::respons
   if is_on("about") && crate::server::about_page_is_bilingual() {
     static_paths.push("/about?lang=en".to_string());
   }
-  #[cfg(feature = "ai")]
-  if is_on("ai") {
-    static_paths.push("/ai/visualizer".to_string());
-    static_paths.push("/ai/components".to_string());
-    static_paths.push("/ai/math".to_string());
-    static_paths.push("/ai/ml".to_string());
-    static_paths.push("/models".to_string());
-    static_paths.push("/models/configs".to_string());
-  }
-  // G6：生态落地页不是模块，不在 ModuleSpec 里；仅在该生态下至少有一个领域板块启用时收录。
-  static_paths.extend(
-    crate::taxonomy::ecosystems()
-      .iter()
-      .filter(|e| e.domains.iter().any(|d| is_on(d.module_id)))
-      .map(|e| format!("/ecosystem/{}", e.id)),
-  );
   // 站点自定义顶栏站内导航（如 dioxuspress.dev 的 /templates）自动纳入 sitemap。
   let site_cfg = app_core::settings::SiteConfig::active();
   for nav_item in &site_cfg.navigation {
@@ -271,40 +214,6 @@ async fn feed_handler(base: String, ext: Arc<SeoExtensions>) -> axum::response::
   xml_response("application/atom+xml; charset=utf-8", "public, max-age=3600", xml)
 }
 
-async fn papers_feed_handler(base: String) -> axum::response::Response {
-  use widgets::build_atom_feed_for_path;
-
-  let module_engine = app_core::engines::module::default_module_engine();
-  let enabled = module_engine.enabled_ids();
-  let is_on = |id: &str| enabled.iter().any(|s| s == id);
-
-  #[cfg(feature = "papers")]
-  let entries =
-    if is_on("papers") { module_papers::server::feed_entries(30).await } else { Vec::new() };
-  #[cfg(not(feature = "papers"))]
-  let entries: Vec<ContentEntry> = {
-    let _ = is_on("papers");
-    Vec::new()
-  };
-
-  let cfg = app_core::settings::SiteConfig::load_cached(
-    app_core::utils::site_json_path().to_str().unwrap_or_default(),
-  )
-  .unwrap_or_default();
-  let title = format!("{} · 论文速递", cfg.site_name_or_default());
-  let subtitle = "每天从 Hugging Face Daily Papers 选题，读 arXiv 全文生成的带出处论文解读。";
-  let xml = build_atom_feed_for_path(
-    &entries,
-    &title,
-    subtitle,
-    &cfg.author,
-    &base,
-    "/papers/feed.xml",
-    "/papers",
-  );
-  xml_response("application/atom+xml; charset=utf-8", "public, max-age=3600", xml)
-}
-
 async fn robots_handler(base: String) -> axum::response::Response {
   let body = widgets::build_robots_txt(&base);
   // robots.txt 几乎不变，6h 缓存。
@@ -323,7 +232,6 @@ pub fn mount_with_extensions(router: Router, base_url: &str, ext: SeoExtensions)
   let sitemap_ext = ext.clone();
   let feed_base = base_url.to_string();
   let feed_ext = ext;
-  let papers_feed_base = base_url.to_string();
   let robots_base = base_url.to_string();
   router
     .route(
@@ -340,13 +248,6 @@ pub fn mount_with_extensions(router: Router, base_url: &str, ext: SeoExtensions)
         let base = feed_base.clone();
         let ext = feed_ext.clone();
         async move { feed_handler(base, ext).await }
-      }),
-    )
-    .route(
-      "/papers/feed.xml",
-      get(move || {
-        let base = papers_feed_base.clone();
-        async move { papers_feed_handler(base).await }
       }),
     )
     .route(
@@ -624,14 +525,6 @@ mod tests {
     assert_eq!(docs, index_files, "文档树漏掉了磁盘上的文档（深度上限 / _meta.json 过滤？）");
 
     let paths = collect_detail_paths(|_| true).await;
-    let ai_items = if cfg!(feature = "ai") {
-      count_dirs("models")
-        + count_dirs("ai-components")
-        + count_dirs("ai-math")
-        + count_dirs("ai-ml")
-    } else {
-      0
-    };
     let courses = if cfg!(feature = "course") { count_dirs("courses") } else { 0 };
     let open_lessons = paths
       .iter()
@@ -641,15 +534,8 @@ mod tests {
     assert!(paths.iter().filter(|(p, _)| p.starts_with("/docs/")).all(|(_, m)| m.is_some()));
     assert_eq!(
       paths.len(),
-      docs + en_docs + en_index_entry + count_dirs("cases") + ai_items + courses + open_lessons
+      docs + en_docs + en_index_entry + count_dirs("cases") + courses + open_lessons
     );
-    if cfg!(feature = "ai") {
-      assert!(paths.iter().any(|(x, _)| x == "/models/deepseek-v3"));
-      assert!(paths.iter().any(|(x, _)| x == "/ai/components/rope-and-yarn-extrapolation"));
-      assert!(paths.iter().any(|(x, _)| x == "/ai/math/svd-eckart-young-pseudoinverse"));
-      assert!(paths.iter().any(|(x, _)| x == "/ai/ml/decision-tree"));
-      assert!(paths.iter().any(|(x, _)| x == "/ai/ml/svm"));
-    }
     // G6：示例付费课程只有第一课是试看。
     if cfg!(feature = "course") {
       let has = |p: &str| paths.iter().any(|(x, _)| x == p);

@@ -125,8 +125,32 @@ pub struct ModuleEngine {
 /// （见 `assets/i18n/{zh,en}.ftl`）。
 ///
 /// 只返回本次编译带进来的模块（见 [`register_compiled_modules`]）。
+/// 若宿主站点通过 [`register_extra_module_specs`] 追加了自定义模块，会一并纳入过滤与排序。
 pub fn default_module_specs() -> Vec<ModuleSpec> {
-  only_compiled(builtin_module_specs(), COMPILED_MODULES.get().map(Vec::as_slice))
+  let specs =
+    merge_module_specs(builtin_module_specs(), EXTRA_MODULE_SPECS.get().map(Vec::as_slice));
+  only_compiled(specs, COMPILED_MODULES.get().map(Vec::as_slice))
+}
+
+/// 宿主站点追加的自定义模块清单（如垂直领域板块、论文频道等）。
+static EXTRA_MODULE_SPECS: std::sync::OnceLock<Vec<ModuleSpec>> = std::sync::OnceLock::new();
+
+/// 供外部宿主站点在启动期（client 与 server 两侧）追加自定义 [`ModuleSpec`]，
+/// 与框架内置模块共享 `site.json::modules` 开关、`ModuleGate`、sitemap 与搜索过滤。
+/// 只生效一次，应在首次调用 [`default_module_specs`] 之前执行。
+pub fn register_extra_module_specs(specs: Vec<ModuleSpec>) {
+  let _ = EXTRA_MODULE_SPECS.set(specs);
+}
+
+fn merge_module_specs(mut base: Vec<ModuleSpec>, extra: Option<&[ModuleSpec]>) -> Vec<ModuleSpec> {
+  if let Some(items) = extra {
+    for spec in items {
+      if !base.iter().any(|existing| existing.id == spec.id) {
+        base.push(spec.clone());
+      }
+    }
+  }
+  base
 }
 
 /// 本次编译带进来的模块 id（功能分层，docs/FEATURE_TIERS.md DL2）。
@@ -168,33 +192,7 @@ fn builtin_module_specs() -> Vec<ModuleSpec> {
       .with_nav_position(40)
       .with_nav_label_key("nav-forum")
       .with_static_path("/topics"),
-    // Phase 6：内容板块（每个一条 SPA 路由 + 文章详情路由）。
-    ModuleSpec::new("embedded", "嵌入式")
-      .with_routes(["/embedded", "/embedded/:slug"])
-      .with_nav_position(50)
-      .with_nav_label_key("nav-embedded")
-      .with_static_path("/embedded"),
-    ModuleSpec::new("ai", "AI")
-      .with_routes(["/ai", "/ai/:slug"])
-      .with_nav_position(60)
-      .with_nav_label_key("nav-ai")
-      .with_static_path("/ai"),
-    ModuleSpec::new("web3", "Web3")
-      .with_routes(["/web3", "/web3/:slug"])
-      .with_nav_position(70)
-      .with_nav_label_key("nav-web3")
-      .with_static_path("/web3"),
-    ModuleSpec::new("wasm", "WASM")
-      .with_routes(["/wasm", "/wasm/:slug"])
-      .with_nav_position(80)
-      .with_nav_label_key("nav-wasm")
-      .with_static_path("/wasm"),
-    ModuleSpec::new("cli", "CLI")
-      .with_routes(["/cli", "/cli/:slug"])
-      .with_nav_position(90)
-      .with_nav_label_key("nav-cli")
-      .with_static_path("/cli"),
-    // 以下两个不出现在顶级 Navbar（`nav_position = None`），
+    // 以下三个不出现在顶级 Navbar（`nav_position = None`），
     // 仅供 sitemap / 搜索 / 路由 gate 使用。
     ModuleSpec::new("course", "课程")
       .with_routes(["/course", "/course/:slug", "/course/:slug/:chapter/:lesson"])
@@ -204,11 +202,6 @@ fn builtin_module_specs() -> Vec<ModuleSpec> {
       .with_routes(["/docs", "/docs/*"])
       .with_nav_label_key("nav-docs")
       .with_static_path("/docs"),
-    // 论文资讯（`papers` feature）：入口在 AI 生态菜单（taxonomy.rs）里，不占顶级导航。
-    ModuleSpec::new("papers", "论文")
-      .with_routes(["/papers", "/papers/:arxiv_id"])
-      .with_nav_label_key("nav-papers")
-      .with_static_path("/papers"),
     // About 页（`assets/pages/about.md`），页脚链接 + sitemap。
     ModuleSpec::new("about", "关于")
       .with_routes(["/about"])
@@ -508,13 +501,24 @@ mod tests {
   fn default_module_specs_contains_all_builtins() {
     let specs = default_module_specs();
     let ids: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
-    for id in [
-      "blog", "podcast", "course", "forum", "cases", "docs", "embedded", "ai", "web3", "wasm",
-      "cli", "papers", "about",
-    ] {
+    for id in ["blog", "podcast", "course", "forum", "cases", "docs", "about"] {
       assert!(ids.contains(&id), "缺少内置模块: {}", id);
     }
-    assert_eq!(specs.len(), 13);
+    assert_eq!(specs.len(), 7);
+  }
+
+  #[test]
+  fn merge_extra_module_specs_appends_unique_ids() {
+    let extra = vec![
+      ModuleSpec::new("blog", "Duplicate Blog"),
+      ModuleSpec::new("ai", "AI").with_static_path("/ai").with_nav_position(60),
+    ];
+    let merged = merge_module_specs(builtin_module_specs(), Some(&extra));
+    assert_eq!(merged.len(), 8);
+    assert!(merged.iter().any(|s| s.id == "ai" && s.static_path.as_deref() == Some("/ai")));
+    let ids: Vec<String> =
+      only_compiled(merged, Some(&["blog", "ai"][..])).into_iter().map(|s| s.id).collect();
+    assert_eq!(ids, ["blog", "ai"]);
   }
 
   #[test]
@@ -524,20 +528,17 @@ mod tests {
       .map(|s| s.id)
       .collect();
     assert_eq!(ids, ["blog", "docs"]);
-    assert_eq!(only_compiled(builtin_module_specs(), None).len(), 13);
+    assert_eq!(only_compiled(builtin_module_specs(), None).len(), 7);
   }
 
   #[test]
   fn default_specs_navbar_order() {
-    // 默认 nav: blog / podcast / cases / forum + 5 个内容板块（剩下 course/docs nav_position = None）
+    // 默认 nav: blog / podcast / cases / forum（剩下 course / docs / about nav_position = None）
     let specs = default_module_specs();
     let mut sorted: Vec<&ModuleSpec> = specs.iter().filter(|s| s.nav_position.is_some()).collect();
     sorted.sort_by_key(|s| s.nav_position.unwrap_or(i32::MAX));
     let ordered: Vec<&str> = sorted.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(
-      ordered,
-      vec!["blog", "podcast", "cases", "forum", "embedded", "ai", "web3", "wasm", "cli"]
-    );
+    assert_eq!(ordered, vec!["blog", "podcast", "cases", "forum"]);
   }
 
   #[test]
@@ -556,7 +557,7 @@ mod tests {
     // 2) navigation 中不出现
     let nav_ids: Vec<&str> = e.navigation().iter().map(|s| s.id.as_str()).collect();
     assert!(!nav_ids.contains(&"forum"));
-    assert_eq!(nav_ids, vec!["blog", "podcast", "cases", "embedded", "ai", "web3", "wasm", "cli"]);
+    assert_eq!(nav_ids, vec!["blog", "podcast", "cases"]);
 
     // 3) enabled_ids 中不出现 - 即搜索源 / sitemap 都会过滤掉 forum
     let enabled = e.enabled_ids();
@@ -579,8 +580,8 @@ mod tests {
     cfg.modules.insert("blog".to_string(), ModuleSettings { enabled: false });
     e.apply_site_config(&cfg);
     let ids: Vec<&str> = e.navigation().iter().map(|s| s.id.as_str()).collect();
-    // 关闭 blog + forum 后剩 podcast / cases + 5 个内容板块
-    assert_eq!(ids, vec!["podcast", "cases", "embedded", "ai", "web3", "wasm", "cli"]);
+    // 关闭 blog + forum 后剩 podcast / cases
+    assert_eq!(ids, vec!["podcast", "cases"]);
     // enabled_ids 里也不含被关闭的 (但仍包含未出现在 nav 的 course / docs)
     let enabled = e.enabled_ids();
     assert!(!enabled.contains(&"forum".to_string()));

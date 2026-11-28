@@ -192,21 +192,15 @@ dependencies = [
  "dotenvy",
  "migration",
  "module-admin",
- "module-ai",
  "module-blog",
  "module-cases",
- "module-cli",
  "module-comments",
  "module-course",
  "module-docs",
- "module-embedded",
  "module-forum",
- "module-papers",
  "module-podcast",
  "module-search",
  "module-uploads",
- "module-wasm",
- "module-web3",
  "serde",
  "tempfile",
  "tokio",
@@ -1394,19 +1388,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cssparser"
-version = "0.34.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7c66d1cd8ed61bf80b38432613a7a2f09401ab8d0501110655f8b341484a3e3"
-dependencies = [
- "cssparser-macros",
- "dtoa-short",
- "itoa",
- "phf 0.11.3",
- "smallvec",
-]
-
-[[package]]
 name = "cssparser-macros"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2444,12 +2425,6 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
-
-[[package]]
-name = "ego-tree"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2972feb8dffe7bc8c5463b1dacda1b0dfbed3710e50f977d965429692d74cd8"
 
 [[package]]
 name = "either"
@@ -4061,10 +4036,10 @@ version = "0.8.8-speedreader"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02cb977175687f33fa4afa0c95c112b987ea1443e5a51c8f8ff27dc618270cc2"
 dependencies = [
- "cssparser 0.29.6",
+ "cssparser",
  "html5ever",
  "indexmap",
- "selectors 0.24.0",
+ "selectors",
 ]
 
 [[package]]
@@ -4631,29 +4606,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "module-ai"
-version = "0.2.0"
-dependencies = [
- "app-core",
- "board",
- "chrono",
- "dioxus",
- "dioxus-shadcn",
- "dioxus-ssr",
- "dotenvy",
- "llm",
- "reqwest",
- "sea-orm",
- "serde",
- "serde_json",
- "serde_yaml",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "widgets",
-]
-
-[[package]]
 name = "module-blog"
 version = "0.2.0"
 dependencies = [
@@ -4677,14 +4629,6 @@ dependencies = [
  "tempfile",
  "tracing",
  "widgets",
-]
-
-[[package]]
-name = "module-cli"
-version = "0.2.0"
-dependencies = [
- "board",
- "dioxus",
 ]
 
 [[package]]
@@ -4744,14 +4688,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "module-embedded"
-version = "0.2.0"
-dependencies = [
- "board",
- "dioxus",
-]
-
-[[package]]
 name = "module-forum"
 version = "0.2.0"
 dependencies = [
@@ -4787,29 +4723,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "module-papers"
-version = "0.2.0"
-dependencies = [
- "app-core",
- "async-trait",
- "chrono",
- "dioxus",
- "dioxus-shadcn",
- "dotenvy",
- "llm",
- "migration",
- "reqwest",
- "scraper",
- "sea-orm",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "widgets",
 ]
 
 [[package]]
@@ -4880,22 +4793,6 @@ dependencies = [
  "sdk",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "module-wasm"
-version = "0.2.0"
-dependencies = [
- "board",
- "dioxus",
-]
-
-[[package]]
-name = "module-web3"
-version = "0.2.0"
-dependencies = [
- "board",
- "dioxus",
 ]
 
 [[package]]
@@ -5527,7 +5424,7 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fabbf1ead8a5bcbc20f5f8b939ee3f5b0f6f281b6ad3468b84656b658b455259"
 dependencies = [
- "phf_macros 0.10.0",
+ "phf_macros",
  "phf_shared 0.10.0",
  "proc-macro-hack",
 ]
@@ -5538,7 +5435,6 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
 dependencies = [
- "phf_macros 0.11.3",
  "phf_shared 0.11.3",
 ]
 
@@ -5634,19 +5530,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "phf_macros"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
-dependencies = [
- "phf_generator 0.11.3",
- "phf_shared 0.11.3",
- "proc-macro2",
- "quote",
- "syn 2.0.118",
 ]
 
 [[package]]
@@ -6725,21 +6608,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "scraper"
-version = "0.23.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "527e65d9d888567588db4c12da1087598d0f6f8b346cc2c5abc91f05fc2dffe2"
-dependencies = [
- "cssparser 0.34.0",
- "ego-tree",
- "getopts",
- "html5ever",
- "precomputed-hash",
- "selectors 0.26.0",
- "tendril",
-]
-
-[[package]]
 name = "sdk"
 version = "0.2.0"
 dependencies = [
@@ -6948,33 +6816,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c37578180969d00692904465fb7f6b3d50b9a2b952b87c23d0e2e5cb5013416"
 dependencies = [
  "bitflags 1.3.2",
- "cssparser 0.29.6",
+ "cssparser",
  "derive_more 0.99.20",
  "fxhash",
  "log",
  "phf 0.8.0",
  "phf_codegen 0.8.0",
  "precomputed-hash",
- "servo_arc 0.2.0",
- "smallvec",
-]
-
-[[package]]
-name = "selectors"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd568a4c9bb598e291a08244a5c1f5a8a6650bee243b5b0f8dbb3d9cc1d87fe8"
-dependencies = [
- "bitflags 2.13.0",
- "cssparser 0.34.0",
- "derive_more 0.99.20",
- "fxhash",
- "log",
- "new_debug_unreachable",
- "phf 0.11.3",
- "phf_codegen 0.11.3",
- "precomputed-hash",
- "servo_arc 0.4.3",
+ "servo_arc",
  "smallvec",
 ]
 
@@ -7141,15 +6990,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d52aa42f8fdf0fed91e5ce7f23d8138441002fa31dca008acf47e6fd4721f741"
 dependencies = [
  "nodrop",
- "stable_deref_trait",
-]
-
-[[package]]
-name = "servo_arc"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
-dependencies = [
  "stable_deref_trait",
 ]
 

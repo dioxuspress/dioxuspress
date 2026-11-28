@@ -237,24 +237,6 @@
     },
     "podcast": {
       "enabled": false
-    },
-    "embedded": {
-      "enabled": false
-    },
-    "ai": {
-      "enabled": false
-    },
-    "web3": {
-      "enabled": false
-    },
-    "wasm": {
-      "enabled": false
-    },
-    "cli": {
-      "enabled": false
-    },
-    "papers": {
-      "enabled": false
     }
   }
 }

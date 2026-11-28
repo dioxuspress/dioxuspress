@@ -155,18 +155,12 @@ Disabling any compiled module in `site.json` removes it simultaneously from **to
   "podcast": { "enabled": false },
   "forum": { "enabled": false },
   "course": { "enabled": false },
-  "papers": { "enabled": false },
-  "embedded": { "enabled": false },
-  "ai": { "enabled": false },
-  "web3": { "enabled": false },
-  "wasm": { "enabled": false },
-  "cli": { "enabled": false },
   "about": { "enabled": true }
 }
 ```
 
 :::info Compile-Time Tiers vs. Runtime Switches
-`site.json::modules` filters within the modules compiled into your binary. In the zero-database `basic` tier, `forum`, `course`, and `papers` are not compiled at all. See [Feature Tiers](/docs/guide/feature-tiers).
+`site.json::modules` filters within the modules compiled into your binary. In the zero-database `basic` tier, `forum` and `course` are not compiled at all. See [Feature Tiers](/docs/guide/feature-tiers).
 :::
 
 ### `auth` (OAuth2 Providers — requires `accounts` tier)

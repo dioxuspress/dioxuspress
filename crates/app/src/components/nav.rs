@@ -21,6 +21,7 @@ use crate::server::get_active_layout;
 pub fn SiteNavbar(
   current_path: String,
   #[props(default)] ecosystems: Vec<NavEcosystem>,
+  #[props(default)] extra_nav_links: Vec<FooterBoardLink>,
   #[props(default)] footer_boards: Vec<FooterBoardLink>,
   children: Element,
 ) -> Element {
@@ -37,7 +38,7 @@ pub fn SiteNavbar(
     match layout.as_str() {
       "docs" => rsx! { DocsShell { current_path, {children} } },
       "minimal" => rsx! { MinimalShell { {children} } },
-      _ => rsx! { ClassicShell { current_path, ecosystems, footer_boards, {children} } },
+      _ => rsx! { ClassicShell { current_path, ecosystems, extra_nav_links, footer_boards, {children} } },
     }
   }
 }
@@ -49,8 +50,6 @@ pub fn Navbar() -> Element {
   rsx! {
     SiteNavbar {
       current_path,
-      ecosystems: crate::taxonomy::nav_ecosystems(),
-      footer_boards: crate::taxonomy::default_footer_boards(),
       Outlet::<Route> {}
     }
   }

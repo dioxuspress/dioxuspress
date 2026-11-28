@@ -3,8 +3,7 @@
 #
 # Compiles `app` under `--profile wasm-release` (`opt-level = "z"`, `lto = "fat"`)
 # for both `basic` (`--no-default-features --features web`) and `full` (default `web` +
-# `payments` + `papers`, excluding opt-in `ai`) tiers, and verifies raw `.wasm` and
-# `gzip -9` byte sizes stay within budget.
+# `payments`) tiers, and verifies raw `.wasm` and `gzip -9` byte sizes stay within budget.
 #
 # Override any budget via environment variables (used for CI and red/green gate self-tests):
 #   MAX_BASIC_WASM_RAW_BYTES (default: 6300000)

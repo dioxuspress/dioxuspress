@@ -38,10 +38,6 @@ mod m20260628_000007_memberships;
 mod m20260721_000008_users_token_version;
 mod m20261020_000009_order_product;
 mod m20261029_000010_pending_review;
-mod m20261029_000011_papers;
-mod m20261104_000012_paper_topics;
-mod m20261114_000013_curated_models;
-mod m20261127_000014_model_verification_audit;
 
 pub struct Migrator;
 
@@ -59,10 +55,6 @@ impl MigratorTrait for Migrator {
       Box::new(m20260721_000008_users_token_version::Migration),
       Box::new(m20261020_000009_order_product::Migration),
       Box::new(m20261029_000010_pending_review::Migration),
-      Box::new(m20261029_000011_papers::Migration),
-      Box::new(m20261104_000012_paper_topics::Migration),
-      Box::new(m20261114_000013_curated_models::Migration),
-      Box::new(m20261127_000014_model_verification_audit::Migration),
     ]
   }
 }
@@ -87,10 +79,6 @@ mod tests {
         "m20260721_000008_users_token_version".to_string(),
         "m20261020_000009_order_product".to_string(),
         "m20261029_000010_pending_review".to_string(),
-        "m20261029_000011_papers".to_string(),
-        "m20261104_000012_paper_topics".to_string(),
-        "m20261114_000013_curated_models".to_string(),
-        "m20261127_000014_model_verification_audit".to_string(),
       ]
     );
   }

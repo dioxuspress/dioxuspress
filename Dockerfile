@@ -20,7 +20,7 @@
 #
 # 构建（全栈版 / 零数据库 basic 版）：
 #   docker build -t dioxuspress:latest .
-#   docker build --build-arg APP_FEATURES="--no-default-features" --build-arg INCLUDE_PAPERS_INGEST=0 -t dioxuspress-basic:latest .
+#   docker build --build-arg APP_FEATURES="--no-default-features" -t dioxuspress-basic:latest .
 #
 # 运行（零数据库 basic 镜像，开箱即跑无需任何密钥或环境变量）：
 #   docker run --rm -p 8080:8080 -v ./my-site:/app/content:ro ghcr.io/dioxuspress/dioxuspress-basic:latest
@@ -137,15 +137,14 @@ RUN arch=$(case "$(uname -m)" in x86_64) echo x64;; aarch64) echo arm64;; esac) 
 # 2. dx bundle：web 全栈 + release 优化，
 #    产物在 /tmp/target/dx/app/release/web/{public,server}
 #    功能分层（docs/FEATURE_TIERS.md）：默认完整站点；其他档位用 build-arg 传 feature 参数，如
-#      --build-arg APP_FEATURES="--no-default-features"                     # basic（无库，不含 AI 实验室）
-#      --build-arg APP_FEATURES="--no-default-features --features ai"       # basic + AI 实验室 / 模型图鉴（仍无库）
+#      --build-arg APP_FEATURES="--no-default-features"                     # basic（无库）
 #      --build-arg APP_FEATURES="--no-default-features --features accounts" # 博客 + 论坛
 #      --build-arg APP_FEATURES="--no-default-features --features course"   # + 课程（无在线支付）
 #    wasm-opt 失败时 dx 只打一行 ERROR、退出码仍是 0，产物是未优化的 wasm。这里查日志让构建失败，
 #    保证上线的就是验证过的 wasm-opt 产物（约 3.4MB；macOS 上 dx 下载的 binaryen 会崩，见 DEVELOPER.md）。
 ARG APP_FEATURES=""
 # target 和 cargo registry 放在 BuildKit 缓存挂载里：不进镜像层（之前每次构建往构建缓存里加约 3.7 GB，
-# 2026-10-31 把 app 服务器的盘写满），下次构建增量编译。三个用到 /tmp/target 的 RUN 挂同一个 id。
+# 2026-10-31 把 app 服务器的盘写满），下次构建增量编译。用到的 /tmp/target RUN 挂同一个 id。
 # 缓存跨构建保留，先删掉上次的 dx 输出目录，免得旧的带哈希的静态文件混进 /out/public。
 RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=rie-cargo-registry,target=/usr/local/cargo/registry \
     rm -rf /tmp/target/dx/app/release/web \
@@ -155,26 +154,11 @@ RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=ri
  && [ "$status" -eq 0 ] \
  && if grep -q 'wasm-opt failed' /tmp/bundle.log; then echo 'dx bundle: wasm-opt failed' >&2; exit 1; fi
 
-# 3. 定时任务程序（不链接进 app，服务器 cron 用 `docker compose run --rm app /app/<bin>` 跑）：
-#    - `INCLUDE_PAPERS_INGEST=0`：零数据库 `basic` 镜像跳过以缩短构建耗时与镜像体积。
-#    - `INCLUDE_MODELS_AUDIT=1`：启用 `ai` 垂直扩展时显式开启，产出 `/app/models-audit`。
-ARG INCLUDE_PAPERS_INGEST=1
-ARG INCLUDE_MODELS_AUDIT=0
-RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=rie-cargo-registry,target=/usr/local/cargo/registry \
-    if [ "$INCLUDE_PAPERS_INGEST" = "1" ]; then \
-      CARGO_NET_OFFLINE=true cargo build --release -p module-papers --features ingest --bin papers-ingest; \
-    fi \
- && if [ "$INCLUDE_MODELS_AUDIT" = "1" ]; then \
-      CARGO_NET_OFFLINE=true cargo build --release -p module-ai --features audit --bin models-audit; \
-    fi
-
-# 4. 收敛产物到统一目录，方便 runtime 阶段单层 COPY
+# 3. 收敛产物到统一目录，方便 runtime 阶段单层 COPY
 RUN --mount=type=cache,id=rie-target,target=/tmp/target \
     mkdir -p /out \
  && cp -r /tmp/target/dx/app/release/web/public /out/public \
  && cp /tmp/target/dx/app/release/web/server /out/server \
- && if [ "$INCLUDE_PAPERS_INGEST" = "1" ]; then cp /tmp/target/release/papers-ingest /out/papers-ingest; fi \
- && if [ "$INCLUDE_MODELS_AUDIT" = "1" ]; then cp /tmp/target/release/models-audit /out/models-audit; fi \
  && cp -r assets /out/assets
 
 

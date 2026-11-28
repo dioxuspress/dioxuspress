@@ -157,18 +157,12 @@ UPDATE_SCHEMA=1 cargo test --features server -p app-core site_schema_json_is_up_
   "podcast": { "enabled": false },
   "forum": { "enabled": false },
   "course": { "enabled": false },
-  "papers": { "enabled": false },
-  "embedded": { "enabled": false },
-  "ai": { "enabled": false },
-  "web3": { "enabled": false },
-  "wasm": { "enabled": false },
-  "cli": { "enabled": false },
   "about": { "enabled": true }
 }
 ```
 
 :::info 编译期档位与运行期开关的关系
-`site.json::modules` 只能在**当前编译档位已包含的模块集合内**做运行期裁剪。例如在零数据库的 `basic` 档位下，`forum`、`course`、`papers` 本身未参与编译，无需额外配置即不存在。详见 [四档功能分层](/docs/guide/feature-tiers)。
+`site.json::modules` 只能在**当前编译档位已包含的模块集合内**做运行期裁剪。例如在零数据库的 `basic` 档位下，`forum` 与 `course` 本身未参与编译，无需额外配置即不存在。详见 [四档功能分层](/docs/guide/feature-tiers)。
 :::
 
 ### `auth`（OAuth 第三方登录，需 `accounts` 档位）

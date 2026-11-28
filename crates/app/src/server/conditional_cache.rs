@@ -91,9 +91,20 @@ fn matches_seg(path: &str, prefix: &str) -> bool {
       && path.as_bytes().get(prefix.len()) == Some(&b'/'))
 }
 
+static EXTRA_STATIC_PATHS: OnceLock<&'static [&'static str]> = OnceLock::new();
+static EXTRA_PRIVATE_PREFIXES: OnceLock<&'static [&'static str]> = OnceLock::new();
+
+/// 注册宿主站点的自定义条件缓存分类规则（如独立的静态订阅源路径与私密动态前缀）。
+pub fn register_extra_route_rules(
+  static_paths: &'static [&'static str],
+  private_prefixes: &'static [&'static str],
+) {
+  let _ = EXTRA_STATIC_PATHS.set(static_paths);
+  let _ = EXTRA_PRIVATE_PREFIXES.set(private_prefixes);
+}
+
 fn classify_path(path: &str) -> RouteClass {
-  // 独立论文订阅源自带 `Cache-Control: public, max-age=3600`，直接透传，避免被 `/papers` 覆写为 no-store。
-  if path == "/papers/feed.xml" {
+  if EXTRA_STATIC_PATHS.get().is_some_and(|list| list.contains(&path)) {
     return RouteClass::StaticAsset;
   }
 
@@ -115,13 +126,19 @@ fn classify_path(path: &str) -> RouteClass {
     }
   }
 
-  for dynamic_prefix in [
-    "/api", "/admin", "/me", "/forum", "/topics", "/course", "/papers", "/pay", "/orders",
-    "/healthz",
-  ] {
+  for dynamic_prefix in
+    ["/api", "/admin", "/me", "/forum", "/topics", "/course", "/pay", "/orders", "/healthz"]
+  {
     if matches_seg(path, dynamic_prefix) {
       return RouteClass::PrivateDynamic;
     }
+  }
+
+  if EXTRA_PRIVATE_PREFIXES
+    .get()
+    .is_some_and(|list| list.iter().any(|prefix| matches_seg(path, prefix)))
+  {
+    return RouteClass::PrivateDynamic;
   }
 
   RouteClass::AnonymousReadOnly
@@ -275,34 +292,6 @@ fn probe_source_stamp(path: &str) -> u128 {
       dir_stamp.wrapping_mul(1_000_003) ^ leaf_stamp
     } else {
       dir_stamp
-    }
-  } else if path == "/models" || path.starts_with("/models/") {
-    #[cfg(feature = "ai")]
-    {
-      let models_root = module_ai::atlas::resolve_models_root();
-      let dir_stamp = mtime_nanos(&models_root)
-        ^ u128::from(module_ai::atlas_store::atlas_db_stamp()).wrapping_mul(2_654_435_761);
-      if let Some(slug) =
-        path.strip_prefix("/models/").filter(|s| !s.is_empty() && !s.contains(".."))
-      {
-        let mdir = models_root.join(slug);
-        let leaf_stamp = max_mtime_in([
-          mdir.join("model.yaml"),
-          mdir.join("model.yml"),
-          mdir.join("config.json"),
-          mdir.join("model_index.json"),
-          mdir.join("preprocessor_config.json"),
-          mdir.join("pooling_config.json"),
-          mdir.join("README.md"),
-        ]);
-        dir_stamp.wrapping_mul(1_000_003) ^ leaf_stamp
-      } else {
-        dir_stamp
-      }
-    }
-    #[cfg(not(feature = "ai"))]
-    {
-      0
     }
   } else if path == "/about" {
     let pages_dir = crate::server::active_about_pages_dir();
@@ -527,7 +516,6 @@ mod tests {
     assert_eq!(classify_path("/cases/demo/shot.png"), RouteClass::StaticAsset);
     assert_eq!(classify_path("/podcasts/ep1.mp3"), RouteClass::StaticAsset);
     assert_eq!(classify_path("/courses/rust/01/index.md"), RouteClass::StaticAsset);
-    assert_eq!(classify_path("/papers/feed.xml"), RouteClass::StaticAsset);
 
     assert_eq!(classify_path("/admin"), RouteClass::PrivateDynamic);
     assert_eq!(classify_path("/admin/users"), RouteClass::PrivateDynamic);
@@ -535,8 +523,6 @@ mod tests {
     assert_eq!(classify_path("/forum"), RouteClass::PrivateDynamic);
     assert_eq!(classify_path("/topics/42"), RouteClass::PrivateDynamic);
     assert_eq!(classify_path("/course/rust-basics"), RouteClass::PrivateDynamic);
-    assert_eq!(classify_path("/papers"), RouteClass::PrivateDynamic);
-    assert_eq!(classify_path("/papers/2611.15789"), RouteClass::PrivateDynamic);
     assert_eq!(classify_path("/api/docs/content"), RouteClass::PrivateDynamic);
   }
 

@@ -48,13 +48,11 @@ jobs:
             file: Dockerfile
             build-args: |
               APP_FEATURES=--no-default-features
-              INCLUDE_PAPERS_INGEST=0
           - name: app
             context: .
             file: Dockerfile
             build-args: |
               APP_FEATURES=--no-default-features --features accounts
-              INCLUDE_PAPERS_INGEST=1
           - name: gateway
             context: crates/gateway
             file: crates/gateway/Dockerfile

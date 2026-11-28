@@ -58,13 +58,7 @@
     "podcast": { "enabled": true },
     "forum": { "enabled": true },
     "course": { "enabled": true },
-    "about": { "enabled": true },
-    "papers": { "enabled": false },
-    "embedded": { "enabled": false },
-    "ai": { "enabled": false },
-    "web3": { "enabled": false },
-    "wasm": { "enabled": false },
-    "cli": { "enabled": false }
+    "about": { "enabled": true }
   },
   "footer": {
     "tagline": "DioxusPress Portal Starter · 全栈知识与商业化门户示范",

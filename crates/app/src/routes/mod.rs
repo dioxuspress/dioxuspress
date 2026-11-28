@@ -10,9 +10,7 @@ use crate::components::docs_home::DocsLanding;
 use crate::components::hero::Hero;
 #[cfg(feature = "course")]
 use crate::components::home_sections::CourseShowcase;
-use crate::components::home_sections::{
-  CommunityFeed, EcosystemPage, EcosystemPillars, FeaturedCases,
-};
+use crate::components::home_sections::{CommunityFeed, FeaturedCases};
 use crate::components::module_gate::{use_enabled_modules, ModuleGate};
 use crate::components::nav::Navbar;
 use crate::components::view::Container;
@@ -20,34 +18,22 @@ use crate::i18n::{t, use_i18n, Language};
 use crate::server::get_about_page;
 use module_blog::server::{get_blog_content, list_blog_page};
 use module_cases::cases::{CaseDetailPage, CasesIndexPage};
-use module_cli::{CliArticlePage, CliIndexPage};
 #[cfg(feature = "course")]
 use module_course::course::AnnotationLayer;
 use module_docs::docs::{DocPage as DocPageView, Docs as DocsView};
-use module_embedded::{EmbeddedArticlePage, EmbeddedIndexPage};
 #[cfg(feature = "accounts")]
 use module_forum::forum::DiscussionPanel;
 use module_podcast::podcast::PodcastPage;
-use module_wasm::{WasmArticlePage, WasmIndexPage};
-use module_web3::{Web3ArticlePage, Web3IndexPage};
 use widgets::{get_seo_base_url, inject_seo, parse_mdx, Markdown};
 
 #[cfg(feature = "accounts")]
 mod accounts;
 #[cfg(feature = "accounts")]
 pub use accounts::*;
-#[cfg(feature = "papers")]
-mod papers;
-#[cfg(feature = "papers")]
-pub use papers::*;
 #[cfg(feature = "course")]
 mod course;
 #[cfg(feature = "course")]
 pub use course::*;
-#[cfg(feature = "ai")]
-mod ai;
-#[cfg(feature = "ai")]
-pub use ai::*;
 
 /// 某一层没编译进来时（docs/FEATURE_TIERS.md DL1），为它的路由生成同名页面组件，
 /// 渲染 404。`Route` 因此在各层都相同，导航链接照常编译，是否显示由启用列表决定。
@@ -73,29 +59,6 @@ absent_pages! {
   MyAnnotations {},
   MyOrders {},
   AdminEntitlements {},
-}
-
-#[cfg(not(feature = "papers"))]
-absent_pages! {
-  Papers {},
-  PaperDetail { arxiv_id: String },
-  PaperTopic { slug: String },
-}
-
-#[cfg(not(feature = "ai"))]
-absent_pages! {
-  Ai {},
-  AiVisualizer {},
-  AiComponents {},
-  AiComponentDetail { slug: String },
-  AiMath {},
-  AiMathDetail { slug: String },
-  AiMl {},
-  AiMlDetail { slug: String },
-  AiArticle { slug: String },
-  Models {},
-  ModelConfigsGuide {},
-  ModelDetail { slug: String },
 }
 
 #[cfg(not(feature = "accounts"))]
@@ -210,10 +173,6 @@ mod route_def {
         #[route("/")]
         Home {},
 
-        // 生态落地页（双生态 IA 的落地）：/ecosystem/rust | /ecosystem/ai
-        #[route("/ecosystem/:id")]
-        EcosystemPage { id: String },
-
         #[route("/docs")]
         Docs {},
         #[route("/docs/:..path")]
@@ -246,62 +205,6 @@ mod route_def {
         Cases {},
         #[route("/case/:slug")]
         CaseDetail { slug: String },
-
-        // Phase 6 内容板块：每个一条落地页 + 一条文章详情页
-        #[route("/embedded")]
-        Embedded {},
-        #[route("/embedded/:slug")]
-        EmbeddedArticle { slug: String },
-
-        #[route("/ai")]
-        Ai {},
-        #[route("/ai/visualizer")]
-        AiVisualizer {},
-        #[route("/ai/components")]
-        AiComponents {},
-        #[route("/ai/components/:slug")]
-        AiComponentDetail { slug: String },
-        #[route("/ai/math")]
-        AiMath {},
-        #[route("/ai/math/:slug")]
-        AiMathDetail { slug: String },
-        #[route("/ai/ml")]
-        AiMl {},
-        #[route("/ai/ml/:slug")]
-        AiMlDetail { slug: String },
-        #[route("/ai/:slug")]
-        AiArticle { slug: String },
-
-        // 指定旗舰模型架构图鉴（含多尺度收起/展开拓扑图与配置文件全景指南）
-        // 注意路由顺序：静态路径 /models/configs 必须置于动态参数 /models/:slug 之前
-        #[route("/models")]
-        Models {},
-        #[route("/models/configs")]
-        ModelConfigsGuide {},
-        #[route("/models/:slug")]
-        ModelDetail { slug: String },
-
-        #[route("/web3")]
-        Web3 {},
-        #[route("/web3/:slug")]
-        Web3Article { slug: String },
-
-        #[route("/wasm")]
-        Wasm {},
-        #[route("/wasm/:slug")]
-        WasmArticle { slug: String },
-
-        #[route("/cli")]
-        Cli {},
-        #[route("/cli/:slug")]
-        CliArticle { slug: String },
-
-        #[route("/papers")]
-        Papers {},
-        #[route("/papers/:arxiv_id")]
-        PaperDetail { arxiv_id: String },
-        #[route("/papers/topic/:slug")]
-        PaperTopic { slug: String },
 
         // 论坛：注意路由顺序，静态路径优先于 i32 动态参数
         #[route("/topics")]
@@ -362,9 +265,6 @@ pub fn Home() -> Element {
           DocsLanding { enabled: enabled.clone() }
       } else {
           Hero { enabled: enabled.clone() }
-
-          // 两大生态支柱：直接体现「Rust 生态 + AI 生态」定位
-          EcosystemPillars { enabled: enabled.clone() }
 
           // 精选案例（旗舰）+ 课程（变现）
           if on("cases") {
@@ -572,7 +472,7 @@ fn BlogList() -> Element {
                                   for post in paged.iter() {
                                       Link {
                                           key: "{post.slug}",
-                                          to: Route::Blog { id: post.slug.clone() },
+                                          to: format!("/blog/{}", post.slug),
                                           class: "group block px-5 py-4 hover:bg-white dark:hover:bg-slate-800/60 transition-all",
                                           div { class: "flex justify-between items-start gap-3",
                                               h3 { class: "text-sm font-semibold text-slate-900 dark:text-white group-hover:text-primary transition-colors leading-snug flex-1",
@@ -747,48 +647,6 @@ pub fn CaseDetail(slug: String) -> Element {
           }
       }
   }
-}
-
-// ── Phase 6 内容板块路由（委派给各模块的页面组件，ModuleGate 控制开关）──
-
-#[component]
-pub fn Embedded() -> Element {
-  rsx! { ModuleGate { id: "embedded".to_string(), EmbeddedIndexPage {} } }
-}
-
-#[component]
-pub fn EmbeddedArticle(slug: String) -> Element {
-  rsx! { ModuleGate { id: "embedded".to_string(), EmbeddedArticlePage { slug } } }
-}
-
-#[component]
-pub fn Web3() -> Element {
-  rsx! { ModuleGate { id: "web3".to_string(), Web3IndexPage {} } }
-}
-
-#[component]
-pub fn Web3Article(slug: String) -> Element {
-  rsx! { ModuleGate { id: "web3".to_string(), Web3ArticlePage { slug } } }
-}
-
-#[component]
-pub fn Wasm() -> Element {
-  rsx! { ModuleGate { id: "wasm".to_string(), WasmIndexPage {} } }
-}
-
-#[component]
-pub fn WasmArticle(slug: String) -> Element {
-  rsx! { ModuleGate { id: "wasm".to_string(), WasmArticlePage { slug } } }
-}
-
-#[component]
-pub fn Cli() -> Element {
-  rsx! { ModuleGate { id: "cli".to_string(), CliIndexPage {} } }
-}
-
-#[component]
-pub fn CliArticle(slug: String) -> Element {
-  rsx! { ModuleGate { id: "cli".to_string(), CliArticlePage { slug } } }
 }
 
 /// /about：渲染 `assets/pages/about.md`（frontmatter 的 title / description 进 head）。

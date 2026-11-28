@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
-# 功能分层门禁（docs/FEATURE_TIERS.md L6）：六档 × server / web 两端各 `cargo check -p app`，
+# 功能分层门禁（docs/FEATURE_TIERS.md L6）：四档 × server / web 两端各 `cargo check -p app`，
 # 任一档有 error 或 warning 即失败。warning 也算失败：漏写 cfg 最先表现为 unused import。
 #
-# 用法：scripts/check_tiers.sh            # 全部 12 项
-#       scripts/check_tiers.sh basic      # 只查某一档（basic / ai / accounts / course / full / full-ai）
+# 用法：scripts/check_tiers.sh            # 全部 8 项
+#       scripts/check_tiers.sh basic      # 只查某一档（basic / accounts / course / full）
 set -u
 
 tier_flags() {
   case "$1" in
     basic) echo "--no-default-features" ;;
-    ai) echo "--no-default-features --features ai" ;;
     accounts) echo "--no-default-features --features accounts" ;;
     course) echo "--no-default-features --features course" ;;
-    full) echo "" ;; # 默认 feature：web + payments + papers（不含 opt-in 的 ai）
-    full-ai) echo "--features ai" ;; # 默认 feature + opt-in 的 ai
+    full) echo "" ;; # 默认 feature：web + payments
     *) echo "unknown tier: $1" >&2; exit 2 ;;
   esac
 }
 
-tiers=("${@:-basic ai accounts course full full-ai}")
+tiers=("${@:-basic accounts course full}")
 # shellcheck disable=SC2206
 tiers=(${tiers[*]})
 
@@ -27,9 +25,8 @@ for tier in "${tiers[@]}"; do
   base=$(tier_flags "$tier")
   for side in server web; do
     flags="$base --features $side"
-    # full / full-ai 的默认 feature 已含 web，无需重复传 `--features web`
+    # full 的默认 feature 已含 web，无需重复传 `--features web`
     [ "$tier" = full ] && [ "$side" = web ] && flags=""
-    [ "$tier" = full-ai ] && [ "$side" = web ] && flags="--features ai"
     printf '%-9s %-7s ' "$tier" "$side"
     # shellcheck disable=SC2086
     out=$(CARGO_TERM_COLOR=never cargo check -q -p app $flags 2>&1)
