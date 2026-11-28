@@ -1,0 +1,60 @@
+[package]
+name = "widgets"
+version = "0.3.0"
+edition = "2021"
+
+# widgets crate：MDX 渲染管道 + 嵌入组件注册表
+#
+# 设计目标：
+# - 与所有内容模块 (blog / course / docs / forum / cases) 共用
+# - 不直接依赖任何 module crate（通过 ComponentRegistry 动态注册组件）
+# - 仍可在 server feature 下编译（与 dioxus fullstack 保持一致）
+
+[dependencies]
+dioxus = { workspace = true, features = ["fullstack", "router"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_yaml = "0.9"
+chrono = { workspace = true, features = ["serde"] }
+pulldown-cmark = { version = "0.13.0", features = ["html"] }
+pulldown-latex = { workspace = true }
+tracing = { workspace = true }
+# 阅读页外壳与导航树（reading.rs）及代码对比标签页（mdx.rs）
+dioxus-shadcn = { workspace = true, features = ["code-tabs", "sidebar", "tree"] }
+
+# browser.rs：浏览器操作走 web-sys 直接调用，不经 document::eval（站点 CSP 无 unsafe-eval）
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+  "Clipboard",
+  "CssStyleDeclaration",
+  "Document",
+  "DomRect",
+  "DomTokenList",
+  "Element",
+  "EventTarget",
+  "HtmlDocument",
+  "HtmlElement",
+  "HtmlFormElement",
+  "KeyboardEvent",
+  "Location",
+  "MediaQueryList",
+  "Navigator",
+  "Node",
+  "NodeList",
+  "Storage",
+  "UrlSearchParams",
+  "Window",
+] }
+
+[dev-dependencies]
+# 渲染测试：把 Markdown 组件 SSR 成 HTML 字符串再断言
+dioxus-ssr = "0.7.9"
+
+[features]
+server = ["dioxus/server"]
+
+[lints]
+workspace = true

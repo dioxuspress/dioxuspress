@@ -1,0 +1,28 @@
+[package]
+name = "module-comments"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { workspace = true, features = ["fullstack", "router"] }
+serde = { workspace = true, features = ["derive"] }
+chrono = { workspace = true, features = ["serde"] }
+tokio = { workspace = true, features = ["full"], optional = true }
+sea-orm = { workspace = true, optional = true }
+sdk = { path = "../../sdk" }
+app-core = { path = "../../core" }
+# 仅 server feature 下启用：插件审核流水线，可选 / 默认 disabled。
+module-moderation = { path = "../moderation", optional = true }
+tracing = { workspace = true }
+
+[features]
+server = [
+    "dioxus/server",
+    "dep:tokio",
+    "dep:sea-orm",
+    "app-core/server",
+    "dep:module-moderation",
+]
+
+[lints]
+workspace = true

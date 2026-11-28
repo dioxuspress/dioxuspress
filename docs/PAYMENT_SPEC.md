@@ -1,0 +1,321 @@
+# 支付系统规范 (M5)：微信支付 + 支付宝（国内）
+
+> 本文是 M5 在线支付的落地设计。建立在 M4 付费地基之上：课程 `access_tier/price`、
+> `entitlements` 表、`get_lesson` 服务端鉴权、Paywall 已就绪（见
+> [SITE_REDESIGN_SPEC](./SITE_REDESIGN_SPEC.md) §5、[COURSE_SPEC](./COURSE_SPEC.md)）。
+> M5 只新增「下单 → 支付 → 回调 → 写权益」这条链路。
+
+## 1. 定位与范围
+- **网关**：支付宝（电脑网站 / 手机网站 / 扫码）+ 微信支付 v3（Native 扫码 / H5）。
+- **商品**：一次性购买单门课程；打赏（FEATURE_TIERS.md §6，`orders.product_kind` 区分）。订阅会员留 [M6]。
+- **不在范围**：发票开具、优惠券、分账。信用卡与海外支付方式见 §15（Stripe，阶段 I）。
+- **前置条件（业务侧）**：支付宝开放平台应用 + 网页支付能力；微信支付商户号（v3）。
+  两者均需**企业资质**与备案域名；本规范假定已具备。
+
+## 2. 数据模型
+
+新增 `orders` 表（SeaORM 实体 + 迁移，复刻 M4 entitlements 套路）：
+
+```
+orders(
+  id            bigserial PK,
+  out_trade_no  varchar(64) UNIQUE,   -- 我方订单号（下单时生成，传给网关）
+  user_id       int  FK users(id) ON DELETE CASCADE,
+  product_ref   varchar(128),         -- 课程 slug；打赏为页面路径（原名 course_slug，000009 改名）
+  product_kind  varchar(16) default 'course',  -- course | tip
+  provider      varchar(16),          -- alipay | wechat | stripe
+  scene         varchar(16),          -- native | h5 | page | wap | qr
+  amount        bigint,               -- 最小货币单位；下单时报价快照，回调时核验
+  currency      varchar(8) default 'CNY',
+  status        varchar(16) default 'pending',  -- pending|paid|failed|closed|refunded
+  provider_txn  varchar(64) null,     -- 网关流水号（transaction_id / trade_no）
+  created_at    timestamptz default now(),
+  paid_at       timestamptz null
+)
+索引：idx_orders_user(user_id)、idx_orders_status(status, created_at desc)
+```
+
+**与 entitlements 的关系**：课程订单 `paid` 时，幂等写入 `entitlements(user_id, course_slug,
+source='purchase')`（复用 M4 的 grant 逻辑）；打赏订单不发货。发货由 course 的 `deliver()`
+按 `product_kind` 分派，`pipeline` 只把订单快照交给它。`get_lesson` 鉴权天然解锁，无需改动。
+
+## 3. 整体流程（时序）
+
+```
+用户在 Paywall 点「购买」
+  → [client] create_order(course_slug, provider, scene)        server fn（需登录）
+       · 校验：课程 paid 且未拥有；价格快照
+       · 建 order(pending, out_trade_no)
+       · 调网关「统一下单」→ 拿 支付凭据
+       ← 返回 { kind, payload }：
+            page/wap → 跳转 URL（自动提交表单 / 302）
+            native   → code_url（前端渲染二维码）
+            h5       → h5_url（移动端跳转）
+  → 用户完成支付
+  → [网关] 异步回调 notify_url（Axum 原生路由，非 server fn）
+       · 验签（+ 微信 v3 AES-GCM 解密）
+       · 核验金额 == order.amount、状态成功
+       · 幂等：order 已 paid 则直接回 200/success
+       · 否则：order→paid + 写 entitlement(source=purchase)
+       · 按网关格式回应（微信 {code:SUCCESS} / 支付宝 "success"）
+  → [client] 扫码场景轮询 query_order(out_trade_no)；跳转场景靠 return_url
+       · status=paid → 刷新 list_my_entitlements → 解锁/跳转课节
+```
+
+## 4. 支付宝集成
+
+- **接口**
+  - 电脑网站：`alipay.trade.page.pay`（返回自动提交的 HTML 表单 → 跳转收银台）。
+  - 手机网站：`alipay.trade.wap.pay`。
+  - 扫码（当面付）：`alipay.trade.precreate` → `qr_code`；前端渲染二维码 + 轮询 `alipay.trade.query`。
+- **签名**：请求用我方应用私钥 RSA2 签名；回调/同步返回用**支付宝公钥**验签。
+- **回调**：`notify_url` 收 form-urlencoded，验签 + `trade_status ∈ {TRADE_SUCCESS, TRADE_FINISHED}`，
+  核 `out_trade_no` / `total_amount` / `app_id` / `seller_id`，幂等后回纯文本 `success`。
+- **同步返回**：`return_url` 仅用于前端体感跳转，**不作为发货依据**（以异步 notify 为准）。
+
+## 5. 微信支付 v3 集成
+
+- **接口**
+  - Native（PC 扫码）：`POST /v3/pay/transactions/native` → `code_url`（渲染二维码）。
+  - H5（移动浏览器）：`POST /v3/pay/transactions/h5` → `h5_url`。
+  - 查询：`GET /v3/pay/transactions/out-trade-no/{out_trade_no}?mchid=...`。
+  - （JSAPI/小程序需 openid，不在本期。）
+- **鉴权**：请求头 `Authorization: WECHATPAY2-SHA256-RSA2048 ...`，用**商户 API 私钥**签名
+  （method+url+timestamp+nonce+body）。
+- **回调验签 + 解密**：`notify_url` 收 JSON；用 `Wechatpay-Signature/-Timestamp/-Nonce/-Serial`
+  头 + **平台证书**验签；再用 `APIv3Key` 对 `resource`（AEAD_AES_256_GCM）解密得明文，
+  核 `out_trade_no` / `amount.total` / `trade_state=SUCCESS`，幂等后回 `{"code":"SUCCESS"}`。
+- **平台证书**：启动期或定时从 `GET /v3/certificates` 拉取并缓存（用于验签），随轮换刷新。
+
+## 6. 服务端接口
+
+**Dioxus server fn（业务、走 cookie 鉴权）**
+- `create_order(course_slug, provider, scene) -> OrderInit`：登录校验 + 建单 + 调网关下单。
+- `query_order(out_trade_no) -> OrderStatus`：扫码场景前端轮询（也可主动查网关回填）。
+- `list_my_orders() -> Vec<OrderInfo>`：我的订单（个人中心，可选）。
+- Admin：`list_orders` / `close_order` / `refund_order`（可选，M5e）。
+
+**Axum 原生路由（网关回调，加在 `main.rs::dioxus::serve` 的 router 定制处，与 ServeDir 并列）**
+- `POST /api/pay/alipay/notify`
+- `POST /api/pay/wechat/notify`
+- 回调处理器**不依赖 Dioxus 上下文**：直接读 body + 头，验签，更新 DB（共享连接池），
+  写 entitlement，返回网关要求的响应体。
+
+## 7. 客户端 UX
+- Paywall（M4c）/ 课程详情加「购买 ¥{价}」按钮 → 打开 **PurchaseModal**：
+  - 选 支付宝 / 微信；PC 默认 扫码/page，移动端 H5/wap（按 UA 或让用户选）。
+  - `page/wap/h5`：拿到 URL 后跳转（支付宝 page 用自动提交表单）。
+  - `native`：弹二维码（`code_url` → 前端二维码库渲染）；每 ~2s 轮询 `query_order`。
+- 支付成功（轮询到 paid 或 return_url 回站）→ 刷新权益 → 关闭 Paywall / 跳到课节。
+- 失败 / 超时（如 5 分钟）→ 提示重试；订单置 `closed`。
+
+## 8. 配置与密钥（`.env`，启动日志报告各网关状态，不回显）
+```
+# 支付宝
+ALIPAY_APP_ID=
+ALIPAY_APP_PRIVATE_KEY=        # 我方应用私钥（PEM）
+ALIPAY_PUBLIC_KEY=             # 支付宝公钥（验签）
+ALIPAY_GATEWAY=https://openapi.alipay.com/gateway.do
+# 微信支付 v3
+WECHAT_MCHID=
+WECHAT_APP_ID=                 # 绑定的 appid（Native/H5 需要）
+WECHAT_API_V3_KEY=            # APIv3 密钥（回调解密）
+WECHAT_MCH_PRIVATE_KEY=       # 商户 API 私钥（PEM）
+WECHAT_MCH_SERIAL_NO=         # 商户证书序列号
+WECHAT_PLATFORM_PUBLIC_KEY=   # 微信支付公钥（公钥模式，验回调签名）
+# 公共
+PAY_NOTIFY_BASE=https://<公网域名>   # 拼 notify/return URL；必须 HTTPS
+```
+- 密钥为 PEM（多行时加双引号）或去掉头尾行的单行 base64；`WECHAT_API_V3_KEY` 必须 32 字节。`ALIPAY_GATEWAY` 不填即正式网关。
+- 每个网关的变量缺一项或值格式不对，该网关就不启用。启动日志逐个网关报告（D1，`host::log_config_status`）：`payment gateway enabled` / `not configured` / `partly configured`（`missing=` 列出变量名）/ `value is malformed`。只输出变量名，不输出值。
+- Stripe 的变量见 §15.3。
+
+## 9. 幂等 / 安全 / 对账
+- **验签是发货前提**：任何未通过验签的回调一律拒绝，绝不据此发货。
+- **金额核验**：回调金额必须 == `order.amount`，币种 CNY；不符记异常、不发货。
+- **幂等**：以 `out_trade_no` 为键；`order.status==paid` 直接成功返回；`refunded` 的订单收到成功回调
+  只确认、记 pay_audit 告警，不认领不发货（H1，否则退款后网关重试会把订单改回 paid）；认领的条件
+  UPDATE 只接受 `pending` / `closed`；entitlement 用
+  `ON CONFLICT DO NOTHING/UPDATE`（M4 已是幂等）。
+- **回调可重复**：网关会重试直到收到成功响应 → 处理器必须可重入。
+- **对账（M5e，已实现）**：启动期定时任务（默认 300s 一轮，`PAY_RECONCILE_*`
+  可调，见 `.env.example`）扫 `pending` 超龄单→网关查单：已支付走统一流水线
+  回填发货；未支付超支付窗口（默认 2h）关单；查单失败绝不误关（fail-safe）。
+- **退款（M5e，已实现）**：admin 全额退款（/admin/entitlements 订单区块）；
+  我方退款单号 `{out_trade_no}R1` 作网关幂等键；受理后条件 UPDATE
+  `paid → refunded` + 仅撤销 `source=purchase` 权益。
+- **不记密钥日志**；HTTPS-only notify；out_trade_no 不可猜（含随机段）。
+
+## 10. Rust 依赖选型（生态优先，见 [[feedback_rust_ecosystem_first]]）
+- 候选：`wechat-pay-rust-sdk`（v3 Native/H5 + 回调解密）、`alipay-rs` / `alipay-sdk-rust`。
+- 选型前需核：维护活跃度、v3 平台证书轮换支持、AES-GCM 解密正确性。
+- 兜底：用 `rsa` + `sha2` + `base64` + `aes-gcm` 自行实现签名/验签/解密（v3 回调需 AES-256-GCM）。
+- 生产 HTTP 客户端正常走公网，无需测试用的 `.no_proxy()`。
+
+## 11. 本地开发与测试
+- **沙箱**：支付宝有沙箱（alipaydev）；微信 v3 用真实商户小额自测（沙箱能力有限）。
+- **公网回调**：本地需隧道（frp / ngrok / cloudflared）把 `PAY_NOTIFY_BASE` 指到本机
+  `dx serve`（参考 [[project_run_local]] localhost:8080）。
+- **回调单测**：对验签 / 解密 / 金额核验 / 幂等写权益做单元测试（构造签名样本），
+  无需真实网络。
+- **手动验证**：沙箱下单 → 完成支付 → 确认 order=paid、entitlement 写入、课节解锁。
+
+## 12. 分阶段（建议 Todos）
+- **M5a**：`orders` 实体 + 迁移；`create_order` / `query_order` server fn（先打通建单 +
+  状态机，网关调用可先 stub / 沙箱）。
+- **M5b**：支付宝接入（page/wap/precreate + `/api/pay/alipay/notify` 验签发货）。
+- **M5c**：微信支付 v3 接入（native/h5 + `/api/pay/wechat/notify` 验签+解密发货 + 平台证书）。
+- **M5d**：PurchaseModal（选网关 + 二维码/跳转 + 轮询解锁）；接到 Paywall / 课程详情。
+- **M5e（已完成）**：我的订单页、对账定时任务（查单回填/关单）、admin 全额退款。
+  ⚠️ 对账/退款的真实网关端到端验证仍待商户凭据。
+
+## 13. 风险与前置条件
+- **资质**：两网关均需企业商户号 + 备案 HTTPS 域名；个人主体无法开通 → 业务前置。
+- **微信 v3 复杂度**：平台证书轮换 + 回调 AES-GCM 解密是最易错处，务必单测覆盖。
+- **回调可达性**：notify URL 必须公网可达且 HTTPS；反代（Pingora/nginx）需放行 `/api/pay/*`。
+- **退款/客诉**：admin 全额退款已实现（M5e）；部分退款与客诉介入仍走网关后台。
+
+## 14. 架构：PaymentProvider trait + 可选 crate（PM1–PM5，2026-07-27）
+
+> 2026-07-27 评审结论落地：支付代码从 `module-course` 抽出为**可选 crate**
+> `crates/modules/payment`（feature 门控）。形态上优于 WASM 插件：支付是第一方
+> 代码，沙箱收益用不上；trait 边界提供编译期安全，与 `module-moderation`
+> 可选基设模式同构（[MODULE_SPEC](./MODULE_SPEC.md) §11.3）。
+
+### 14.1 分层与职责
+
+```text
+module-payment（依赖 core；不反向依赖任何业务模块）
+├── lib.rs      中立类型 + PaymentProvider trait（client/server 双目标可编译）
+│               OrderRequest / PayRequest / PayAction / OrderCall /
+│               NotifyPayload / PaymentEvent / PayError
+├── crypto.rs   (server) 宿主 crypto 工具：decode_key / rsa2_sign / rsa2_verify /
+│               aes256_gcm_decrypt —— 签名、验签、解密**不入 trait**
+├── alipay.rs   (server + feature "alipay") AlipayProvider：page/wap 签名直跳 =
+│               OrderCall::Direct；qr precreate = OrderCall::Http；回调验签工具
+├── wechat.rs   (server + feature "wechat") WechatProvider：native/h5 = Http +
+│               Authorization 头；回调验签 + resource 解密工具
+├── host.rs     (server) 宿主执行器：发送 PayRequest（HTTP IO 不进 Provider）；
+│               execute_order / execute_query / execute_refund
+├── pipeline.rs (server) 统一 notify 流水线：查单 → 金额核验（DB 快照为准）→
+│               幂等快路径 → 原子认领（条件 UPDATE）→ 注入发货回调 on_paid →
+│               pay_audit 审计（S6 成果收敛）；存储经 OrderStore trait 抽象
+└── reconcile.rs (server, M5e) 对账决策：网关已成功 → 同一流水线回填；
+                未支付超支付窗口 → 条件关单（竞态让位回调）；驱动器在
+                course + app 启动期定时任务（PAY_RECONCILE_*）
+
+module-course（payments feature，optional 依赖 module-payment）
+├── create_order：建单后 Provider::build_order + host::execute_order
+├── notify handler：宿主侧验签 / app_id / 时间戳 / 解密 / appid+mchid 校验 →
+│                   parse_notify 中立化 → pipeline::process_event（发货回调 =
+│                   grant_entitlement_internal，写 entitlements）
+└── pay_ui / PurchaseEntry：payments 关闭时退化「联系管理员开通」
+
+app（payments feature 默认开，级联 module-course/payments）
+└── pay_routes::mount：payments 关闭时恒等，/api/pay/* 不注册
+```
+
+`PaymentProvider` trait（纯构造 / 解析，无 IO）：`build_order` /
+`parse_order_response` / `parse_notify` + `build_query` / `parse_query`（M5e
+对账，双网关已实现）+ `build_refund` / `parse_refund`（M5e 退款，双网关已
+实现；新 Provider 未实现时默认 `Unsupported`）。
+
+### 14.2 feature 矩阵
+
+- `module-payment`：`alipay` / `wechat`（默认全开，可单独裁剪）+ `server`
+  （重依赖门控；web/wasm 目标只编译中立类型与 trait）。
+- `module-course`：`payments = ["dep:module-payment", "dep:fast_qr"]`；
+  `server` 经弱依赖 `module-payment?/server` 级联。
+- `app`：`default = ["web", "payments"]`，`payments = ["module-course/payments"]`。
+  禁用：`--no-default-features --features server|web`（CI 已覆盖双目标）。
+- 关闭 payments 后：`/api/pay/*` 不注册、订单 server fns 不存在、购买 UI /
+  我的订单退化占位；Paywall 鉴权不变，权益仍可由 `/admin/entitlements` 手动授予。
+
+### 14.3 未来 WASM 化的安全红线（Step 2，仅当出现第三网关/社区贡献需求时启动）
+
+trait 边界 = 未来 WASM ABI 边界，两路线不冲突。若把 Provider 下沉为沙箱插件，
+以下约束**不可妥协**：
+
+1. **密钥不进沙箱**：商户私钥 / APIv3Key 只存在于宿主 `crypto` 工具；插件只产出
+   待签名原文（`PayRequest.sign_payload`），签名结果由宿主回填。
+2. **验签 / 解密在宿主**：回调先经宿主验签（+解密）再进插件 `parse_notify`；
+   插件无法伪造“验签通过”。
+3. **收款方字段宿主注入**：`app_id` / `mchid` / 收款账号等由宿主配置强制覆盖，
+   插件构造的请求不得自行指定（防“改收款方”供应链攻击）。
+4. **金额核验 / 原子认领 / 发货永远在宿主流水线**（pipeline 不下沉）；插件只做
+   协议字段中立化，无 DB / 无发货能力。
+5. **强制 SHA256 lock**（`plugins_lock` 已随插件运行时在 R5 移除，届时需重建）：支付插件必须进 `plugins_lock`（Phase 9.2）且不允许
+   warn-only 降级——hash 不匹配直接拒载。
+
+## 15. 海外支付：Stripe + 按地区给出支付方式（阶段 I，2026-10-20）
+
+作者决定：信用卡与国外支付方式接 **Stripe**（作者有可开 Stripe 的海外主体）；课程可**另设美元价**，海外访客按美元付，没设美元价的课程仍按人民币收。
+
+### 15.1 现状（证据）
+
+- 网关经 `PaymentProvider` trait 接入（§14），Provider 只构造请求 / 解析响应，签名与 HTTP 在宿主。Stripe 的「建 Checkout Session → 跳转 → webhook」正好是 `OrderCall::Http` + `PayAction::PayUrl` + `parse_notify`，trait 不用改。
+- 网关分派写死在 4 处 `match provider`：`create_order`、`reconcile_pending_orders_once`、`admin_refund_order` 与回调路由。
+- 每门课只有一个价格（`price` + `currency`，实际都是 CNY）。
+- 部署是自建 Pingora 网关直接终结 TLS，前面没有 CDN，拿不到 CDN 给的国家头。
+- `pay_ui` 全中文。阶段 O 给它写过重估条件：出现支付宝 / 微信之外的渠道时重新评估 i18n。Stripe 正好触发这一条。
+
+### 15.2 设计决定
+
+**DI1 用 Stripe Checkout（托管收银台），不用 Elements。** 卡号不经过本站（PCI 最轻的 SAQ A）；Checkout 按 Stripe 后台配置自动展示卡、Apple Pay、Google Pay、Link 以及各国本地方式（包括 Stripe 渠道的支付宝 / 微信），新增方式不用改代码；Elements 要加载 Stripe.js 并放宽 CSP。
+
+**DI2 地区按浏览器时区判断，不按 IP。** 时区为中国大陆（`Asia/Shanghai` `Asia/Urumqi` `Asia/Chongqing` `Asia/Harbin` `PRC`）记为「中国大陆」，其余为「海外」；弹窗里可以手动切换。不用 IP 的原因：一是要随镜像带 GeoIP 库并按月更新；二是本站读者（Rust 开发者）开代理很常见，按 IP 会把大陆用户判成海外。地区只决定展示哪些方式、按哪种货币报价，金额永远由服务端从课程数据算出，所以客户端声明地区不构成绕过。
+重估条件：网关前加了会注入国家头的 CDN——`grep -rniE 'cf-ipcountry|x-country-code' crates/gateway deploy docker-compose*.yml 2>/dev/null` 有输出。
+
+**DI3 报价是纯函数 `quote(course, provider, region)`。**
+- 支付宝 / 微信：只收 CNY，按 `price`；课程币种不是 CNY 时拒绝。
+- Stripe：海外且设了 `price_usd`，按 USD；否则按 `price` + `currency`。
+
+`course.yaml` 只加一个可选字段 `price_usd`（美分）。只有第二种货币，不做通用的多币种价格表。
+
+**DI4 地区 → 支付方式。**
+- 中国大陆：支付宝、微信、银行卡（Stripe）。
+- 海外：Stripe。
+
+列表再与服务端实际配置的网关取交集（新 server fn `payment_providers()`），没配的网关不出现，免得用户点了才报「未配置」。
+
+**DI5 对账与退款。**
+- 对账用 PaymentIntent 搜索：`metadata['out_trade_no']`。下单时把单号写进 `payment_intent_data[metadata]`。
+- 没搜到（用户没完成支付）按未支付处理，超出支付窗口后关单。
+- 退款按 PaymentIntent id（回调时存进 `orders.provider_txn`）。为此 `RefundRequest` 加 `txn_id`。
+- 搜索接口有约 1 分钟的延迟，对账最小单龄是 300s，不受影响。
+
+**DI6 webhook 验签**：`Stripe-Signature` 的 `t` / `v1`，HMAC-SHA256(`{t}.{body}`, webhook secret)，常数时间比较，时间戳 ±300s（与微信一致）。
+- 处理的事件：`checkout.session.completed`、`checkout.session.async_payment_succeeded`，两者都要求 `payment_status == "paid"` 才算成功。
+- 全额退款与拒付（H2）：`charge.refunded` 且 `refunded == true`、`charge.dispute.created` → 按 `payment_intent` 找 `provider_txn` 相同的订单，`paid → refunded` 并撤销 `source=purchase` 权益（与管理员退款共用 `mark_refunded`）。部分退款不处理；拒付按退款处理，赢了拒付由管理员重新授予。我方管理员退款同样会触发 `charge.refunded`，订单已是 refunded，直接确认。找不到订单也确认收到。
+- 其他事件确认收到，不发货。
+- 验签失败回 400；处理失败回 500，让 Stripe 重试。
+
+**DI7 流水线不加币种核验。** Session 由服务端用订单的币种创建，回调经我方 webhook secret 验签，币种不可能与订单不同。
+重估条件：新增网关（可能由客户端或第三方创建支付会话）——`find crates/modules/payment/src -maxdepth 1 -name '*.rs' -exec basename {} \; | grep -vxE '(lib|crypto|host|pipeline|reconcile|alipay|wechat|stripe)\.rs'` 有输出。
+
+**DI8 API 版本固定。** 请求头带 `Stripe-Version: 2024-06-20`，响应结构不随账户默认版本漂移。
+
+### 15.3 配置
+
+```
+STRIPE_SECRET_KEY=sk_live_...      # 测试用 sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...    # Dashboard webhook 或 `stripe listen` 给出
+# 复用 PAY_NOTIFY_BASE：success / cancel 回到 {base}/course/{slug}
+```
+
+Webhook 地址：`{PAY_NOTIFY_BASE}/api/pay/stripe/notify`，订阅上面两个事件。
+
+### 15.4 任务（Todos 阶段 I）
+
+1. **I1 报价与地区**：`price_usd`、`Region`、`quote`、`methods_for(region, configured)`，均为纯函数加单测。
+2. **I2 `StripeProvider`**（`module-payment` 的 `stripe` feature）：下单、回调解析、查单、退款，外加 `verify_signature`。单测用 Stripe 文档形状的样本，验签用独立算出的 HMAC 向量，并反向验证篡改 body / 过期时间戳会失败。
+3. **I3 接线**：
+   - `create_order` 加 `region` 参数；
+   - 新增 `payment_providers()`；
+   - 对账、退款分派 Stripe；
+   - `/api/pay/stripe/notify` 路由；
+   - 订单列表带币种；
+   - `.env.example`。
+4. **I4 界面**：时区判断地区；按地区显示价格（课程详情、付费墙、首页课程卡）和支付方式；可手动切换；我的订单按币种显示金额。
+5. **I5 支付界面 i18n**：购买弹窗与我的订单接入中英文（阶段 O 写下的重估条件已触发）。
+6. **I6 端到端验证**：用 Stripe 测试模式（`sk_test_` + `stripe listen`）走完下单、支付、回调发货、对账、退款。**需要作者提供测试密钥**，未提供前保持未完成。

@@ -1,0 +1,296 @@
+use dioxus::fullstack::{post, ServerFnError};
+#[allow(unused_imports)]
+use dioxus::prelude::*;
+#[allow(unused_imports)]
+use std::fs;
+#[allow(unused_imports)]
+use std::path::PathBuf;
+
+/// 允许上传的最大字节数（5MB）
+#[cfg(feature = "server")]
+const UPLOAD_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+/// 允许上传的图片扩展名白名单
+#[cfg(feature = "server")]
+const UPLOAD_ALLOWED_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+
+/// 写盘前的第一道大小防线：取出 base64 负载（接受 `data:URL` 或裸 base64），
+/// 按长度估算解码后字节数（`len * 3/4` 减去末尾 `=` 的个数），超出 `UPLOAD_MAX_BYTES` 即拒绝。
+/// 在分配解码缓冲区之前拦截超大负载，返回提取出的裸 base64 切片。
+#[cfg(feature = "server")]
+pub(crate) fn check_upload_size(data_base64: &str) -> Result<&str, String> {
+  let base64_str = data_base64.split(',').next_back().unwrap_or(data_base64);
+  // 末尾每个 `=` 少解码出一个字节；不减的话正好 5 MiB 的图会被估成 5 MiB + 1 而拒绝
+  let padding = base64_str.bytes().rev().take(2).filter(|&b| b == b'=').count();
+  let estimated_bytes = (base64_str.len().saturating_mul(3) / 4).saturating_sub(padding);
+  if estimated_bytes > UPLOAD_MAX_BYTES {
+    return Err(format!("文件过大（限制 {} MB）", UPLOAD_MAX_BYTES / 1024 / 1024));
+  }
+  Ok(base64_str)
+}
+
+/// 检测上传文件的 MIME 类型。针对 png/jpg/gif/webp 的 magic bytes 进行验证。
+/// 返回 "mime/subtype" 或 None。
+#[cfg(feature = "server")]
+pub(crate) fn sniff_image_mime(data: &[u8]) -> Option<&'static str> {
+  if data.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+    return Some("image/png");
+  }
+  if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+    return Some("image/jpeg");
+  }
+  if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+    return Some("image/gif");
+  }
+  // WebP 的 magic：RIFF????WEBP
+  if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+    return Some("image/webp");
+  }
+  None
+}
+
+/// 生成一个安全的上传文件名。去除路径分隔符与隐藏路径，只保留 ASCII 字母 / 数字 / `_-.` 。
+/// 返回例子：`1747200000_a1b2c3.png`
+#[cfg(feature = "server")]
+pub(crate) fn safe_upload_filename(original: &str, mime: &str) -> Result<String, String> {
+  use rand::Rng;
+  use std::path::Path;
+
+  // 1. 按 mime 推断扩展名
+  let ext = match mime {
+    "image/png" => "png",
+    "image/jpeg" => "jpg",
+    "image/gif" => "gif",
+    "image/webp" => "webp",
+    _ => return Err(format!("不支持的图片类型: {}", mime)),
+  };
+
+  // 2. 仅提取原始文件名的"stem"，忽略原扩展名，过滤不安全字符
+  let stem = Path::new(original).file_stem().and_then(|s| s.to_str()).unwrap_or("upload");
+  let safe_stem: String =
+    stem.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')).take(40).collect();
+  let safe_stem = if safe_stem.is_empty() { "upload".to_string() } else { safe_stem };
+
+  // 3. 拼接随机后缀避免冲突
+  let suffix: String =
+    rand::rng().sample_iter(&rand::distr::Alphanumeric).take(6).map(|b| b as char).collect();
+  Ok(format!("{}_{}_{}.{}", chrono::Utc::now().timestamp(), safe_stem, suffix, ext))
+}
+
+#[post("/api/upload")]
+pub async fn upload_image(name: String, data_base64: String) -> Result<String, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::engines::moderation::ModerationLabel;
+    use app_core::session::{current_session_user, require_session_verified};
+    use base64::Engine as _;
+    use module_moderation::{enqueue_if_flagged, evaluate_submission};
+    use sdk::{ImageRef, ModerationSubmission};
+
+    // 0. Phase 8.2：匿名上传不再被允许。任何写盘 IO 必须有合法会话；
+    //    如未来需要匿名图床通道，单开 `/api/upload/public` + 严格 rate limit。
+    // S4：写路径用 verified 会话（DB 回查 token_version，支持即时吊销）
+    require_session_verified().await?;
+
+    // 1. 取出 Base64 负载并按长度估算提前拒绝超大负载（写盘前第一道防线）
+    let base64_str = check_upload_size(&data_base64).map_err(ServerFnError::new)?;
+
+    let data = base64::engine::general_purpose::STANDARD
+      .decode(base64_str)
+      .map_err(|e| ServerFnError::new(format!("解码失败: {}", e)))?;
+
+    // 3. 硬限制：解码后不能超过 5MB
+    if data.len() > UPLOAD_MAX_BYTES {
+      return Err(ServerFnError::new(format!(
+        "文件过大（限制 {} MB）",
+        UPLOAD_MAX_BYTES / 1024 / 1024
+      )));
+    }
+
+    // 4. 检测 MIME 类型是否为允许的图片格式
+    let mime = sniff_image_mime(&data)
+      .ok_or_else(|| ServerFnError::new("仅支持 png / jpg / gif / webp 图片".to_string()))?;
+
+    // 5. 生成安全文件名，按 MIME 决定扩展名
+    let filename = safe_upload_filename(&name, mime).map_err(ServerFnError::new)?;
+
+    // 6. 验证扩展名为白名单（双保险）
+    let ext_ok = std::path::Path::new(&filename)
+      .extension()
+      .and_then(|s| s.to_str())
+      .map(|e| UPLOAD_ALLOWED_EXTS.contains(&e))
+      .unwrap_or(false);
+    if !ext_ok {
+      return Err(ServerFnError::new("不允许的文件扩展名".to_string()));
+    }
+
+    // 7. ── 审核：在写盘前用 base64 data URL 调 vision LLM ──
+    // 注意：用 base64 内联避免把私有图暴露给 LLM 供商前 URL；
+    // 默认 moderation.enabled = false → pipeline 空，直接 Allow。
+    let session_user = current_session_user();
+    let session_id = session_user.as_ref().map(|u| u.id);
+    let session_nick = session_user.as_ref().map(|u| u.nickname.clone()).unwrap_or_default();
+    let data_url =
+      format!("data:{};base64,{}", mime, base64::engine::general_purpose::STANDARD.encode(&data));
+    let saved_url = format!("/uploads/{}", filename);
+    let submission = ModerationSubmission::new("用户上传的图片")
+      .with_kind("upload")
+      .with_ref_path(&saved_url)
+      .with_images(vec![ImageRef::url(data_url).with_media_type(mime)]);
+    let verdict = evaluate_submission(submission).await;
+    if verdict.label == ModerationLabel::Block {
+      tracing::warn!(
+          user = %session_nick,
+          filename = %filename,
+          score = verdict.score,
+          reason = %verdict.reason,
+          "moderation: upload BLOCKED (not saved)"
+      );
+      return Err(ServerFnError::new(format!(
+        "图片被审核拒绝：{}",
+        if verdict.reason.is_empty() {
+          "未通过内容审核".to_string()
+        } else {
+          verdict.reason
+        }
+      )));
+    }
+
+    // 8. 写盘
+    let dir_path = app_core::utils::get_asset_root().join("uploads");
+    if !dir_path.exists() {
+      fs::create_dir_all(&dir_path).map_err(|e| ServerFnError::new(e.to_string()))?;
+    }
+    let path = dir_path.join(&filename);
+    fs::write(&path, &data).map_err(|e| ServerFnError::new(format!("保存失败: {}", e)))?;
+
+    // 9. Flag → 入审核队列。ref_id 留 None（upload 无独立业务表）；
+    //    队列里记录保存后的 URL 让 admin 可以直接预览。
+    let db_opt = app_core::db::get_or_init_pool().await.ok();
+    if let Some(db) = db_opt {
+      enqueue_if_flagged(
+        &db,
+        &verdict,
+        "upload",
+        None,
+        &saved_url,
+        session_id,
+        "用户上传的图片",
+        std::slice::from_ref(&saved_url),
+      )
+      .await;
+    }
+
+    Ok(saved_url)
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (name, data_base64);
+    Ok("".to_string())
+  }
+}
+
+// ========== Tests ==========
+
+#[cfg(all(test, feature = "server"))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_sniff_png_magic() {
+    let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0xFF];
+    assert_eq!(sniff_image_mime(&png), Some("image/png"));
+  }
+
+  #[test]
+  fn test_sniff_jpeg_magic() {
+    let jpg = [0xFF, 0xD8, 0xFF, 0xE0, 0xFF];
+    assert_eq!(sniff_image_mime(&jpg), Some("image/jpeg"));
+  }
+
+  #[test]
+  fn test_sniff_gif_magic() {
+    assert_eq!(sniff_image_mime(b"GIF89a\x00"), Some("image/gif"));
+    assert_eq!(sniff_image_mime(b"GIF87a\x00"), Some("image/gif"));
+  }
+
+  #[test]
+  fn test_sniff_webp_magic() {
+    let webp = b"RIFF\x00\x00\x00\x00WEBPVP8";
+    assert_eq!(sniff_image_mime(webp), Some("image/webp"));
+  }
+
+  #[test]
+  fn test_sniff_rejects_non_image_payload() {
+    // 可执行文件 / 脚本 / 随机字节都应被拒绝
+    assert_eq!(sniff_image_mime(b"#!/bin/bash\necho hi"), None);
+    assert_eq!(sniff_image_mime(b"<script>alert(1)</script>"), None);
+    assert_eq!(sniff_image_mime(&[0u8; 4]), None);
+  }
+
+  #[test]
+  fn test_safe_filename_strips_path_traversal() {
+    let name = safe_upload_filename("../../etc/passwd", "image/png").unwrap();
+    assert!(name.ends_with(".png"));
+    assert!(!name.contains(".."));
+    assert!(!name.contains('/'));
+    assert!(!name.contains('\\'));
+  }
+
+  #[test]
+  fn test_safe_filename_unicode_collapses_to_default_stem() {
+    // 中文 / 特殊字符全部过滤后变空，退化为 "upload"
+    let name = safe_upload_filename("测试.png", "image/png").unwrap();
+    assert!(name.ends_with(".png"));
+    assert!(name.contains("upload"));
+  }
+
+  #[test]
+  fn test_safe_filename_rejects_unsupported_mime() {
+    let result = safe_upload_filename("x.bmp", "image/bmp");
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn test_check_upload_size_accepts_small_payload() {
+    let payload = "AAAA".repeat(10);
+    assert_eq!(check_upload_size(&payload).unwrap(), payload);
+  }
+
+  #[test]
+  fn test_check_upload_size_strips_data_url_prefix() {
+    assert_eq!(check_upload_size("data:image/png;base64,QUJD").unwrap(), "QUJD");
+  }
+
+  #[test]
+  fn test_check_upload_size_rejects_oversize() {
+    // 长度取至 estimated_bytes (len*3/4) 必然 > 5MB 上限
+    let over_len = UPLOAD_MAX_BYTES / 3 * 4 + 16;
+    let payload = "A".repeat(over_len);
+    let err = check_upload_size(&payload).unwrap_err();
+    assert!(err.contains("过大"));
+  }
+
+  #[test]
+  fn test_check_upload_size_accepts_exact_limit_with_padding() {
+    // 5 MiB = 3 × 1747626 + 2，base64 为 1747627 组、末尾 1 个 `=`
+    let payload = format!("{}=", "A".repeat(6_990_507));
+    assert!(check_upload_size(&payload).is_ok());
+  }
+
+  #[test]
+  fn test_check_upload_size_rejects_one_byte_over_limit() {
+    // 1747627 组、无填充，解码后 5 MiB + 1 字节
+    let payload = "A".repeat(6_990_508);
+    assert!(check_upload_size(&payload).is_err());
+  }
+
+  #[test]
+  fn test_safe_filename_extension_matches_mime() {
+    // 原始名字谎报扩展名，最终付文件名仍按检测出的 MIME 打定扩展名
+    let name = safe_upload_filename("photo.exe", "image/jpeg").unwrap();
+    assert!(name.ends_with(".jpg"));
+    assert!(!name.ends_with(".exe"));
+  }
+}

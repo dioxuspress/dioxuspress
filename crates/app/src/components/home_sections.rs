@@ -1,0 +1,387 @@
+//! 首页分区组件（M2）。
+//!
+//! 围绕「Rust 生态 + AI 生态」双支柱组织首页：生态 pillars、精选案例、课程、
+//! 社区动态等。数据来源沿用各模块 server fn；SEO 关键区用 `use_server_future`
+//! 配合 `SuspenseBoundary`（与内容页一致），社区/DB 区用 `use_resource`。
+//! 详见 `docs/SITE_REDESIGN_SPEC.md` 第 4 节。
+
+use dioxus::prelude::*;
+use dioxus::router::Link;
+use dioxus_shadcn::{Spinner, SpinnerSize};
+
+use crate::components::layouts::NavEcosystem;
+use crate::components::view::Container;
+use crate::i18n::{t, use_i18n};
+use module_blog::server::{latest_blog_posts, BlogPostSummary};
+use module_cases::server::{list_cases, CaseSummary};
+#[cfg(feature = "course")]
+use module_course::server::{list_courses, CourseSummary};
+#[cfg(feature = "accounts")]
+use module_forum::server::{list_topics, TopicSummary};
+
+/// 生态支柱卡片：各列子领域 chips（链接到领域路由）。
+/// `enabled` 用于隐藏被关闭模块对应的领域，与导航保持一致。
+#[component]
+pub fn EcosystemPillars(
+  enabled: Vec<String>,
+  #[props(default)] ecosystems: Option<Vec<NavEcosystem>>,
+) -> Element {
+  let lang = use_i18n();
+  let items = ecosystems.unwrap_or_default();
+  if items.is_empty() {
+    return rsx! {};
+  }
+  rsx! {
+      section { class: "py-16 sm:py-20 bg-slate-50/60 dark:bg-slate-900/40 border-y border-slate-200/70 dark:border-slate-800",
+          Container {
+              div { class: "grid grid-cols-1 md:grid-cols-2 gap-6",
+                  for eco in items.into_iter() {
+                      {
+                          let domains: Vec<_> = eco.domains.iter().filter(|d| enabled.iter().any(|e| e == d.module_id)).cloned().collect();
+                          let eco_href = format!("/ecosystem/{}", eco.id);
+                          rsx! {
+                              div { key: "{eco.id}", class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-7 flex flex-col",
+                                  h3 { class: "text-2xl font-extrabold tracking-tight text-flow", "{t(lang(), eco.label_key)}" }
+                                  p { class: "mt-2 text-slate-600 dark:text-slate-400 leading-relaxed", "{t(lang(), eco.blurb_key)}" }
+                                  div { class: "mt-5 flex flex-wrap gap-2",
+                                      for d in domains.iter() {
+                                          Link {
+                                              key: "{d.id}",
+                                              to: d.path,
+                                              class: "inline-flex items-center rounded-full border border-slate-200 dark:border-slate-700 px-3 py-1 text-sm text-slate-700 dark:text-slate-200 hover:border-[var(--color-primary)] hover:text-[var(--color-primary)] transition-colors",
+                                              "{t(lang(), d.label_key)}"
+                                          }
+                                      }
+                                  }
+                                  Link {
+                                      to: eco_href,
+                                      class: "mt-6 inline-flex items-center gap-1 text-sm font-semibold text-[var(--color-primary)] hover:underline",
+                                      "{t(lang(), \"eco.enter\")}"
+                                      svg { class: "w-4 h-4", fill: "none", stroke: "currentColor", view_box: "0 0 24 24", stroke_width: "2",
+                                          path { stroke_linecap: "round", stroke_linejoin: "round", d: "M9 5l7 7-7 7" }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+      }
+  }
+}
+
+/// 分区头部：左标题/副标题 + 右「查看全部」链接（复用于精选案例 / 课程）。
+#[component]
+pub fn SectionHeader(title: String, subtitle: String, all_label: String, to: String) -> Element {
+  rsx! {
+      div { class: "flex items-end justify-between gap-4 mb-10",
+          div {
+              h2 { class: "text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white", "{title}" }
+              p { class: "mt-2 text-slate-600 dark:text-slate-400", "{subtitle}" }
+          }
+          Link {
+              to,
+              class: "shrink-0 hidden sm:inline-flex items-center gap-1 text-sm font-medium text-[var(--color-primary)] hover:underline",
+              "{all_label}"
+              svg { class: "w-4 h-4", fill: "none", stroke: "currentColor", view_box: "0 0 24 24", stroke_width: "2",
+                  path { stroke_linecap: "round", stroke_linejoin: "round", d: "M9 5l7 7-7 7" }
+              }
+          }
+      }
+  }
+}
+
+/// 加载占位 spinner（SEO 区数据 SSR 预取，spinner 仅作 hydration 兜底）。
+fn loading_spinner() -> Element {
+  rsx! {
+      div { class: "flex items-center justify-center py-16",
+          Spinner { size: SpinnerSize::Lg, class: "border-t-primary" }
+      }
+  }
+}
+
+// ── 精选案例 ──────────────────────────────────────────────
+
+/// 精选案例分区：旗舰位，展示工业实践 Rust 项目（`cases.favorite`）。
+#[component]
+pub fn FeaturedCases() -> Element {
+  let lang = use_i18n();
+  rsx! {
+      section { class: "py-20 bg-white dark:bg-slate-950",
+          Container {
+              SectionHeader {
+                  title: t(lang(), "home.featured.title"),
+                  subtitle: t(lang(), "home.featured.subtitle"),
+                  all_label: t(lang(), "home.featured.all"),
+                  to: "/case".to_string(),
+              }
+              SuspenseBoundary {
+                  fallback: |_| loading_spinner(),
+                  FeaturedCasesInner {}
+              }
+          }
+      }
+  }
+}
+
+#[component]
+fn FeaturedCasesInner() -> Element {
+  let lang = use_i18n();
+  let res =
+    use_server_future(|| async move { list_cases(None, None, None).await.unwrap_or_default() })?;
+  let all = res().unwrap_or_default();
+  // 优先精选；无精选则回退到最新 6 条，保证旗舰位不空。
+  let mut picks: Vec<CaseSummary> = all.iter().filter(|c| c.favorite).cloned().collect();
+  if picks.is_empty() {
+    picks = all.clone();
+  }
+  let picks: Vec<CaseSummary> = picks.into_iter().take(6).collect();
+
+  rsx! {
+      if picks.is_empty() {
+          p { class: "text-center text-slate-400 py-10", "{t(lang(), \"home.featured.empty\")}" }
+      } else {
+          div { class: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6",
+              for c in picks.into_iter() {
+                  CaseCard { key: "{c.slug}", case: c }
+              }
+          }
+      }
+  }
+}
+
+#[component]
+pub fn CaseCard(case: CaseSummary) -> Element {
+  let href = format!("/case/{}", case.slug);
+  rsx! {
+      Link {
+          to: href,
+          class: "group flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden hover:shadow-lg transition-all",
+          if let Some(cover) = case.cover_url.clone() {
+              img { src: "{cover}", class: "h-36 w-full object-cover", alt: "{case.name}", loading: "lazy" }
+          }
+          div { class: "p-5 flex flex-col flex-1",
+              div { class: "flex items-center gap-2 mb-2",
+                  span { class: "text-xs px-2 py-0.5 rounded-full bg-[var(--color-primary)]/10 text-[var(--color-primary)] font-medium", "{case.category}" }
+                  if case.stars > 0 {
+                      span { class: "inline-flex items-center gap-0.5 text-xs text-slate-400", "★ {case.stars}" }
+                  }
+              }
+              h3 { class: "font-bold text-slate-900 dark:text-white group-hover:text-[var(--color-primary)] transition-colors", "{case.name}" }
+              p { class: "mt-1 text-sm text-slate-600 dark:text-slate-400 line-clamp-2 flex-1", "{case.description}" }
+          }
+      }
+  }
+}
+
+// ── 课程 ──────────────────────────────────────────────────
+
+/// 课程分区：体系化 Rust / AI 实战课程（付费层级/资源徽章见 M4）。
+#[cfg(feature = "course")]
+#[component]
+pub fn CourseShowcase() -> Element {
+  let lang = use_i18n();
+  rsx! {
+      section { class: "py-20 bg-slate-50/60 dark:bg-slate-900/40 border-y border-slate-200/70 dark:border-slate-800",
+          Container {
+              SectionHeader {
+                  title: t(lang(), "home.courses.title"),
+                  subtitle: t(lang(), "home.courses.subtitle"),
+                  all_label: t(lang(), "home.courses.all"),
+                  to: "/course".to_string(),
+              }
+              SuspenseBoundary {
+                  fallback: |_| loading_spinner(),
+                  CourseShowcaseInner {}
+              }
+          }
+      }
+  }
+}
+
+#[cfg(feature = "course")]
+#[component]
+fn CourseShowcaseInner() -> Element {
+  let lang = use_i18n();
+  let res = use_server_future(|| async move { list_courses().await.unwrap_or_default() })?;
+  let courses = res().unwrap_or_default();
+  let picks: Vec<CourseSummary> = courses.into_iter().take(3).collect();
+
+  rsx! {
+      if picks.is_empty() {
+          p { class: "text-center text-slate-400 py-10", "{t(lang(), \"home.courses.empty\")}" }
+      } else {
+          div { class: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6",
+              for c in picks.into_iter() {
+                  CourseCard { key: "{c.slug}", course: c }
+              }
+          }
+      }
+  }
+}
+
+#[cfg(feature = "course")]
+#[component]
+fn CourseCard(course: CourseSummary) -> Element {
+  let lang = use_i18n();
+  let first = course.title.chars().next().unwrap_or('R');
+  let lessons = format!("{} {}", course.lesson_count, lang().pick("节课", "lessons"));
+  let region = module_course::pricing::use_region();
+  // 价格/层级徽章：pro → "Pro"，paid 且有价 → 按地区的标价，free → 无。
+  let price_label = if course.access_tier == "pro" {
+    Some("Pro".to_string())
+  } else if course.access_tier == "paid" && course.price > 0 {
+    Some(course.pricing().list_price(region).label())
+  } else {
+    None
+  };
+  let href = format!("/course/{}", course.slug);
+  rsx! {
+      Link {
+          to: href,
+          class: "group flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden hover:shadow-lg transition-all",
+          if let Some(cover) = course.cover.clone() {
+              img { src: "{cover}", class: "h-36 w-full object-cover", alt: "{course.title}", loading: "lazy" }
+          } else {
+              div { class: "h-36 w-full bg-linear-to-br from-[var(--color-primary)]/15 to-[var(--color-primary)]/5 flex items-center justify-center text-3xl font-extrabold text-[var(--color-primary)]/60",
+                  "{first}"
+              }
+          }
+          div { class: "p-5 flex flex-col flex-1",
+              div { class: "flex items-center gap-2 mb-2 text-xs text-slate-400",
+                  if let Some(level) = course.level.clone() {
+                      span { class: "px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-medium", "{level}" }
+                  }
+                  span { "{lessons}" }
+                  if let Some(pl) = price_label.clone() {
+                      span { class: "ml-auto px-2 py-0.5 rounded-full bg-[var(--color-primary)]/10 text-[var(--color-primary)] font-semibold", "{pl}" }
+                  }
+              }
+              h3 { class: "font-bold text-slate-900 dark:text-white group-hover:text-[var(--color-primary)] transition-colors", "{course.title}" }
+              p { class: "mt-1 text-sm text-slate-600 dark:text-slate-400 line-clamp-2 flex-1", "{course.description}" }
+          }
+      }
+  }
+}
+
+// ── 社区动态 ──────────────────────────────────────────────
+
+/// 社区动态：左「最新博客」（SSR 预取）+ 右「论坛热帖」（DB，use_resource）。
+/// `blog` / `forum`：对应模块是否启用，关掉的一栏不渲染。
+#[component]
+pub fn CommunityFeed(blog: bool, forum: bool) -> Element {
+  let lang = use_i18n();
+  let grid =
+    if blog && forum { "grid grid-cols-1 lg:grid-cols-2 gap-6" } else { "grid grid-cols-1 gap-6" };
+  rsx! {
+      section { class: "py-20 bg-white dark:bg-slate-950",
+          Container {
+              div { class: "mb-10",
+                  h2 { class: "text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white", "{t(lang(), \"home.community.title\")}" }
+                  p { class: "mt-2 text-slate-600 dark:text-slate-400", "{t(lang(), \"home.community.subtitle\")}" }
+              }
+              div { class: grid,
+                  if blog {
+                      div { class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 p-5",
+                          div { class: "flex items-center justify-between mb-3",
+                              h3 { class: "text-sm font-semibold text-slate-700 dark:text-slate-200", "{t(lang(), \"home.community.blog\")}" }
+                              Link { to: "/blog", class: "text-xs text-[var(--color-primary)] hover:underline", "{t(lang(), \"home.community.blog_all\")}" }
+                          }
+                          SuspenseBoundary { fallback: |_| loading_spinner(), BlogColumn {} }
+                      }
+                  }
+                  if forum {
+                      div { class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 p-5",
+                          div { class: "flex items-center justify-between mb-3",
+                              h3 { class: "text-sm font-semibold text-slate-700 dark:text-slate-200", "{t(lang(), \"home.community.forum\")}" }
+                              Link { to: "/topics", class: "text-xs text-[var(--color-primary)] hover:underline", "{t(lang(), \"home.community.forum_all\")}" }
+                          }
+                          {forum_column()}
+                      }
+                  }
+              }
+          }
+      }
+  }
+}
+
+#[component]
+fn BlogColumn() -> Element {
+  let lang = use_i18n();
+  let res = use_server_future(|| async move { latest_blog_posts(4).await.unwrap_or_default() })?;
+  let posts: Vec<BlogPostSummary> = res().unwrap_or_default();
+  rsx! {
+      if posts.is_empty() {
+          p { class: "text-sm text-slate-400 py-6 text-center", "{t(lang(), \"home.community.blog_empty\")}" }
+      } else {
+          div { class: "divide-y divide-slate-200 dark:divide-slate-800",
+              for p in posts.into_iter() {
+                  Link {
+                      key: "{p.slug}",
+                      to: format!("/blog/{}", p.slug),
+                      class: "group block py-3",
+                      div { class: "flex items-baseline justify-between gap-3",
+                          span { class: "font-medium text-slate-800 dark:text-slate-100 group-hover:text-[var(--color-primary)] transition-colors line-clamp-1", "{p.title}" }
+                          span { class: "shrink-0 text-xs text-slate-400 tabular-nums", "{p.date}" }
+                      }
+                      p { class: "mt-0.5 text-sm text-slate-500 dark:text-slate-400 line-clamp-1", "{p.description}" }
+                  }
+              }
+          }
+      }
+  }
+}
+
+/// 论坛热帖栏（accounts 层）；未编译论坛时为空（`forum` 恒为 false，不会渲染到这里）。
+fn forum_column() -> Element {
+  #[cfg(feature = "accounts")]
+  {
+    rsx! { ForumColumn {} }
+  }
+  #[cfg(not(feature = "accounts"))]
+  {
+    rsx! {}
+  }
+}
+
+#[cfg(feature = "accounts")]
+#[component]
+fn ForumColumn() -> Element {
+  let lang = use_i18n();
+  // 论坛走 DB，用 use_resource（非 SEO、可能未连库）。失败与「空」分开显示。
+  let res = use_resource(|| async move { list_topics(None, Some(0)).await });
+  let state = res.read().as_ref().map(|r| r.is_ok());
+  let topics: Vec<TopicSummary> = match &*res.read() {
+    Some(Ok(list)) => list.iter().take(5).cloned().collect(),
+    _ => Vec::new(),
+  };
+  let reply_unit = lang().pick("回复", "replies");
+  rsx! {
+      if state.is_none() {
+          {loading_spinner()}
+      } else if state == Some(false) {
+          p { class: "text-sm text-slate-400 py-6 text-center", "{t(lang(), \"home.community.forum_failed\")}" }
+      } else if topics.is_empty() {
+          p { class: "text-sm text-slate-400 py-6 text-center", "{t(lang(), \"home.community.forum_empty\")}" }
+      } else {
+          div { class: "divide-y divide-slate-200 dark:divide-slate-800",
+              for tpc in topics.into_iter() {
+                  Link {
+                      key: "{tpc.id}",
+                      to: format!("/topics/{}", tpc.id),
+                      class: "group block py-3",
+                      div { class: "flex items-baseline justify-between gap-3",
+                          span { class: "font-medium text-slate-800 dark:text-slate-100 group-hover:text-[var(--color-primary)] transition-colors line-clamp-1", "{tpc.title}" }
+                          span { class: "shrink-0 text-xs text-slate-400 tabular-nums", "{tpc.reply_count} {reply_unit}" }
+                      }
+                      div { class: "mt-0.5 flex items-center gap-2 text-xs text-slate-400",
+                          span { class: "px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800", "{tpc.tag}" }
+                          span { "{tpc.author}" }
+                      }
+                  }
+              }
+          }
+      }
+  }
+}

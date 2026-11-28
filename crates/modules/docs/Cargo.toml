@@ -1,0 +1,32 @@
+[package]
+name = "module-docs"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { workspace = true, features = ["fullstack", "router"] }
+dioxus-shadcn = { workspace = true, features = ["badge", "card", "empty", "spinner", "tree"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing = { workspace = true }
+serde_yaml = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["full"], optional = true }
+widgets = { path = "../../widgets" }
+app-core = { path = "../../core" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+server = [
+    "dioxus/server",
+    "dep:tokio",
+    "dep:serde_yaml",
+    "dep:chrono",
+    "widgets/server",
+    "app-core/server",
+]
+
+[lints]
+workspace = true

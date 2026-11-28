@@ -1,0 +1,28 @@
+[package]
+name = "module-podcast"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+widgets = { path = "../../widgets" }
+dioxus = { workspace = true, features = ["fullstack"] }
+dioxus-shadcn = { workspace = true, features = ["alert", "badge", "button", "card", "empty", "spinner"] }
+serde = { workspace = true, features = ["derive"] }
+serde_yaml = { workspace = true, optional = true }
+chrono = { workspace = true, features = ["serde"] }
+tokio = { workspace = true, features = ["full"], optional = true }
+app-core = { path = "../../core" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+server = [
+    "dioxus/server",
+    "dep:tokio",
+    "dep:serde_yaml",
+    "widgets/server",
+]
+
+[lints]
+workspace = true

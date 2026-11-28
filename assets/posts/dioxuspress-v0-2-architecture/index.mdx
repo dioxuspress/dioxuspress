@@ -1,0 +1,57 @@
+---
+title: "DioxusPress v0.2 架构拆解：一套纯 Rust 代码兼顾零数据库文档站与全栈知识社区"
+authors: [yuxuetr]
+description: "深入拆解 DioxusPress v0.2 的四档 Cargo Feature 分层、Dioxus 0.7 SSR + WASM 水合、嵌入式 Tantivy 检索、SIGHUP 零停机热刷新与 Pingora SNI 网关架构。"
+date: "2026-11-24"
+tags: [Rust, DioxusPress, Dioxus, Architecture, Tantivy, Pingora]
+---
+
+> 🌐 English version: [Inside DioxusPress v0.2: One Pure-Rust Codebase from Zero-DB Docs to Fullstack Community](/blog/dioxuspress-v0-2-architecture-en)
+
+构建技术文档站和知识社区时，团队往往会落入**两套系统割裂**的陷阱：早期用静态生成器（Docusaurus / VitePress）写文档和博客，一旦需要 OAuth 登录、评论、话题论坛、段落划线标注或付费课程，就不得不重写一套前后端分离应用，再维护 Node 构建链、外部搜索集群与双份样式体系。
+
+**DioxusPress v0.2** 的核心设计目标，是用**同一套纯 Rust 代码库**打通「零数据库单容器文档站」到「高并发全栈社区」的平滑演进路径。
+
+## 一库四档：编译期裁剪而非运行期堆开关
+
+DioxusPress 通过 Cargo feature 将业务能力拆分为四个渐进层级（详见 [四档功能分层](/docs/guide/feature-tiers)）：
+
+| 档位 | Cargo 参数 | 启用能力 | 外部依赖 |
+| --- | --- | --- | --- |
+| **Basic** | `--no-default-features` | 文档树、博客、案例展示、领域聚合 Hub、Tantivy 全文搜索、10 套双模主题 | **零数据库**，仅需单个二进制或容器 |
+| **Accounts** | `--no-default-features --features accounts` | + OAuth2 PKCE 登录、论坛、评论、图片上传、管理后台与审核队列 | PostgreSQL + `JWT_SECRET` |
+| **Course** | `--no-default-features --features course` | + 课程 / 章节 / 课节体系、试看与 Pro 会员、段落划线标注 | 同 Accounts |
+| **Full** | *(默认特性)* | + 微信支付 / 支付宝在线收单、异步回调验签与定时对账 | 同上 + 商户密钥 |
+
+为了避免 `basic` 档位因为裁剪掉路由而破坏导航与链接类型检查，`crates/app/src/routes/mod.rs` 保留统一的 `Route` 枚举，未编译层的页面通过 `absent_pages!` 宏自动回退为标准 404，并结合 `site.json` 的 `modules` 配置决定导航、Sitemap 与 Atom Feed 的最终输出。
+
+## 内容与引擎彻底解耦：`CONTENT_DIR` + `SIGHUP` 零停机热刷新
+
+在实际生产中，我们将框架代码（`dioxuspress` 公开仓库）与业务内容（私有内容仓库）彻底分离：
+
+- 零数据库官网 [`dioxuspress.dev`](https://dioxuspress.dev) 直接使用镜像内置的 `assets/` 与 `active_layout = "docs"` 启动；
+- 旗舰全栈社区 [`rustineverything.app`](https://rustineverything.app)（承载 38 卷 2,100+ 篇文档、11 门实战课程与 170+ 篇博客）通过只读卷挂载 `-v /data/content:/app/content:ro` 覆盖全部内容与 `site.json`。
+
+当内容仓库有新文章合并时，无需重编 Docker 镜像，也无需 `docker restart` 断开活跃连接：
+
+```bash
+# 同步内容仓库后发送 SIGHUP，进程毫秒级原子刷新全部内存缓存与 ETag 纪元
+git -C /data/content pull --ff-only
+docker kill --signal=HUP dioxuspress-app
+```
+
+底层 `hot_reload` 模块会原子失效 `SiteConfig`、`ModuleEngine`、各目录 `DirListingCache` 并推进全局 `ETag` 纪元，同时在后台异步执行 Tantivy 增量索引同步。
+
+## 实测性能基线
+
+在标准单机环境下，通过仓库内置脚本 [`./scripts/bench_ssr.sh`](https://github.com/dioxuspress/dioxuspress/blob/main/scripts/bench_ssr.sh) 测得的真实指标如下（完整方法论见 [性能压测报告](/docs/operations/benchmarks)）：
+
+- **冷启动就绪（`/healthz 200`）**：`547 ms`（`basic` 档位）
+- **完整 SSR 首屏直出（`/` / `/docs/*`）**：`2.79 ms` / `4.04 ms` P50（`1,832` / `1,236 QPS`）
+- **匿名条件缓存（弱 `ETag` → `304 Not Modified`）**：`0.096 ms` P50（`13,636 QPS`），登录态与私密路径严格输出 `Cache-Control: private, no-store`
+- **嵌入式 Tantivy 中英检索（`POST /api/search/query`）**：`0.314 ms` P50（`9,215 QPS`），进程内零网络往返
+- **Pingora 多域名 SNI 网关**：同时承载多站点 TLS 卸载、301 规范化跳转与限流，常驻内存仅 `6.4 MiB`
+
+## 立即体验
+
+你可以在 [模板中心](/templates) 预览 `docs`、`blog`、`community`、`portal` 四套预设，或直接阅读 [5 分钟快速开始](/docs/guide/quickstart) 在本地 1 分钟跑起自己的 DioxusPress 站点。

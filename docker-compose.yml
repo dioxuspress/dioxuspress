@@ -1,0 +1,142 @@
+# Phase 7.4.2：一键启动整站（app + postgres）。
+#
+# 使用：
+#   cp .env.example .env       # 编辑 JWT_SECRET / BASE_URL 等
+#   docker compose up -d        # 启动全部
+#   docker compose logs -f app  # 跟随日志
+#
+# 设计：
+# - **postgres 16** 提供主存储。健康检查通过后，app 才启动 + 自动跑
+#   `sea-orm-migration` (Phase 7.1)。
+# - **app** 通过 `service: postgres` DNS 名连数据库，避免硬编码 IP。
+#   `restart: unless-stopped` 让生产滚动重启时不丢启动状态。
+# - **内容审核（可选）**：默认关闭（`site.json::moderation.enabled=false`）。
+#   开启时，LLM 客户端读 `OPENAI_LLM_*` / `ANTHROPIC_LLM_*` 环境变量，指向
+#   任意 OpenAI / Anthropic 兼容 API（托管的 OpenAI / DeepSeek / …，或自托管
+#   的 ollama —— ollama 暴露 `/v1` OpenAI 兼容端点，把 `OPENAI_LLM_BASE_URL`
+#   指过去即可，无需在本编排里单独跑一个 ollama 服务）。
+# - 持久化：
+#     postgres-data → /var/lib/postgresql/data
+#     app-uploads   → /app/assets/uploads（用户上传图片，挂卷而非镜像层）
+
+name: dioxuspress
+
+# 日志轮转：docker 默认 json-file 不限大小，长期运行会占满磁盘。每个容器最多 5 × 10MB。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dioxuspress-postgres
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rie}
+      # 不设就拒绝启动：生产库不能用仓库里公开的默认密码
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 必须设置（强随机密码）}
+      POSTGRES_DB: ${POSTGRES_DB:-rie}
+      # 显式锁 locale，避免 alpine 默认 UTF-8 collation 在不同主机间漂移。
+      POSTGRES_INITDB_ARGS: "--lc-collate=C --lc-ctype=C --encoding=UTF8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # 仅 dev/调试暴露；生产环境通常移除该 ports 段。
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rie} -d ${POSTGRES_DB:-rie}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - dioxuspress-net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dioxuspress:latest
+    container_name: dioxuspress-app
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # 数据库：连到 compose 内部的 postgres 服务名。
+      DATABASE_URL: postgres://${POSTGRES_USER:-rie}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 必须设置（强随机密码）}@postgres:5432/${POSTGRES_DB:-rie}
+      # 必须项（启动时校验，缺失会 panic）：
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 必须设置（建议 32+ 字符随机）}
+      BASE_URL: ${BASE_URL:?BASE_URL 必须设置（如 https://example.com）}
+      # 推荐（S5）：独立数据加密密钥，与 JWT_SECRET 解耦可单独轮换。
+      # 留空时回退 JWT_SECRET 派生（启动日志会 warn）。
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-}
+      # S3：compose = 部署环境，默认严格模式——schema 迁移失败拒绝启动，
+      # 避免带着不一致 schema 静默接受写请求。本地排障可设为 0。
+      STRICT_MIGRATION: ${STRICT_MIGRATION:-1}
+      # 可选（S2）：应用层限流参数；留空用代码默认（api 20rps/60，
+      # auth/pay 5rps/15）。经 CDN/反代时确保 XFF 链正确传到 app。
+      RATE_LIMIT_API_RPS: ${RATE_LIMIT_API_RPS:-}
+      RATE_LIMIT_API_BURST: ${RATE_LIMIT_API_BURST:-}
+      RATE_LIMIT_SENSITIVE_RPS: ${RATE_LIMIT_SENSITIVE_RPS:-}
+      RATE_LIMIT_SENSITIVE_BURST: ${RATE_LIMIT_SENSITIVE_BURST:-}
+      # 可选（S1）：覆盖默认 CSP（留空用内置保守策略）。
+      CSP_POLICY: ${CSP_POLICY:-}
+      # 可选：OAuth 凭据，对应 Auth 插件读取
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      TWITTER_CLIENT_ID: ${TWITTER_CLIENT_ID:-}
+      TWITTER_CLIENT_SECRET: ${TWITTER_CLIENT_SECRET:-}
+      # 可选：内容审核 LLM（指向任意 OpenAI / Anthropic 兼容 API；含自托管
+      # ollama 的 /v1）。留空 + moderation.enabled=false → 审核关闭、零开销。
+      OPENAI_LLM_BASE_URL: ${OPENAI_LLM_BASE_URL:-}
+      OPENAI_LLM_API_KEY: ${OPENAI_LLM_API_KEY:-}
+      OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL:-}
+      ANTHROPIC_LLM_BASE_URL: ${ANTHROPIC_LLM_BASE_URL:-}
+      ANTHROPIC_LLM_API_KEY: ${ANTHROPIC_LLM_API_KEY:-}
+      ANTHROPIC_LLM_MODEL: ${ANTHROPIC_LLM_MODEL:-}
+      # 可选：有内容等人工审核时邮件通知管理员（缺任一项则只记日志）
+      MODERATION_NOTIFY_EMAIL: ${MODERATION_NOTIFY_EMAIL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      # tracing 输出级别
+      RUST_LOG: ${RUST_LOG:-info}
+      # 搜索索引目录（Phase 7.3）：MmapDirectory 持久化路径。
+      # 不挂卷 → 容器每次重启都触发一次全量重建（仍能服务，只是冷启动慢）。
+      SEARCH_INDEX_DIR: /app/data/search-index
+      # 站点文章与课程（阶段 P）：从下面挂载的目录读，更新内容只需在宿主上 git pull，不用重建镜像
+      CONTENT_DIR: /app/content
+    volumes:
+      # 用户上传图片：挂卷而非镜像层，便于备份与跨版本继承
+      - app-uploads:/app/assets/uploads
+      # 搜索索引（Phase 7.3）：跨重启保留 tantivy 索引 + manifest.json
+      - app-search-index:/app/data/search-index
+      # 私有内容仓库（含 posts/、courses/）；不设 CONTENT_HOST_DIR 时用框架自带的示例内容
+      - ${CONTENT_HOST_DIR:-./assets}:/app/content:ro
+    ports:
+      # 只绑本机（H5）：限流按 X-Forwarded-For 区分客户端，该头由宿主上的
+      # 网关 / 反代覆盖写入；端口对公网开放时，直连者每个请求换一个 XFF
+      # 就能绕过限流。不经反代、需要直接对外时设 APP_BIND=0.0.0.0。
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    networks:
+      - dioxuspress-net
+
+networks:
+  dioxuspress-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  app-uploads:
+  app-search-index:

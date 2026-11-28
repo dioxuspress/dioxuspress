@@ -1,0 +1,433 @@
+//! 内置主题（R2）：每个主题是一份写死在代码里的 CSS（shadcn 语义 token，见
+//! `docs/THEME_SPEC.md`）。
+//!
+//! 站点默认主题来自 site.json 的 `theme`；访客可用 `site_theme` cookie 覆盖。两者都
+//! 只认 [`THEMES`] 里的 id——cookie 由浏览器提交、可被任意改写（SEC-11），表外的值一律
+//! 忽略。主题 CSS 是作者写的受信内容，原样输出到页面 `<style>`。
+
+/// 一个内置双模（亮色 `:root` + 暗色 `.dark`）主题。
+#[derive(Debug, PartialEq, Eq)]
+pub struct Theme {
+  /// site.json、cookie 与 `/api/theme/set` 用的 id。
+  pub id: &'static str,
+  /// 主题切换菜单里显示的名字。
+  pub label: &'static str,
+  /// 风格定位简述（中文）。
+  pub description: &'static str,
+  /// 风格定位简述（英文）。
+  pub description_en: &'static str,
+  /// 亮色底色色值（用于色卡圆点与预览面板）。
+  pub light_bg: &'static str,
+  /// 亮色主色色值（用于色卡圆点与预览面板）。
+  pub light_primary: &'static str,
+  /// 暗色底色色值（用于色卡圆点与预览面板）。
+  pub dark_bg: &'static str,
+  /// 暗色主色色值（用于色卡圆点与预览面板）。
+  pub dark_primary: &'static str,
+  pub css: &'static str,
+}
+
+/// 主题 CSS 仅在服务端（SSR 内联与 `/api/theme/css` 聚合）及单元测试中读取；
+/// 客户端 WASM 始终通过 `get_aggregated_theme_css` 接收服务端聚合好的样式，省略静态 CSS 可减少前端包体积。
+macro_rules! theme_css {
+  ($path:literal) => {{
+    #[cfg(any(feature = "server", test))]
+    {
+      include_str!($path)
+    }
+    #[cfg(not(any(feature = "server", test)))]
+    {
+      ""
+    }
+  }};
+}
+
+/// 全部内置主题（打通 `dioxus-ui` 语义调色盘并合成亮暗双模），顺序即切换菜单默认顺序。
+/// 第一个是 `site.json` 未配置或配错时的安全回退。
+pub const THEMES: &[Theme] = &[
+  Theme {
+    id: "ocean",
+    label: "Ocean",
+    description: "石墨中性底色配电光青蓝，现代开源工程默认风",
+    description_en: "Graphite zinc neutrals paired with electric cyan",
+    light_bg: "#ffffff",
+    light_primary: "#0e7490",
+    dark_bg: "#09090b",
+    dark_primary: "#22d3ee",
+    css: theme_css!("themes/ocean.css"),
+  },
+  Theme {
+    id: "emerald",
+    label: "Emerald",
+    description: "清爽翡翠绿配深松炭黑，极适合开发者 SDK 与 API 文档站",
+    description_en: "Crisp emerald green paired with deep pine charcoal",
+    light_bg: "#ffffff",
+    light_primary: "#047857",
+    dark_bg: "#0b1310",
+    dark_primary: "#34d399",
+    css: theme_css!("themes/emerald.css"),
+  },
+  Theme {
+    id: "nord",
+    label: "Nord",
+    description: "经典北欧极地冰蓝与霜雪灰，低眩光耐看护眼",
+    description_en: "Arctic frost blue on snow storm and polar night surfaces",
+    light_bg: "#f8fafc",
+    light_primary: "#3b6ea5",
+    dark_bg: "#242933",
+    dark_primary: "#88c0d0",
+    css: theme_css!("themes/nord.css"),
+  },
+  Theme {
+    id: "corporate",
+    label: "Corporate",
+    description: "GitHub Primer 风格皇家工程蓝，稳重克制的企业与社区门户",
+    description_en: "GitHub-inspired engineering blue with high-clarity borders",
+    light_bg: "#ffffff",
+    light_primary: "#0969da",
+    dark_bg: "#0d1117",
+    dark_primary: "#58a6ff",
+    css: theme_css!("themes/corporate.css"),
+  },
+  Theme {
+    id: "winter",
+    label: "Winter",
+    description: "凛冬靛蓝配 Tokyo Night 深夜底色，代码高亮层次极佳",
+    description_en: "Crisp cobalt indigo paired with Tokyo Night dark mode",
+    light_bg: "#ffffff",
+    light_primary: "#4338ca",
+    dark_bg: "#16161e",
+    dark_primary: "#7aa2f7",
+    css: theme_css!("themes/winter.css"),
+  },
+  Theme {
+    id: "dracula",
+    label: "Dracula",
+    description: "轻盈薰衣草白配经典 Dracula 暗夜魅紫，鲜明极客辨识度",
+    description_en: "Alabaster violet light mode paired with classic Dracula dark",
+    light_bg: "#fcfbfe",
+    light_primary: "#6d28d9",
+    dark_bg: "#1e1f29",
+    dark_primary: "#bd93f9",
+    css: theme_css!("themes/dracula.css"),
+  },
+  Theme {
+    id: "sunset",
+    label: "Sunset",
+    description: "暖米底色配落日琥珀橙，富有亲和力与温度感",
+    description_en: "Warm cream surfaces with vibrant amber terracotta accents",
+    light_bg: "#fffaf3",
+    light_primary: "#d97706",
+    dark_bg: "#1c0d05",
+    dark_primary: "#fb923c",
+    css: theme_css!("themes/sunset.css"),
+  },
+  Theme {
+    id: "coffee",
+    label: "Coffee",
+    description: "复古羊皮纸配深烘浓缩咖啡，专为独立博客与长文沉浸阅读打造",
+    description_en: "Warm parchment paper and roasted espresso for long-form reading",
+    light_bg: "#fbf8f3",
+    light_primary: "#854d0e",
+    dark_bg: "#181310",
+    dark_primary: "#ddb892",
+    css: theme_css!("themes/coffee.css"),
+  },
+  Theme {
+    id: "catppuccin",
+    label: "Catppuccin",
+    description: "柔和粉彩 Latte 与静谧 Macchiato 双态，舒缓视觉疲劳",
+    description_en: "Soothing pastel Catppuccin Latte and Macchiato palette",
+    light_bg: "#eff1f5",
+    light_primary: "#1e66f5",
+    dark_bg: "#24273a",
+    dark_primary: "#8aadf4",
+    css: theme_css!("themes/catppuccin.css"),
+  },
+  Theme {
+    id: "silk",
+    label: "Silk",
+    description: "丝绸象牙白配 Rose Pine 玫瑰松针暗色，杂志级优雅排版感",
+    description_en: "Editorial warm ivory paired with Rose Pine velvet dark",
+    light_bg: "#faf8f6",
+    light_primary: "#be123c",
+    dark_bg: "#191724",
+    dark_primary: "#ebbcba",
+    css: theme_css!("themes/silk.css"),
+  },
+];
+
+pub fn find_theme(id: &str) -> Option<&'static Theme> {
+  THEMES.iter().find(|t| t.id == id)
+}
+
+/// 解析站点在顶栏主题切换器中开放的主题列表：
+/// - `available` 为空时默认开放全部 [`THEMES`]（按内置顺序）；
+/// - `available` 非空时按配置顺序过滤合法内置主题并去重，同时确保站点默认主题始终包含在内（若漏配则置于首位）。
+pub fn resolve_available_themes(site_default: &str, available: &[String]) -> Vec<&'static Theme> {
+  if available.is_empty() {
+    return THEMES.iter().collect();
+  }
+
+  let default_theme = find_theme(site_default.trim()).unwrap_or_else(|| {
+    tracing::warn!(theme = %site_default, "theme: unknown site.json theme, using default");
+    &THEMES[0]
+  });
+
+  let mut out: Vec<&'static Theme> = Vec::with_capacity(available.len() + 1);
+  for raw in available {
+    let id = raw.trim();
+    if id.is_empty() {
+      continue;
+    }
+    if let Some(theme) = find_theme(id) {
+      if !out.iter().any(|existing| existing.id == theme.id) {
+        out.push(theme);
+      }
+    }
+  }
+
+  if !out.iter().any(|existing| existing.id == default_theme.id) {
+    out.insert(0, default_theme);
+  }
+  out
+}
+
+/// 本次请求生效的主题（考虑 `site.json` 的 `available_themes` 白名单约束）：
+/// 白名单内合法的 cookie 覆盖 > site.json 默认 > 第一个内置主题。
+pub fn resolve_theme_for_site(
+  site_default: &str,
+  available: &[String],
+  cookie: Option<&str>,
+) -> &'static Theme {
+  let allowed = resolve_available_themes(site_default, available);
+  if let Some(raw) = cookie.map(str::trim).filter(|s| !s.is_empty()) {
+    match find_theme(raw) {
+      Some(theme) if allowed.iter().any(|t| t.id == theme.id) => return theme,
+      Some(theme) => {
+        tracing::warn!(
+          cookie = %theme.id,
+          "theme: cookie theme is not in site.json available_themes, falling back"
+        );
+      }
+      None => tracing::warn!(cookie = %raw.escape_debug(), "theme: unknown cookie theme, ignoring"),
+    }
+  }
+  find_theme(site_default.trim()).unwrap_or_else(|| {
+    tracing::warn!(theme = %site_default, "theme: unknown site.json theme, using default");
+    &THEMES[0]
+  })
+}
+
+/// 本次请求生效的主题（无白名单限制）：合法的 cookie 覆盖 > site.json 默认 > 第一个内置主题。
+pub fn resolve_theme(site_default: &str, cookie: Option<&str>) -> &'static Theme {
+  resolve_theme_for_site(site_default, &[], cookie)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn cookie_overrides_site_default_only_with_a_builtin_id() {
+    assert_eq!(resolve_theme("ocean", None).id, "ocean");
+    assert_eq!(resolve_theme("ocean", Some("")).id, "ocean");
+    assert_eq!(resolve_theme("ocean", Some(" sunset ")).id, "sunset");
+    // SEC-11：路径、旧的插件文件名、其他插件、大小写变体都不是主题。
+    for bad in
+      ["../plugins/x", "theme_sunset_plugin.wasm", "i18n_fluent_plugin.wasm", "Sunset", "sun set"]
+    {
+      assert_eq!(resolve_theme("ocean", Some(bad)).id, "ocean", "{bad:?}");
+    }
+  }
+
+  #[test]
+  fn unknown_site_default_falls_back_to_first_theme() {
+    assert_eq!(resolve_theme("theme_ocean_plugin.wasm", None).id, THEMES[0].id);
+    assert_eq!(resolve_theme("", Some("catppuccin")).id, "catppuccin");
+  }
+
+  #[test]
+  fn available_themes_filters_deduplicates_and_keeps_default() {
+    let all = resolve_available_themes("ocean", &[]);
+    assert_eq!(all.len(), THEMES.len());
+
+    // 自定义顺序 + 去重 + 过滤未知 id，且漏配的默认主题自动补在首位
+    let allow = vec![
+      "nord".to_string(),
+      "emerald".to_string(),
+      "nord".to_string(),
+      "unknown_theme".to_string(),
+    ];
+    let resolved: Vec<&str> =
+      resolve_available_themes("ocean", &allow).into_iter().map(|t| t.id).collect();
+    assert_eq!(resolved, vec!["ocean", "nord", "emerald"]);
+
+    // 若默认主题已在白名单中，保持用户配置的顺序
+    let allow_ordered = vec!["emerald".to_string(), "ocean".to_string(), "dracula".to_string()];
+    let ordered: Vec<&str> =
+      resolve_available_themes("ocean", &allow_ordered).into_iter().map(|t| t.id).collect();
+    assert_eq!(ordered, vec!["emerald", "ocean", "dracula"]);
+
+    // Cookie 若不在白名单内，自动回退到站点默认主题
+    assert_eq!(resolve_theme_for_site("ocean", &allow_ordered, Some("dracula")).id, "dracula");
+    assert_eq!(resolve_theme_for_site("ocean", &allow_ordered, Some("sunset")).id, "ocean");
+  }
+
+  #[test]
+  fn theme_ids_are_unique_and_every_theme_sets_light_and_dark_tokens() {
+    let required_tokens = [
+      "--background",
+      "--foreground",
+      "--card",
+      "--card-foreground",
+      "--popover",
+      "--popover-foreground",
+      "--primary",
+      "--primary-foreground",
+      "--secondary",
+      "--secondary-foreground",
+      "--muted",
+      "--muted-foreground",
+      "--accent",
+      "--accent-foreground",
+      "--border",
+      "--input",
+      "--ring",
+    ];
+    assert_eq!(THEMES.len(), 10);
+    for (i, theme) in THEMES.iter().enumerate() {
+      assert!(THEMES[..i].iter().all(|t| t.id != theme.id), "重复 id {}", theme.id);
+      assert!(!theme.description.is_empty() && !theme.description_en.is_empty());
+      assert!(theme.light_bg.starts_with('#') && theme.light_primary.starts_with('#'));
+      assert!(theme.dark_bg.starts_with('#') && theme.dark_primary.starts_with('#'));
+      assert!(theme.css.contains(":root {"), "{} 缺少亮色 token", theme.id);
+      let (light, dark) = theme.css.split_once(".dark {").expect(".dark block");
+      for tok in required_tokens {
+        assert!(!value_of(light, tok).is_empty(), "{} light 缺少 {tok}", theme.id);
+        assert!(!value_of(dark, tok).is_empty(), "{} dark 缺少 {tok}", theme.id);
+      }
+      // 校验十六进制前景/背景对满足 WCAG AA 4.5:1 对比度
+      for (mode, block) in [("light", light), ("dark", dark)] {
+        let bg = value_of(block, "--background");
+        let fg = value_of(block, "--foreground");
+        if let (Some(c1), Some(c2)) = (parse_hex(&bg), parse_hex(&fg)) {
+          let ratio = contrast_ratio(c1, c2);
+          assert!(ratio >= 4.5, "{} {mode} 正文对比度不足: {ratio:.2} ({fg} on {bg})", theme.id);
+        }
+        let p_bg = value_of(block, "--primary");
+        let p_fg = value_of(block, "--primary-foreground");
+        if let (Some(c1), Some(c2)) = (parse_hex(&p_bg), parse_hex(&p_fg)) {
+          let ratio = contrast_ratio(c1, c2);
+          assert!(
+            ratio >= 4.5,
+            "{} {mode} 主按钮对比度不足: {ratio:.2} ({p_fg} on {p_bg})",
+            theme.id
+          );
+        }
+      }
+    }
+  }
+
+  fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
+    let hex = s.trim().strip_prefix('#')?;
+    if hex.len() != 6 {
+      return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+  }
+
+  fn rel_luminance((r, g, b): (u8, u8, u8)) -> f64 {
+    let chan = |v: u8| {
+      let c = f64::from(v) / 255.0;
+      if c <= 0.03928 {
+        c / 12.92
+      } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+      }
+    };
+    0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
+  }
+
+  fn contrast_ratio(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
+    let l1 = rel_luminance(a);
+    let l2 = rel_luminance(b);
+    let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    (hi + 0.05) / (lo + 0.05)
+  }
+
+  /// Tailwind v4 的 zinc 色阶。站点把手写的 `slate-*` 类映射到 zinc，
+  /// 默认主题的中性色 token 也取 zinc，组件和手写区域才不会冷暖不一。
+  const ZINC_50: &str = "oklch(98.5% 0 0)";
+  const ZINC_200: &str = "oklch(92% 0.004 286.32)";
+  const ZINC_400: &str = "oklch(70.5% 0.015 286.067)";
+  const ZINC_600: &str = "oklch(44.2% 0.017 285.786)";
+  const ZINC_800: &str = "oklch(27.4% 0.006 286.033)";
+  const ZINC_900: &str = "oklch(21% 0.006 285.885)";
+  const ZINC_950: &str = "oklch(14.1% 0.005 285.823)";
+  const CYAN_400: &str = "oklch(78.9% 0.154 211.53)";
+  const CYAN_700: &str = "oklch(52% 0.105 223.128)";
+
+  fn value_of(block: &str, token: &str) -> String {
+    let decl = format!("{token}:");
+    block
+      .lines()
+      .find_map(|line| line.trim().strip_prefix(decl.as_str()))
+      .map(|v| v.trim().trim_end_matches(';').to_string())
+      .unwrap_or_else(|| panic!("missing {token}"))
+  }
+
+  #[test]
+  fn ocean_neutral_tokens_use_the_zinc_scale() {
+    let css = find_theme("ocean").map(|t| t.css).unwrap_or_default();
+    let (light, dark) = css.split_once(".dark {").expect(".dark block");
+    let light_expected = [
+      ("--foreground", ZINC_900),
+      ("--card-foreground", ZINC_900),
+      ("--popover-foreground", ZINC_900),
+      ("--secondary", ZINC_50),
+      ("--secondary-foreground", ZINC_900),
+      ("--muted", ZINC_50),
+      ("--muted-foreground", ZINC_600),
+      ("--accent", ZINC_50),
+      ("--accent-foreground", ZINC_900),
+      ("--border", ZINC_200),
+      ("--input", ZINC_200),
+    ];
+    let dark_expected = [
+      ("--background", ZINC_950),
+      ("--foreground", ZINC_50),
+      ("--card", ZINC_900),
+      ("--card-foreground", ZINC_50),
+      ("--popover", ZINC_900),
+      ("--popover-foreground", ZINC_50),
+      ("--secondary", ZINC_800),
+      ("--secondary-foreground", ZINC_50),
+      ("--muted", ZINC_800),
+      ("--muted-foreground", ZINC_400),
+      ("--accent", ZINC_800),
+      ("--accent-foreground", ZINC_50),
+      ("--border", ZINC_800),
+      ("--input", ZINC_800),
+    ];
+    for (token, want) in light_expected {
+      assert_eq!(value_of(light, token), want, "light {token}");
+    }
+    for (token, want) in dark_expected {
+      assert_eq!(value_of(dark, token), want, "dark {token}");
+    }
+  }
+
+  #[test]
+  fn ocean_primary_is_cyan() {
+    let css = find_theme("ocean").map(|t| t.css).unwrap_or_default();
+    let (light, dark) = css.split_once(".dark {").expect(".dark block");
+    assert_eq!(value_of(light, "--primary"), CYAN_700);
+    assert_eq!(value_of(light, "--primary-foreground"), "#ffffff");
+    assert_eq!(value_of(dark, "--primary"), CYAN_400);
+    assert_eq!(value_of(dark, "--primary-foreground"), ZINC_950);
+  }
+}

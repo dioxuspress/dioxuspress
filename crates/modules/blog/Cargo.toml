@@ -1,0 +1,19 @@
+[package]
+name = "module-blog"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { workspace = true, features = ["fullstack", "router"] }
+serde = { workspace = true, features = ["derive"] }
+widgets = { path = "../../widgets" }
+tokio = { workspace = true, features = ["full"], optional = true }
+# Phase 8.5：sharing DirListingCache helper with other server fns
+app-core = { path = "../../core" }
+tracing = { workspace = true }
+
+[features]
+server = ["dioxus/server", "dep:tokio", "app-core/server", "widgets/server"]
+
+[lints]
+workspace = true

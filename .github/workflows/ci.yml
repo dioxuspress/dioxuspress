@@ -1,0 +1,156 @@
+# Phase 7.4.3：持续集成。
+#
+# 设计原则：
+# - 全门禁强校验：fmt / clippy / test / build 任一失败即红。Phase 7.7 起
+#   fmt 与 clippy 已收敛到 0-warning，从 report-only 切换为强校验。
+# - `.cargo/config.toml::build.target-dir = /Users/hal/.target` 是开发者本地
+#   路径，CI 不可写。这里通过 `CARGO_TARGET_DIR: target` env 覆盖，让 cargo
+#   写到 GitHub Runner 工作目录下。
+# - Swatinem/rust-cache 用 hash 决定缓存命中，PR 上能跳过完整重编译。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 默认 token 仅需读：限定权限以减少潜在攻击面。
+permissions:
+  contents: read
+
+# 同一 PR 推新提交时取消还在跑的旧一轮；main 上每个提交都跑完。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # 覆盖 .cargo/config.toml 中的开发者本地路径，让 CI 走默认 target/。
+  CARGO_TARGET_DIR: target
+  # 降低 cargo update / 依赖解析的网络抖动影响（默认 30s 太短）。
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      # Phase 7.7：全量 `cargo fmt --all` 后，强校验（rustfmt.toml = 2-space）。
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      # 三个 job 各用一个 key：共用一个 key 时三者都编译、都抢着写同一份缓存，只有一份留下
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-clippy
+      # Phase 7.7：收敛到 0-warning 后强校验（`-D warnings`）。测试 setup 的
+      # 例外已用就地 #[allow] 标注。
+      - name: cargo clippy --features server --workspace
+        run: cargo clippy --features server --workspace --all-targets -- -D warnings
+
+  test:
+    name: Test (server feature)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-test
+      # 项目约定（Todos.md / scripts/）：`--test-threads=1` 避免全局
+      # registry / DB 单例并发污染。
+      - name: cargo test --features server --workspace
+        run: cargo test --features server --workspace -- --test-threads=1
+      - name: dioxuspress check assets
+        run: cargo run -p dioxuspress-cli -- check assets
+      - name: dioxuspress check starter templates
+        run: |
+          for tpl in docs blog community portal; do
+            cargo run -p dioxuspress-cli -- check "templates/${tpl}"
+          done
+
+  build-server:
+    name: Build (server feature)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-tiers
+      # 仅 check 而非完整 build，CI 速度更快；产物的最终编译由部署管线负责。
+      # 功能分层（docs/FEATURE_TIERS.md）：basic / accounts / course / 完整四档 ×
+      # server / web 两端都必须编译通过且无 warning，防止 cfg 门控被新代码无意识破坏。
+      # 「完整 + server」即原先的 `cargo check --features server -p app`。
+      - name: feature tiers (scripts/check_tiers.sh)
+        run: ./scripts/check_tiers.sh
+
+  wasm-size:
+    name: WASM Bundle Size Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-wasm-size
+      - name: check wasm-release bundle budgets
+        run: ./scripts/check_wasm_size.sh
+
+  # 网关不在 workspace 里（自带 Cargo.lock，tokio 锁在 1.54 以下，见 crates/gateway），
+  # 上面的 --workspace 不覆盖它；之前只有改到网关路径时 release.yml 的镜像构建碰一下。
+  gateway:
+    name: Gateway (clippy + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/gateway
+          shared-key: ci-gateway
+      - name: fmt
+        run: cargo fmt --manifest-path crates/gateway/Cargo.toml -- --check
+      - name: clippy
+        run: cargo clippy --manifest-path crates/gateway/Cargo.toml --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --manifest-path crates/gateway/Cargo.toml --locked
+
+  # 依赖安全公告（RustSec）。有漏洞即红；暂不能修的写进 .cargo/audit.toml 并注明原因。
+  # 两份锁都查：网关的依赖树和主 workspace 不同。
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: workspace
+        run: cargo audit
+      - name: gateway
+        run: cargo audit --file crates/gateway/Cargo.lock

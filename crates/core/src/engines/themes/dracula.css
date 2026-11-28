@@ -1,0 +1,61 @@
+/* shadcn 语义 token（源自 dioxus-ui pastel + dracula 双极配对）：清透紫韵与经典 Dracula 暗夜主题。 */
+:root {
+  --background: #fcfbfe;
+  --foreground: #1e1b2e;
+  --card: #ffffff;
+  --card-foreground: #1e1b2e;
+  --popover: #ffffff;
+  --popover-foreground: #1e1b2e;
+  --primary: #6d28d9;
+  --primary-foreground: #ffffff;
+  --secondary: #f3f0ff;
+  --secondary-foreground: #1e1b2e;
+  --muted: #f3f0ff;
+  --muted-foreground: #5b5478;
+  --accent: #ede9fe;
+  --accent-foreground: #2e1065;
+  --border: #e4dff5;
+  --input: #e4dff5;
+  --ring: #7c3aed;
+  --sidebar: #f8f6fc;
+  --sidebar-foreground: #1e1b2e;
+  --sidebar-primary: #6d28d9;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #ede9fe;
+  --sidebar-accent-foreground: #2e1065;
+  --sidebar-border: #e4dff5;
+  --sidebar-ring: #7c3aed;
+}
+
+.dark {
+  --background: #1e1f29;
+  --foreground: #f8f8f2;
+  --card: #282a36;
+  --card-foreground: #f8f8f2;
+  --popover: #282a36;
+  --popover-foreground: #f8f8f2;
+  --primary: #bd93f9;
+  --primary-foreground: #191a21;
+  --secondary: #343746;
+  --secondary-foreground: #f8f8f2;
+  --muted: #343746;
+  --muted-foreground: #a9b1d6;
+  --accent: #343746;
+  --accent-foreground: #f8f8f2;
+  --border: #44475a;
+  --input: #44475a;
+  --ring: #bd93f9;
+  --sidebar: #21222c;
+  --sidebar-foreground: #f8f8f2;
+  --sidebar-primary: #bd93f9;
+  --sidebar-primary-foreground: #191a21;
+  --sidebar-accent: #343746;
+  --sidebar-accent-foreground: #f8f8f2;
+  --sidebar-border: #44475a;
+  --sidebar-ring: #bd93f9;
+}
+
+body {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+}

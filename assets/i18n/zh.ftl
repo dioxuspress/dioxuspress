@@ -1,0 +1,444 @@
+# 中文文案字典（方案 A：编译期内嵌，app_core 同步查表）
+# 格式：key = value（# 注释，点号分隔的 key）。en.ftl 必须键集合一致。
+
+# ── 导航 ──
+nav.blog = 博客
+nav.podcast = 播客
+nav.forum = 论坛
+nav.menu = 导航菜单
+nav.toggle_dark = 切换暗色模式
+nav.cases = 案例
+nav.models = 模型图鉴
+nav.start = 开始学习
+nav.embedded = 嵌入式
+nav.course = 课程
+nav.web3 = Web3
+nav.wasm = WASM
+nav.cli = CLI
+nav.admin = 🛡️ 管理后台
+
+# ── 双生态导航（mega 菜单）──
+nav.eco.rust = Rust 生态
+nav.eco.ai = AI 生态
+nav.eco.rust.blurb = 嵌入式、Web3、WASM、CLI 与后端系统的工业实战。
+nav.eco.ai.blurb = 大模型、推理部署、Agent 与 Rust AI 生态。
+nav.ai.llm = 大模型
+nav.ai.inference = 推理部署
+nav.ai.agent = Agent
+nav.ai.rust_ai = Rust AI
+nav.ai.components = 算子与组件
+nav.ai.math = AI 数学基石
+nav.ai.ml = 传统机器学习
+nav.ai.visualizer = 架构可视化
+nav.papers = 论文速递
+mega.col.domains = 应用领域
+mega.col.learn = 学习资源
+mega.learn.docs = 文档
+mega.learn.courses = 课程
+mega.learn.cases = 实战案例
+mega.featured.cta = 查看精选案例
+eco.enter = 进入生态
+eco.not_found = 未找到该生态
+
+# ── 登录 / 用户 ──
+auth.sign_in = 登录
+auth.sign_in_desc = 选择一种方式继续
+auth.continue_with = 继续
+auth.terms = 登录即表示你同意我们的服务条款和隐私政策
+auth.logout = 退出登录
+auth.close = 关闭
+user.my_topics = 我的话题
+user.my_annotations = 我的标注
+user.my_orders = 我的订单
+
+# ── 博客页 ──
+blog.title = 博客
+blog.subtitle = 探索 Rust 的无限可能
+blog.filter = 标签筛选
+blog.all = 全部
+blog.empty = 暂无文章
+blog.articles = 文章
+blog.no_results = 没有匹配该标签的文章
+blog.prev_page = 上一页
+blog.next_page = 下一页
+blog.more_tags = 更多标签
+blog.fewer_tags = 收起
+
+# ── 页脚 ──
+footer.tagline = 专注 Rust 工业实战与 AI 生态：案例、课程、文档、社区一站式聚合。
+footer.col.content = 内容
+footer.col.community = 社区
+footer.col.topics = 专题
+footer.about = 关于
+footer.rss = RSS 订阅
+
+# ── 首页 Hero ──
+hero.title = 专注 Rust 技术栈的学习与实战
+hero.subtitle = 文档、博客、课程、案例一站式聚合：AI、后端、前端、跨端、Web3、Wasm、嵌入式、命令行等。
+hero.btn.docs = 进入文档
+hero.btn.cases = 查看案例
+hero.btn.courses = 查看课程
+
+# ── 首页板块卡片 ──
+home.featured.title = 精选案例
+home.featured.subtitle = 来自工业实践的 Rust 项目，可直接借鉴的工程范式
+home.featured.all = 查看全部案例
+home.featured.empty = 精选案例即将上线
+home.courses.title = 课程
+home.courses.subtitle = 体系化的 Rust 与 AI 实战课程，配套文档、音频、图与代码
+home.courses.all = 查看全部课程
+home.courses.empty = 课程即将上线
+home.community.title = 社区动态
+home.community.subtitle = 最新文章与论坛讨论，与社区一起成长
+home.community.blog = 最新博客
+home.community.blog_all = 全部博客
+home.community.blog_empty = 暂无文章
+home.community.forum = 论坛热帖
+home.community.forum_all = 进入论坛
+home.community.forum_empty = 还没有讨论，来发第一帖
+home.community.forum_failed = 论坛暂时无法加载
+
+# ── 首页模块网格卡片（home.mod.<id>.title / .desc）──
+
+# ── 板块共享 UI ──
+board.all = 全部
+board.search = 搜索文章 / 标签…
+board.featured = 精选 crate
+board.empty = 暂无文章。
+board.back_prefix = ← 返回
+board.not_found = 文章不存在
+board.hub.docs = 核心文档卷
+board.hub.courses = 实战课程
+board.hub.cases = 精选案例
+board.hub.posts = 相关博客
+board.hub.articles = 专题指南
+board.hub.view_all = 查看全部 →
+
+# ── 嵌入式 ──
+embedded.label = 嵌入式
+embedded.tagline = 用 Rust 写裸机与实时系统：no_std、Embassy、RTIC 与主流 MCU 平台。
+embedded.sub.no-std.label = no_std
+embedded.sub.no-std.blurb = 脱离标准库，在没有操作系统的目标上运行 Rust。
+embedded.sub.embassy.label = Embassy
+embedded.sub.embassy.blurb = 嵌入式异步运行时，用 async/await 写中断驱动的固件。
+embedded.sub.rtic.label = RTIC
+embedded.sub.rtic.blurb = 基于硬件优先级的并发框架，零成本任务调度。
+embedded.sub.hal.label = HAL / PAC
+embedded.sub.hal.blurb = embedded-hal 抽象层与外设访问 crate，跨芯片复用驱动。
+embedded.sub.defmt.label = 日志与调试
+embedded.sub.defmt.blurb = defmt 高效日志 + probe-rs 烧录调试工作流。
+embedded.sub.platforms.label = 平台
+embedded.sub.platforms.blurb = RP2040 / STM32 / ESP32 / nRF 等主流 MCU 平台实践。
+embedded.crate.embassy.blurb = 嵌入式异步运行时与 HAL
+embedded.crate.rtic.blurb = 实时中断驱动并发框架
+embedded.crate.embedded-hal.blurb = 跨平台外设抽象 trait
+embedded.crate.defmt.blurb = 嵌入式高效结构化日志
+embedded.crate.probe-rs.blurb = 烧录与调试工具链
+embedded.crate.heapless.blurb = 无堆分配的静态容量数据结构
+
+# ── AI ──
+ai.label = AI
+ai.tagline = 用 Rust 做张量计算、模型推理与 LLM 应用：candle、burn 与 ONNX 生态。
+ai.sub.tensors.label = 张量计算
+ai.sub.tensors.blurb = 在 CPU / CUDA / Metal 上做张量运算与自动微分。
+ai.sub.inference.label = 推理引擎
+ai.sub.inference.blurb = 加载预训练权重做前向推理，部署到服务端或边缘。
+ai.sub.llm.label = 大模型
+ai.sub.llm.blurb = 本地跑 LLM、量化、KV cache 与流式生成。
+ai.sub.tokenizers.label = 分词
+ai.sub.tokenizers.blurb = BPE / WordPiece 分词与 HuggingFace tokenizers。
+ai.sub.training.label = 训练框架
+ai.sub.training.blurb = 用纯 Rust 框架定义网络、反向传播与优化器。
+ai.sub.embeddings.label = 向量与检索
+ai.sub.embeddings.blurb = 句向量、相似度检索与向量数据库集成。
+ai.crate.candle.blurb = HuggingFace 极简张量与推理框架
+ai.crate.burn.blurb = 纯 Rust、多后端深度学习框架
+ai.crate.tch.blurb = libtorch（PyTorch C++）绑定
+ai.crate.tokenizers.blurb = HuggingFace 高性能分词器
+ai.crate.ort.blurb = ONNX Runtime 的 Rust 绑定
+ai.crate.safetensors.blurb = 安全、零拷贝的张量序列化格式
+
+# ── Web3 ──
+web3.label = Web3
+web3.tagline = 区块链与去中心化应用的 Rust 工具链：以太坊、Solana、Substrate 与智能合约。
+web3.sub.evm.label = 以太坊 / EVM
+web3.sub.evm.blurb = 用 alloy 读写链上状态、发交易、解析事件日志。
+web3.sub.solana.label = Solana
+web3.sub.solana.blurb = Solana 程序与客户端开发，高吞吐链上逻辑。
+web3.sub.substrate.label = Substrate
+web3.sub.substrate.blurb = 用 polkadot-sdk 搭建自定义区块链与 runtime pallet。
+web3.sub.contracts.label = 智能合约
+web3.sub.contracts.blurb = ink! / Solana 程序 / EVM 字节码与合约交互。
+web3.sub.wallet.label = 钱包与签名
+web3.sub.wallet.blurb = 密钥管理、签名方案与交易构造。
+web3.sub.indexing.label = 链上索引
+web3.sub.indexing.blurb = 区块/事件扫描、状态重建与数据服务。
+web3.crate.alloy.blurb = 以太坊互操作的现代 Rust 工具集
+web3.crate.revm.blurb = 高性能纯 Rust EVM 实现
+web3.crate.solana-sdk.blurb = Solana 链上程序与客户端 SDK
+web3.crate.anchor.blurb = Solana 程序开发框架
+web3.crate.polkadot-sdk.blurb = Substrate / Polkadot 区块链框架
+web3.crate.ink.blurb = 面向 Substrate 的智能合约 eDSL
+
+# ── WASM ──
+wasm.label = WASM
+wasm.tagline = WebAssembly 全景：浏览器互操作、WASI、组件模型与服务端运行时。
+wasm.sub.bindgen.label = wasm-bindgen
+wasm.sub.bindgen.blurb = Rust 与 JS 互调，把 Rust 编进浏览器。
+wasm.sub.wasi.label = WASI
+wasm.sub.wasi.blurb = WebAssembly 系统接口：文件、时钟、网络的可移植 ABI。
+wasm.sub.components.label = 组件模型
+wasm.sub.components.blurb = WIT / wit-bindgen 与可组合的 wasm 组件。
+wasm.sub.runtimes.label = 运行时
+wasm.sub.runtimes.blurb = wasmtime / wasmer 在服务端嵌入 wasm 沙箱。
+wasm.sub.frontend.label = 前端框架
+wasm.sub.frontend.blurb = Leptos / Yew 用 Rust 写响应式前端。
+wasm.sub.plugins.label = 插件系统
+wasm.sub.plugins.blurb = 用 wasm 做安全、可热更新的插件 ABI。
+wasm.crate.wasm-bindgen.blurb = Rust ↔ JS 互操作绑定生成
+wasm.crate.wasmtime.blurb = Bytecode Alliance 的 wasm 运行时
+wasm.crate.wasmer.blurb = 通用 wasm 运行时与包管理
+wasm.crate.wit-bindgen.blurb = 组件模型 WIT 绑定生成
+wasm.crate.leptos.blurb = 细粒度响应式的 Rust 前端框架
+wasm.crate.trunk.blurb = Rust+WASM 前端打包工具
+
+# ── CLI ──
+cli.label = CLI
+cli.tagline = 打造一流命令行工具：参数解析、TUI、进度反馈与分发。
+cli.sub.args.label = 参数解析
+cli.sub.args.blurb = 用 clap 的 derive 宏声明子命令、标志与校验。
+cli.sub.tui.label = 终端 UI
+cli.sub.tui.blurb = ratatui 构建全屏交互式终端界面。
+cli.sub.output.label = 进度与输出
+cli.sub.output.blurb = 进度条、彩色输出与人性化的状态反馈。
+cli.sub.config.label = 配置
+cli.sub.config.blurb = 分层配置：默认值、配置文件、环境变量、命令行。
+cli.sub.testing.label = 测试
+cli.sub.testing.blurb = 用 assert_cmd / trycmd 对 CLI 做端到端断言。
+cli.sub.distribution.label = 分发
+cli.sub.distribution.blurb = 交叉编译、静态链接与一键安装脚本。
+cli.crate.clap.blurb = 功能完备的命令行参数解析器
+cli.crate.ratatui.blurb = 构建终端用户界面（TUI）
+cli.crate.indicatif.blurb = 进度条与 spinner
+cli.crate.console.blurb = 终端样式、颜色与交互工具
+cli.crate.crossterm.blurb = 跨平台终端操作库
+cli.crate.assert_cmd.blurb = CLI 端到端测试断言
+
+# ── 切换器（主题 / 语言） ──
+theme.toggle = 切换主题
+theme.heading = 主题
+theme.reset = 重置为默认
+lang.toggle = 切换语言
+lang.heading = 语言
+
+# 搜索弹窗（O10）
+search.button = 搜索
+search.placeholder = 搜索文档、博客、课程、案例、论坛与专题…
+search.kind_label = 内容类型
+search.failed = 搜索失败，请稍后再试
+search.searching = 搜索中…
+search.results = 条结果
+search.no_results = 没有匹配的结果
+search.hint = 输入关键词开始搜索 · 支持中英文 · 按 ⌘K 随时打开
+search.kind.all = 全部
+search.kind.doc = 文档
+search.kind.blog = 博客
+search.kind.course = 课程
+search.kind.case = 案例
+search.kind.topic = 话题
+
+# O11：通用 / 文档 / 课程
+common.load_failed = 加载失败，请稍后再试
+common.not_found = 页面不存在
+blog.not_found = 文章不存在
+docs.title = 文档
+docs.subtitle = 从基础语法到全栈实战，系统化学习 Rust 生态。选择一个主题开始探索。
+docs.nav = 文档导航
+docs.empty = 暂无文档内容
+docs.count_unit = 篇
+docs.more = …更多
+docs.start_reading = 开始阅读
+docs.not_found = 文档不存在
+docs.prev = 上一篇
+docs.next = 下一篇
+toc.title = 本页目录
+docs.based_on = 基于
+course.title = Rust 课程
+course.subtitle = 系统化学习路径，从基础到全栈实战
+course.empty = 暂无课程内容
+course.chapters = 章
+course.lessons = 节
+course.not_found = 课程未找到
+course.not_found_detail = 该课程不存在或尚未发布。
+course.lesson_not_found = 课节未找到
+course.back = 返回课程列表
+course.continue = 继续学习
+course.start = 开始学习
+course.owned = 已拥有本课程
+course.progress = 学习进度
+course.outline = 课程目录
+course.preview = 试看
+course.back_outline = 返回课程目录
+course.prev = 上一节
+course.next = 下一节
+comment.title = 评论区
+comment.edit = 编辑
+comment.preview = 预览
+comment.placeholder = 写下你的评论（支持 Markdown、图片）…
+comment.content_label = 评论内容
+comment.submitting = 提交中…
+comment.submit = 发布评论
+comment.login_hint = 登录后即可发表评论
+comment.loading = 加载评论中…
+comment.pending_review = 已提交，管理员审核通过后显示
+
+# 支付（阶段 I）
+pay.channel.alipay = 支付宝
+pay.channel.wechat = 微信支付
+pay.channel.stripe = 银行卡 / 国际支付
+pay.channel.other = 其他
+pay.region.mainland = 中国大陆
+pay.region.overseas = 海外
+pay.region.switch_to_mainland = 切换到中国大陆
+pay.region.switch_to_overseas = 切换到海外
+pay.no_methods = 该地区暂无可用的支付方式，可以切换地区试试。
+pay.buy = 购买
+pay.dialog_title = 购买课程
+pay.close = 关闭
+pay.bad_credential = 不支持的支付凭据
+pay.not_yet = 尚未到账；完成支付后再点刷新
+pay.scan = 扫码支付
+pay.i_paid = 我已支付，刷新状态
+pay.success = 支付成功，正在解锁…
+pay.choose = 选择支付方式，金额
+pay.methods = 支付方式
+pay.processing = 处理中…
+pay.pay_now = 立即支付
+pay.status.paid = 已支付
+pay.status.pending = 待支付
+pay.status.closed = 已关闭
+pay.status.refunded = 已退款
+pay.status.failed = 失败
+pay.orders.title = 我的订单
+pay.pro = Pro 会员
+pay.pro_until = 有效期至
+pay.pro_active = 有效
+pay.pro_expired = Pro 会员到期日：
+pay.orders.empty = 还没有订单。
+pay.orders.browse = 去看看课程 →
+pay.orders.item = 内容
+pay.orders.tip = 打赏
+pay.orders.amount = 金额
+pay.orders.channel = 渠道
+pay.orders.status = 状态
+pay.orders.created = 下单时间
+pay.paywall.title = 本课节为付费内容
+pay.paywall.body = 开通本课程后即可解锁全部课节，含文档、视频、音频与代码资源。
+pay.paywall.hint = 需登录后购买；试看课节免费开放。
+pay.offline = 在线购买未开通，请联系管理员开通课程权益
+pay.err.sign_in = 请先登录后再购买
+pay.err.bad_request = 不支持的支付请求
+pay.err.no_course = 课程不存在
+pay.err.free = 该课程无需购买
+pay.err.owned = 你已拥有该课程
+pay.err.no_order = 订单不存在
+pay.err.no_cny = 该课程不支持人民币支付
+pay.tip.title = 觉得有帮助？
+pay.tip.body = 打赏支持本站，让内容持续更新。
+pay.tip.button = 打赏
+pay.tip.sign_in = 登录后即可打赏
+pay.tip.dialog_title = 打赏支持
+pay.tip.amount = 选择金额
+pay.tip.thanks = 收到你的打赏，谢谢支持！
+
+# cases（2026-11-05 从模块内 match 表迁入）
+case.load_failed = 加载失败，请稍后再试
+case.title = Rust 项目案例库
+case.subtitle = 发现真实世界中的 Rust 前端、后端、全栈、AI、Web3、CLI、嵌入式和工具项目。
+case.submit = 提交你的项目
+case.search = 搜索项目名称、描述、分类或标签...
+case.all = 全部
+case.filter = 标签筛选
+case.no_tags = 暂无标签
+case.loading = 加载中...
+case.clear = 清除
+case.detail = 详情
+case.featured = ⭐ 精选
+case.featured_label = 精选
+case.empty = 暂无匹配案例。
+case.not_found = 案例未找到
+case.back = ← 返回案例库
+case.view_repo = 查看仓库
+case.visit_site = 访问网站
+case.author_prefix = 作者：
+case.no_readme = 该案例暂未提供 README.md。
+case.project_info = 项目信息
+case.cat_field = 分类
+case.lang_field = 语言
+
+# forum（2026-11-05 从模块内 match 表迁入）
+forum.title = 论坛
+forum.subtitle = 交流、分享、共同进步
+forum.my_topics = 我的话题
+forum.post_topic = 发起话题
+forum.popular_tags = 热门标签
+forum.loading = 加载中...
+forum.related = 💬 关联讨论
+forum.start_discussion = 发起讨论
+forum.related_empty = 还没有围绕本页的讨论，欢迎发起一个！
+forum.load_failed = 加载失败，请稍后重试
+forum.retry = 重试
+forum.no_tags = 暂无标签
+forum.no_topics = 还没有话题，第一个发表的就是你！
+forum.back_all = ← 全部话题
+forum.not_found = 话题不存在或已被删除
+forum.my_topics_empty = 你还没有发表过话题
+forum.post_first = 发起第一个话题
+forum.replies = 回复
+forum.write_reply = 撰写回复
+forum.post_reply = 发表回复
+forum.pending_review = 已提交，管理员审核通过后显示
+forum.submitting = 提交中...
+forum.login_to_reply = 登录后才能回复话题
+forum.login = 登录
+forum.please_login = 请先登录
+forum.login_to_post = 登录后才能发起话题
+forum.title_label = 标题
+forum.tag_label = 标签
+forum.edit = 编辑
+forum.preview = 预览
+forum.publish_topic = 发布话题
+forum.publishing = 发布中...
+forum.new_topic_title = 发起话题
+forum.ref_note = 本话题将关联以上原文
+forum.topics_under_tag = 个话题
+
+# podcast（2026-11-05 从模块内 match 表迁入）
+podcast.title = Rust 深度播客
+podcast.subtitle = 探索技术边界，聆听思维回响
+podcast.more = 节目列表
+podcast.guest = 嘉宾
+podcast.empty = 暂无节目
+podcast.all = 全部
+podcast.filter = 标签筛选
+podcast.prev = 上一页
+podcast.next = 下一页
+podcast.not_found = 找不到该播客节目
+podcast.loading = 加载中…
+podcast.featured = 推荐播客
+podcast.no_audio = 本期音频暂未上线
+podcast.no_results = 没有匹配该标签的节目
+
+# docs layout & breadcrumbs
+nav.docs = 文档
+nav.templates = 模板
+nav.components = 组件
+nav.github = GitHub 仓库
+nav.dismiss_announcement = 关闭公告
+hero.copy_cmd = 复制命令
+hero.copied = 已复制
+home.docs_volumes.title = 文档分卷速览
+home.docs_volumes.subtitle = 从快速上手到生产运维，按主题查阅完整指南
+home.docs_volumes.all = 查看全部文档
+docs.breadcrumb_label = 面包屑导航
+docs.edit_page = 在 GitHub 上编辑此页

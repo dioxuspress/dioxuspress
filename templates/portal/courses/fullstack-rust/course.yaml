@@ -1,0 +1,12 @@
+title: 全栈 Rust 生产架构实战
+description: 从同构 SSR 首屏直出、WASM 水合边界到单机高并发容器化运维的系统化实战课。
+order: 1
+level: 进阶
+tags:
+  - rust
+  - dioxus
+  - fullstack
+access_tier: paid
+price: 9900
+currency: CNY
+price_usd: 1499

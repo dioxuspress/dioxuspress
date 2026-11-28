@@ -1,0 +1,208 @@
+/* === 旧主题变量 → shadcn token 别名（docs/DIOXUS_UI_MIGRATION.md D2）===
+   token 是唯一来源：默认值在 tailwind-input.css，内置主题运行时覆盖。
+   这里只做转发，让现有 var(--color-*) 写法跟随 token；亮/暗由 token 的
+   :root / .dark 两套值决定，这里不再分别定义。 */
+:root {
+    --color-primary: var(--primary);
+    --color-bg: var(--background);
+    --color-surface: var(--muted);
+    --color-text: var(--foreground);
+    --color-text-muted: var(--muted-foreground);
+    --color-border: var(--border);
+}
+
+/* App-wide styling */
+body {
+    margin: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Base link styles if not covered by Tailwind */
+a {
+    transition: color 0.2s ease;
+}
+
+/* === Flowing Gradient Button === */
+@keyframes gradient-flow {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+.btn-flow {
+    background: linear-gradient(90deg, #000000, #64748b, #000000, #64748b);
+    background-size: 300% 100%;
+    animation: gradient-flow 3s ease infinite;
+    color: #fff;
+}
+.btn-flow:hover {
+    animation-duration: 1.5s;
+}
+
+.dark .btn-flow {
+    background: linear-gradient(90deg, #ffffff, #64748b, #ffffff, #64748b);
+    background-size: 300% 100%;
+    animation: gradient-flow 3s ease infinite;
+    color: #0f172a;
+}
+
+/* Flowing text accent */
+.text-flow {
+    background: linear-gradient(90deg, #000000, #94a3b8, #000000, #94a3b8);
+    background-size: 300% 100%;
+    animation: gradient-flow 3s ease infinite;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.dark .text-flow {
+    background: linear-gradient(90deg, #ffffff, #64748b, #ffffff, #64748b);
+    background-size: 300% 100%;
+    animation: gradient-flow 3s ease infinite;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Always-light flowing text (for use on dark backgrounds like hero) */
+.text-flow-light {
+    background: linear-gradient(90deg, #ffffff, #64748b, #ffffff, #64748b);
+    background-size: 300% 100%;
+    animation: gradient-flow 3s ease infinite;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* === 论文页思维导图（papers pages.rs `mind_node`）===
+   宽屏：从左往右的树，圆角连线；窄屏：缩进大纲。
+   每个一级分支在 style 上带 --c，子节点继承。 */
+.mm {
+  --mm-line: 1.5px;
+  padding: 4px 0;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.mm-label {
+  display: inline-block;
+  max-width: 18em;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: var(--foreground);
+}
+.mm-root > .mm-label {
+  padding: 7px 18px;
+  font-size: 15px;
+  font-weight: 700;
+  background: var(--foreground);
+  color: var(--background);
+}
+.mm-d1 > .mm-label {
+  padding: 4px 14px;
+  font-weight: 600;
+  background: var(--c);
+  color: #fff;
+}
+.mm-d2 > .mm-label {
+  font-weight: 600;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--c) 12%, var(--background));
+}
+.mm-leaf > .mm-label {
+  font-size: 13px;
+  padding: 1px 10px;
+  border: 1px solid var(--border);
+  background: var(--background);
+}
+
+@media (min-width: 640px) {
+  .mm-node { display: flex; align-items: center; }
+  .mm-kids {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    margin-left: 32px;
+  }
+  .mm-kids > .mm-node { position: relative; padding: 3px 0; }
+  /* 父节点到竖线的短横 */
+  .mm-kids::before {
+    content: "";
+    position: absolute;
+    left: -32px;
+    top: 50%;
+    width: 16px;
+    border-top: var(--mm-line) solid var(--c, var(--border));
+  }
+  .mm-root > .mm-kids::before { border-color: var(--border); }
+  /* 每个子节点：::before 横线，::after 竖线 */
+  .mm-kids > .mm-node::before,
+  .mm-kids > .mm-node::after {
+    content: "";
+    position: absolute;
+    left: -16px;
+  }
+  .mm-kids > .mm-node::before {
+    top: 50%;
+    width: 16px;
+    border-top: var(--mm-line) solid var(--c);
+  }
+  .mm-kids > .mm-node::after {
+    top: 0;
+    bottom: 0;
+    border-left: var(--mm-line) solid var(--c);
+  }
+  /* 首尾两个子节点用圆角拐角代替横线 */
+  .mm-kids > .mm-node:first-child::before,
+  .mm-kids > .mm-node:last-child::before { display: none; }
+  .mm-kids > .mm-node:first-child::after {
+    top: 50%;
+    width: 16px;
+    border-top: var(--mm-line) solid var(--c);
+    border-top-left-radius: 8px;
+  }
+  .mm-kids > .mm-node:last-child::after {
+    bottom: 50%;
+    width: 16px;
+    border-bottom: var(--mm-line) solid var(--c);
+    border-bottom-left-radius: 8px;
+  }
+  .mm-kids > .mm-node:only-child::before { display: block; }
+  .mm-kids > .mm-node:only-child::after { display: none; }
+}
+
+@media (max-width: 639.98px) {
+  .mm-kids {
+    margin: 4px 0 0 12px;
+    padding-left: 12px;
+    border-left: var(--mm-line) solid var(--c, var(--border));
+  }
+  .mm-root > .mm-kids { border-left-color: var(--border); }
+  .mm-kids > .mm-node { position: relative; padding: 3px 0; }
+  .mm-kids > .mm-node::before {
+    content: "";
+    position: absolute;
+    left: -12px;
+    top: 15px;
+    width: 10px;
+    border-top: var(--mm-line) solid var(--c);
+  }
+}
+
+/* ── 论文主题：/papers 与主题页的主题导航（pt-chip），列表与详情页的主题标签（pt-tag） ── */
+.pt-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.pt-chip {
+  display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 14px; line-height: 1.4;
+  border: 1px solid var(--border); color: var(--foreground); text-decoration: none;
+  white-space: nowrap; flex-shrink: 0;
+}
+.pt-chip:hover { border-color: var(--foreground); }
+.pt-chip-on, .pt-chip-on:hover { background: var(--foreground); color: var(--background); border-color: var(--foreground); }
+.pt-tag {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; line-height: 1.5;
+  background: color-mix(in srgb, #0d9488 12%, var(--background)); color: color-mix(in srgb, #0d9488 75%, var(--foreground));
+  text-decoration: none;
+}
+.pt-tag:hover { text-decoration: underline; }

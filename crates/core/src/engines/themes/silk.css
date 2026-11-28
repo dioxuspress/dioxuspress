@@ -1,0 +1,61 @@
+/* shadcn 语义 token（源自 dioxus-ui silk + Rose Pine）：温润丝绸象牙白与玫瑰松针暗夜主题。 */
+:root {
+  --background: #faf8f6;
+  --foreground: #262129;
+  --card: #ffffff;
+  --card-foreground: #262129;
+  --popover: #ffffff;
+  --popover-foreground: #262129;
+  --primary: #be123c;
+  --primary-foreground: #ffffff;
+  --secondary: #f2ece9;
+  --secondary-foreground: #262129;
+  --muted: #f2ece9;
+  --muted-foreground: #635966;
+  --accent: #fce7f3;
+  --accent-foreground: #881337;
+  --border: #e5dcda;
+  --input: #e5dcda;
+  --ring: #e11d48;
+  --sidebar: #f5f0ed;
+  --sidebar-foreground: #262129;
+  --sidebar-primary: #be123c;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #fce7f3;
+  --sidebar-accent-foreground: #881337;
+  --sidebar-border: #e5dcda;
+  --sidebar-ring: #e11d48;
+}
+
+.dark {
+  --background: #191724;
+  --foreground: #e0def4;
+  --card: #1f1d2e;
+  --card-foreground: #e0def4;
+  --popover: #1f1d2e;
+  --popover-foreground: #e0def4;
+  --primary: #ebbcba;
+  --primary-foreground: #191724;
+  --secondary: #26233a;
+  --secondary-foreground: #e0def4;
+  --muted: #26233a;
+  --muted-foreground: #908caa;
+  --accent: #26233a;
+  --accent-foreground: #e0def4;
+  --border: #393552;
+  --input: #393552;
+  --ring: #ebbcba;
+  --sidebar: #1f1d2e;
+  --sidebar-foreground: #e0def4;
+  --sidebar-primary: #ebbcba;
+  --sidebar-primary-foreground: #191724;
+  --sidebar-accent: #26233a;
+  --sidebar-accent-foreground: #e0def4;
+  --sidebar-border: #393552;
+  --sidebar-ring: #ebbcba;
+}
+
+body {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+}

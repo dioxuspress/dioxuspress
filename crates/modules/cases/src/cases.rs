@@ -1,0 +1,557 @@
+use crate::server::{
+  get_case, list_case_categories, list_case_tags, list_cases, Case, CaseSummary, TagSummary,
+};
+use app_core::i18n::{t, Language};
+use dioxus::prelude::try_use_context;
+use dioxus::prelude::*;
+use dioxus_shadcn::{
+  badge_class, button_class, card_class, BadgeVariant, Button, ButtonSize, ButtonVariant, Empty,
+  EmptyDescription, Input, Spinner, SpinnerSize, UiDensity,
+};
+use widgets::Markdown;
+
+fn use_language_ctx() -> Language {
+  try_use_context::<Signal<Language>>().map(|s| s()).unwrap_or(Language::Zh)
+}
+
+fn category_label(lang: Language, c: &str) -> &'static str {
+  match (lang, c) {
+    (Language::En, "frontend") => "Frontend",
+    (Language::Zh, "frontend") => "前端",
+    (Language::En, "backend") => "Backend",
+    (Language::Zh, "backend") => "后端",
+    (Language::En, "fullstack") => "Fullstack",
+    (Language::Zh, "fullstack") => "全栈",
+    (_, "cli") => "CLI",
+    (Language::En, "embedded") => "Embedded",
+    (Language::Zh, "embedded") => "嵌入式",
+    (_, "ai") => "AI",
+    (_, "web3") => "Web3",
+    (Language::En, "library") => "Library",
+    (Language::Zh, "library") => "库/框架",
+    (Language::En, "tool") => "Tool",
+    (Language::Zh, "tool") => "工具",
+    (Language::En, "desktop") => "Desktop",
+    (Language::Zh, "desktop") => "桌面",
+    (Language::En, _) => "Other",
+    (Language::Zh, _) => "其他",
+  }
+}
+
+#[component]
+fn LocalContainer(children: Element) -> Element {
+  rsx! { div { class: "mx-auto max-w-7xl px-4 sm:px-6 lg:px-8", {children} } }
+}
+
+#[component]
+fn Loading() -> Element {
+  rsx! {
+      div { class: "flex items-center justify-center py-20",
+          Spinner { size: SpinnerSize::Lg, class: "border-t-primary" }
+      }
+  }
+}
+
+// category_label is now language-aware (defined above)
+fn category_emoji(c: &str) -> &'static str {
+  match c {
+    "frontend" => "🎨",
+    "backend" => "⚙️",
+    "fullstack" => "🚀",
+    "cli" => "💻",
+    "embedded" => "🔌",
+    "ai" => "🤖",
+    "web3" => "🔗",
+    "library" => "📦",
+    "tool" => "🛠️",
+    "desktop" => "🖥️",
+    _ => "📂",
+  }
+}
+fn category_badge_class(c: &str) -> &'static str {
+  match c {
+    "frontend" => "bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300",
+    "backend" => "bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300",
+    "fullstack" => "bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300",
+    "cli" => "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300",
+    "embedded" => "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300",
+    "ai" => "bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300",
+    "web3" => "bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300",
+    "library" => "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300",
+    "tool" => "bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300",
+    "desktop" => "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300",
+    _ => "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300",
+  }
+}
+fn tag_color_class(t: &str) -> &'static str {
+  match t {
+    "axum" => "bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300",
+    "actix" => "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300",
+    "dioxus" => "bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300",
+    "tokio" => "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300",
+    "sea-orm" => "bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300",
+    "wasm" => "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300",
+    "opensource" => "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300",
+    "fullstack" => "bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300",
+    "ai" => "bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300",
+    _ => "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300",
+  }
+}
+
+fn submit_case_url() -> Option<String> {
+  app_core::settings::SiteConfig::active().submit_case_url_or_none().map(str::to_string)
+}
+
+#[component]
+pub fn CasesIndexPage() -> Element {
+  let lang = use_language_ctx();
+  let mut query = use_signal(String::new);
+  let mut selected_category = use_signal::<Option<String>>(|| None);
+  let mut selected_tag = use_signal::<Option<String>>(|| None);
+
+  // 标签 / 分类是筛选 UI chrome（非 SEO 关键），保留客户端 use_resource。
+  let tags_res = use_resource(|| async move { list_case_tags().await.unwrap_or_default() });
+  let categories_res =
+    use_resource(|| async move { list_case_categories().await.unwrap_or_default() });
+
+  let tags = tags_res.read().as_ref().cloned();
+  let categories = categories_res.read().as_ref().cloned();
+  let submit_url = submit_case_url();
+
+  rsx! {
+      widgets::PageMeta {
+          title: t(lang, "case.title"),
+          description: t(lang, "case.subtitle"),
+          path: "/case".to_string(),
+      }
+      section { class: "py-12 min-h-screen bg-white dark:bg-slate-950",
+          LocalContainer {
+              div { class: "flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6 mb-8",
+                  div {
+                      p { class: "text-sm font-semibold uppercase tracking-widest text-flow mb-2", "Showcase" }
+                      h1 { class: "text-3xl md:text-4xl font-extrabold text-slate-900 dark:text-white", "{t(lang, \"case.title\")}" }
+                      p { class: "mt-3 max-w-2xl text-slate-600 dark:text-slate-400",
+                          "{t(lang, \"case.subtitle\")}"
+                      }
+                  }
+                  if let Some(submit_url) = submit_url {
+                      a {
+                          href: "{submit_url}",
+                          target: "_blank",
+                          rel: "noopener noreferrer",
+                          class: "shrink-0 inline-flex items-center gap-2 rounded-xl btn-flow px-5 py-2.5 text-sm font-semibold shadow-lg shadow-slate-500/20 hover:shadow-slate-500/40 transition-all",
+                          svg { class: "w-4 h-4", fill: "none", stroke: "currentColor", view_box: "0 0 24 24",
+                              path { stroke_linecap: "round", stroke_linejoin: "round", stroke_width: "2", d: "M12 4v16m8-8H4" }
+                          }
+                          "{t(lang, \"case.submit\")}"
+                      }
+                  }
+              }
+
+              div { class: "mb-6",
+                  Input {
+                      r#type: "search",
+                      value: query(),
+                      placeholder: t(lang, "case.search"),
+                      "aria-label": t(lang, "case.search"),
+                      class: "h-12 rounded-xl px-4",
+                      on_value_change: move |v: String| query.set(v),
+                  }
+              }
+
+              div { class: "mb-8 flex flex-wrap gap-2",
+                  CategoryChip {
+                      label: t(lang, "case.all").to_string(),
+                      value: None,
+                      count: None,
+                      current: selected_category(),
+                      on_select: move |value: Option<String>| selected_category.set(value),
+                  }
+                  match categories {
+                      Some(list) => rsx! {
+                          for category in list.iter() {
+                              CategoryChip {
+                                  key: "{category.category}",
+                                  label: category_label(lang, &category.category).to_string(),
+                                  value: Some(category.category.clone()),
+                                  count: Some(category.count),
+                                  current: selected_category(),
+                                  on_select: move |value: Option<String>| selected_category.set(value),
+                              }
+                          }
+                      },
+                      None => rsx! {},
+                  }
+              }
+
+              div { class: "mb-6 flex flex-wrap items-center gap-2",
+                  h2 { class: "text-sm font-bold text-slate-900 dark:text-white mr-2", "{t(lang, \"case.filter\")}" }
+                  match tags {
+                      Some(list) if list.is_empty() => rsx! {
+                          p { class: "text-sm text-slate-500 dark:text-slate-400", "{t(lang, \"case.no_tags\")}" }
+                      },
+                      Some(list) => rsx! {
+                          for tag in list.iter() {
+                              TagChip {
+                                  key: "{tag.tag}",
+                                  tag: tag.clone(),
+                                  current: selected_tag(),
+                                  on_select: move |value: Option<String>| selected_tag.set(value),
+                              }
+                          }
+                      },
+                      None => rsx! { p { class: "text-sm text-slate-400", "{t(lang, \"case.loading\")}" } },
+                  }
+                  if selected_tag().is_some() {
+                      Button {
+                          variant: ButtonVariant::Link,
+                          size: ButtonSize::Sm,
+                          class: "h-auto min-h-0 px-1 text-xs text-primary",
+                          onclick: move |_| selected_tag.set(None),
+                          "{t(lang, \"case.clear\")}"
+                      }
+                  }
+              }
+
+              // 重构 B5：结果网格改由 `CasesGrid` 用 use_server_future 服务端预取（首屏随 SSR
+              // 下发）；筛选 signal 作为 prop 传入，变化时 use_reactive 重取。搜索 UI 始终可见。
+              SuspenseBoundary {
+                  fallback: |_| rsx! { Loading {} },
+                  CasesGrid {
+                      query: query(),
+                      category: selected_category(),
+                      tag: selected_tag(),
+                  }
+              }
+          }
+      }
+  }
+}
+
+/// 结果网格（重构 B5）：`list_cases` 经 `use_server_future` + `use_reactive!` 服务端预取，
+/// 筛选条件（query / category / tag）作为 prop，变化时重取。置于 SuspenseBoundary 内。
+#[component]
+fn CasesGrid(query: String, category: Option<String>, tag: Option<String>) -> Element {
+  let lang = use_language_ctx();
+  let cases_res = use_server_future(use_reactive!(|query, category, tag| async move {
+    let tags = tag.map(|value| vec![value]);
+    list_cases(tags, category, Some(query)).await.unwrap_or_default()
+  }))?;
+  let list = cases_res().unwrap_or_default();
+
+  if list.is_empty() {
+    rsx! {
+        Empty { class: "rounded-2xl py-20",
+            EmptyDescription { "{t(lang, \"case.empty\")}" }
+        }
+    }
+  } else {
+    rsx! {
+        div { class: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6",
+            for case in list.iter() {
+                CaseCard { key: "{case.slug}", case: case.clone() }
+            }
+        }
+    }
+  }
+}
+
+#[component]
+fn CategoryChip(
+  label: String,
+  value: Option<String>,
+  count: Option<usize>,
+  current: Option<String>,
+  on_select: EventHandler<Option<String>>,
+) -> Element {
+  let active = current == value;
+  let emoji = value.as_deref().map(category_emoji).unwrap_or("🌐");
+  // 选中保留品牌渐变 `btn-flow`（main.css 无 layer，盖过 bg-primary）。
+  let cls = if active {
+    badge_class(
+      BadgeVariant::Default,
+      "gap-1.5 rounded-full btn-flow px-4 py-2 font-bold shadow-md shadow-slate-500/20",
+    )
+  } else {
+    badge_class(
+      BadgeVariant::Outline,
+      "gap-1.5 rounded-full bg-background px-4 py-2 text-muted-foreground hover:border-primary hover:text-primary",
+    )
+  };
+  rsx! {
+      button {
+          r#type: "button",
+          "aria-pressed": active.to_string(),
+          class: cls,
+          onclick: move |_| on_select.call(value.clone()),
+          span { "{emoji}" }
+          span { "{label}" }
+          if let Some(n) = count {
+              span { class: if active { "bg-white/20 px-1.5 py-0.5 rounded-full text-[10px]" } else { "bg-muted px-1.5 py-0.5 rounded-full text-[10px]" }, "{n}" }
+          }
+      }
+  }
+}
+
+/// 再点一次已选标签即取消筛选，`aria-pressed` 表达这种开关语义。
+#[component]
+fn TagChip(
+  tag: TagSummary,
+  current: Option<String>,
+  on_select: EventHandler<Option<String>>,
+) -> Element {
+  let active = current.as_deref() == Some(tag.tag.as_str());
+  let selected = if active { None } else { Some(tag.tag.clone()) };
+  // 未选中沿用每个标签自己的配色（tag_color_class 已含暗色）。
+  let cls = if active {
+    badge_class(BadgeVariant::Default, "gap-1 rounded-lg px-3 py-1.5 font-bold shadow-md")
+  } else {
+    badge_class(
+      BadgeVariant::Secondary,
+      &format!(
+        "gap-1 {} rounded-lg px-3 py-1.5 font-medium hover:brightness-95",
+        tag_color_class(&tag.tag)
+      ),
+    )
+  };
+  rsx! {
+      button {
+          r#type: "button",
+          "aria-pressed": active.to_string(),
+          class: cls,
+          onclick: move |_| on_select.call(selected.clone()),
+          "#{tag.tag}"
+          span { class: if active { "bg-white/20 px-1 py-0.5 rounded text-[10px]" } else { "opacity-50 text-[10px]" }, "{tag.count}" }
+      }
+  }
+}
+
+#[component]
+fn CaseCard(case: CaseSummary) -> Element {
+  let lang = use_language_ctx();
+  let href = format!("/case/{}", case.slug);
+  let cat_label = category_label(lang, &case.category);
+  let emoji = category_emoji(&case.category);
+  let badge = category_badge_class(&case.category);
+  // 没有封面就不画封面区（O7 / D4）：占位图只会让 17 张卡片看起来一样。
+  rsx! {
+      article { class: card_class("group overflow-hidden rounded-2xl hover:-translate-y-1 hover:shadow-xl hover:border-primary/50 transition-all duration-300"),
+          if let Some(cover) = case.cover_url.as_ref() {
+              a { href: "{href}", class: "block",
+                  div { class: "aspect-[16/9] overflow-hidden",
+                      img { src: "{cover}", alt: "{case.name}", loading: "lazy", class: "h-full w-full object-cover group-hover:scale-105 transition-transform duration-500" }
+                  }
+              }
+          }
+          div { class: "p-5",
+              div { class: "mb-3 flex items-center gap-2 flex-wrap",
+                  span { class: "rounded-full px-2.5 py-1 text-[11px] font-bold {badge}", "{emoji} {cat_label}" }
+                  if case.favorite {
+                      span { class: "rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-bold text-white", "{t(lang, \"case.featured\")}" }
+                  }
+                  span { class: "rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider", "{case.language}" }
+              }
+              a { href: "{href}", class: "block",
+                  h2 { class: "text-lg font-bold text-slate-900 dark:text-white group-hover:text-primary transition-colors line-clamp-2", "{case.name}" }
+              }
+              p { class: "mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-400 line-clamp-2", "{case.description}" }
+              if !case.tags.is_empty() {
+                  div { class: "mt-3 flex flex-wrap gap-1.5",
+                      for tag in case.tags.iter().take(4) {
+                          span { class: "rounded-md px-2 py-0.5 text-[11px] font-medium {tag_color_class(tag)}", "#{tag}" }
+                      }
+                      if case.tags.len() > 4 {
+                          span { class: "rounded-md bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[11px] text-slate-500", "+{case.tags.len() - 4}" }
+                      }
+                  }
+              }
+              div { class: "mt-4 border-t border-slate-100 dark:border-slate-800 pt-4" }
+              div { class: "flex items-center justify-between gap-2",
+                  // stars 未采集（0）时不显示，与首页精选案例一致。
+                  div { class: if case.stars > 0 { "flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400" } else { "hidden" },
+                      svg { class: "w-3.5 h-3.5 text-amber-500", fill: "currentColor", view_box: "0 0 20 20",
+                          path { d: "M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" }
+                      }
+                      span { class: "font-semibold", "{case.stars}" }
+                  }
+                  div { class: "flex items-center gap-2",
+                      a { href: "{case.repo}", target: "_blank", rel: "noopener noreferrer", title: "GitHub",
+                          class: "inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors",
+                          svg { class: "w-3.5 h-3.5", fill: "currentColor", view_box: "0 0 24 24",
+                              path { d: "M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" }
+                          }
+                          "Repo"
+                      }
+                      if let Some(site) = case.website.as_ref() {
+                          a { href: "{site}", target: "_blank", rel: "noopener noreferrer",
+                              class: "inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors",
+                              "🔗 Site"
+                          }
+                      }
+                      a { href: "{href}",
+                          class: "inline-flex items-center gap-1 rounded-lg btn-flow px-3 py-1.5 text-[11px] font-bold transition-colors",
+                          "{t(lang, \"case.detail\")}"
+                          svg { class: "w-3 h-3", fill: "none", stroke: "currentColor", view_box: "0 0 24 24",
+                              path { stroke_linecap: "round", stroke_linejoin: "round", stroke_width: "2", d: "M9 5l7 7-7 7" }
+                          }
+                      }
+                  }
+              }
+          }
+      }
+  }
+}
+
+/// 重构 B5：案例详情页拆为 SuspenseBoundary 外壳 + `CaseDetailLoaded`；案例内容
+/// （get_case）由 use_server_future 服务端预取（随 SSR HTML 下发，SEO）。
+///
+/// `footer` 插槽：讨论面板属于论坛模块，由组合根 app 注入（与 docs 同），
+/// cases 不依赖 forum；只在案例存在时渲染。
+#[component]
+pub fn CaseDetailPage(slug: String, footer: Element) -> Element {
+  rsx! {
+      section { class: "py-12 min-h-screen bg-white dark:bg-slate-950",
+          LocalContainer {
+              SuspenseBoundary {
+                  fallback: |_| rsx! { Loading {} },
+                  CaseDetailLoaded { slug: slug.clone(), footer: footer.clone() }
+              }
+          }
+      }
+  }
+}
+
+#[component]
+fn CaseDetailLoaded(slug: String, footer: Element) -> Element {
+  let lang = use_language_ctx();
+  let case_res = use_server_future(use_reactive!(|slug| async move { get_case(slug).await }))?;
+
+  match case_res() {
+    Some(Ok(Some(case))) => rsx! {
+        widgets::PageMeta {
+            title: case.name.clone(),
+            description: case.description.clone(),
+            path: format!("/case/{}", case.slug),
+            image: case.cover_url.clone(),
+        }
+        CaseDetailBody { case, footer: footer.clone() }
+    },
+    Some(Err(_)) => rsx! { widgets::LoadFailed { message: t(lang, "case.load_failed") } },
+    _ => rsx! {
+        widgets::NotFound { message: t(lang, "case.not_found") }
+        div { class: "text-center",
+            a { href: "/case", class: button_class(ButtonVariant::Primary, ButtonSize::Md, UiDensity::Comfortable, "font-semibold"),
+                "{t(lang, \"case.back\")}"
+            }
+        }
+    },
+  }
+}
+
+#[component]
+fn CaseDetailBody(case: Case, footer: Element) -> Element {
+  let lang = use_language_ctx();
+  let category = category_label(lang, &case.category);
+  let markdown_id = format!("case:{}", case.slug);
+  rsx! {
+      div { class: "max-w-5xl mx-auto",
+          a { href: "/case", class: "text-sm font-semibold text-primary hover:underline", "{t(lang, \"case.back\")}" }
+          div { class: "mt-6 overflow-hidden rounded-3xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50",
+              div { class: if case.cover_url.is_some() { "grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-0" } else { "grid grid-cols-1" },
+                  div { class: "p-8 md:p-10",
+                      div { class: "mb-4 flex flex-wrap items-center gap-2",
+                          span { class: "rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary",
+                              "{category}"
+                          }
+                          span { class: "rounded-full bg-slate-200 dark:bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-700 dark:text-slate-300",
+                              "{case.language}"
+                          }
+                          if case.favorite {
+                              span { class: "rounded-full bg-rose-100 dark:bg-rose-900/30 px-3 py-1 text-xs font-semibold text-rose-700 dark:text-rose-300",
+                                  "{t(lang, \"case.featured_label\")}"
+                              }
+                          }
+                      }
+                      h1 { class: "text-3xl md:text-4xl font-extrabold text-slate-900 dark:text-white", "{case.name}" }
+                      p { class: "mt-4 text-lg leading-8 text-slate-600 dark:text-slate-400", "{case.description}" }
+                      div { class: "mt-6 flex flex-wrap gap-2",
+                          for tag in case.tags.iter() {
+                              span { class: "rounded-full bg-white dark:bg-slate-800 px-2.5 py-1 text-xs text-slate-600 dark:text-slate-300",
+                                  "#{tag}"
+                              }
+                          }
+                      }
+                      div { class: "mt-8 flex flex-wrap gap-3",
+                          a {
+                              href: "{case.repo}",
+                              target: "_blank",
+                              rel: "noopener noreferrer",
+                              class: "inline-flex rounded-lg bg-slate-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-slate-900 hover:opacity-90",
+                              "{t(lang, \"case.view_repo\")}"
+                          }
+                          if let Some(site) = case.website.as_ref() {
+                              a {
+                                  href: "{site}",
+                                  target: "_blank",
+                                  rel: "noopener noreferrer",
+                                  class: button_class(ButtonVariant::Outline, ButtonSize::Md, UiDensity::Comfortable, "font-semibold hover:border-primary"),
+                                  "{t(lang, \"case.visit_site\")}"
+                              }
+                          }
+                      }
+                      div { class: "mt-5 text-sm text-slate-500 dark:text-slate-400",
+                          "{t(lang, \"case.author_prefix\")}"
+                          if let Some(author_url) = case.author_url.as_ref() {
+                              a { href: "{author_url}", target: "_blank", rel: "noopener noreferrer", class: "hover:text-primary", "{case.author}" }
+                          } else {
+                              span { "{case.author}" }
+                          }
+                          if case.stars > 0 {
+                              span { " · ★ {case.stars}" }
+                          }
+                          span { " · {case.date_added}" }
+                      }
+                  }
+                  if let Some(cover) = case.cover_url.as_ref() {
+                      div { class: "flex items-center justify-center bg-slate-100/70 dark:bg-slate-950/60 p-4 lg:p-6",
+                          img { src: "{cover}", alt: "{case.name}", class: "max-h-80 w-full rounded-2xl object-contain" }
+                      }
+                  }
+              }
+          }
+
+          div { class: "mt-10 grid grid-cols-1 lg:grid-cols-[1fr_20rem] gap-8",
+              article { class: "min-w-0 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/30 p-6 md:p-8",
+                  if let Some(readme) = case.readme_md.as_ref() {
+                      Markdown { content: crate::text::demote_h1(readme), blog_id: markdown_id }
+                  } else {
+                      div { class: "text-slate-500 dark:text-slate-400", "{t(lang, \"case.no_readme\")}" }
+                  }
+              }
+              aside { class: "lg:sticky lg:top-20 lg:self-start space-y-4",
+                  div { class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/40 p-5",
+                      h2 { class: "text-sm font-bold text-slate-900 dark:text-white mb-3", "{t(lang, \"case.project_info\")}" }
+                      dl { class: "space-y-3 text-sm",
+                          div {
+                              dt { class: "text-slate-500 dark:text-slate-400", "{t(lang, \"case.cat_field\")}" }
+                              dd { class: "font-semibold text-slate-900 dark:text-white", "{category}" }
+                          }
+                          div {
+                              dt { class: "text-slate-500 dark:text-slate-400", "{t(lang, \"case.lang_field\")}" }
+                              dd { class: "font-semibold text-slate-900 dark:text-white", "{case.language}" }
+                          }
+                          if case.stars > 0 {
+                              div {
+                                  dt { class: "text-slate-500 dark:text-slate-400", "Stars" }
+                                  dd { class: "font-semibold text-slate-900 dark:text-white", "{case.stars}" }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+
+          div { class: "mt-10", {footer} }
+      }
+  }
+}

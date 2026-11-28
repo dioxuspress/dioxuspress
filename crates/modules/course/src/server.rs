@@ -1,0 +1,3707 @@
+use dioxus::prelude::*;
+use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
+use std::fs;
+#[allow(unused_imports)]
+use std::path::{Path, PathBuf};
+
+// =============================================================
+// Public types (shared between server and client)
+// =============================================================
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LessonKind {
+  Doc,
+  Video,
+  Audio,
+  Code,
+}
+
+impl LessonKind {
+  pub fn as_str(self) -> &'static str {
+    match self {
+      LessonKind::Doc => "doc",
+      LessonKind::Video => "video",
+      LessonKind::Audio => "audio",
+      LessonKind::Code => "code",
+    }
+  }
+
+  pub fn icon(self) -> &'static str {
+    match self {
+      LessonKind::Doc => "\u{1F4C4}",   // 📄
+      LessonKind::Video => "\u{1F3AC}", // 🎬
+      LessonKind::Audio => "\u{1F3A7}", // 🎧
+      LessonKind::Code => "\u{1F4BB}",  // 💻
+    }
+  }
+}
+
+/// 媒体引用（音/视频）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MediaRef {
+  pub url: String,
+  #[serde(default)]
+  pub duration: Option<String>,
+  #[serde(default)]
+  pub poster: Option<String>,
+}
+
+/// 单个代码文件
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CodeFile {
+  pub name: String,
+  pub lang: String,
+  pub content: String,
+  pub raw_url: String,
+}
+
+/// 可下载附件
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DownloadFile {
+  pub name: String,
+  pub size_bytes: u64,
+  pub url: String,
+}
+
+/// 章节文档体（Doc Lesson 或带 index.md 的 Video/Audio/Code Lesson）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct DocBody {
+  pub markdown: String,
+  pub title: String,
+  pub description: String,
+}
+
+/// Lesson 摘要（出现在课程详情页章节列表里，不含正文/资源）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LessonSummary {
+  pub slug: String,
+  pub title: String,
+  pub kind: LessonKind,
+  pub order: i32,
+  #[serde(default)]
+  pub duration: Option<String>,
+  /// 是否免费试看课节（付费课程里仍可访问）。见 docs/SITE_REDESIGN_SPEC.md §5。
+  #[serde(default)]
+  pub preview: bool,
+}
+
+/// 完整 Lesson（PR-B 中由 LessonPage 使用）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Lesson {
+  pub slug: String,
+  pub title: String,
+  pub kind: LessonKind,
+  pub order: i32,
+  #[serde(default)]
+  pub doc: Option<DocBody>,
+  #[serde(default)]
+  pub audio: Option<MediaRef>,
+  #[serde(default)]
+  pub video: Option<MediaRef>,
+  #[serde(default)]
+  pub code: Vec<CodeFile>,
+  #[serde(default)]
+  pub downloads: Vec<DownloadFile>,
+  /// 免费试看课节。
+  #[serde(default)]
+  pub preview: bool,
+  /// 服务端鉴权结论：true 表示当前用户无权查看，正文/媒体/代码已清空，前端渲染 Paywall。
+  #[serde(default)]
+  pub locked: bool,
+  /// 所属课程价格；锁定时供 Paywall 展示。
+  #[serde(default)]
+  pub pricing: crate::pricing::Pricing,
+  /// 按课程大纲顺序（跨章）的上一节 / 下一节（T1）。
+  #[serde(default)]
+  pub prev: Option<LessonLink>,
+  #[serde(default)]
+  pub next: Option<LessonLink>,
+}
+
+/// 指向同一课程里另一节的链接；`path` 是 `<chapter>/<lesson>`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LessonLink {
+  pub path: String,
+  pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Chapter {
+  pub slug: String,
+  pub title: String,
+  #[serde(default)]
+  pub description: String,
+  pub order: i32,
+  pub lessons: Vec<LessonSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Course {
+  pub slug: String,
+  pub title: String,
+  #[serde(default)]
+  pub description: String,
+  #[serde(default)]
+  pub cover: Option<String>,
+  #[serde(default)]
+  pub tags: Vec<String>,
+  #[serde(default)]
+  pub level: Option<String>,
+  pub order: i32,
+  /// 访问层级：`free`（默认）| `paid` | `pro`。见 docs/SITE_REDESIGN_SPEC.md §5。
+  #[serde(default = "default_access_tier")]
+  pub access_tier: String,
+  /// 价格（分）；`access_tier != free` 时有意义。
+  #[serde(default)]
+  pub price: i64,
+  /// 货币代码，默认 CNY。
+  #[serde(default = "default_currency")]
+  pub currency: String,
+  /// 海外价格（美分，阶段 I）；未设时海外也按 `price` 收。
+  #[serde(default)]
+  pub price_usd: Option<i64>,
+  pub chapters: Vec<Chapter>,
+}
+
+/// `access_tier` 默认值（serde + 解析回退共用）。
+pub fn default_access_tier() -> String {
+  "free".to_string()
+}
+/// `currency` 默认值。
+pub fn default_currency() -> String {
+  "CNY".to_string()
+}
+
+impl Course {
+  /// 是否付费课程（非 free 层级）。
+  pub fn is_paid(&self) -> bool {
+    self.access_tier != "free"
+  }
+
+  /// schema.org `Course`（G8，课程详情页 JSON-LD；`url` 由 PageMeta 补）。
+  /// 付费课程每个币种一条 Offer；免费课程标 `isAccessibleForFree`。
+  pub fn schema(&self) -> serde_json::Value {
+    let mut v = serde_json::json!({
+      "@type": "Course",
+      "name": self.title,
+      "description": self.description,
+      "inLanguage": "zh-CN",
+      "provider": { "@type": "Organization", "name": widgets::site_name() },
+    });
+    if self.is_paid() {
+      let offer = |amount: i64, currency: &str| {
+        serde_json::json!({
+          "@type": "Offer",
+          "category": "Paid",
+          "price": format!("{}.{:02}", amount / 100, amount % 100),
+          "priceCurrency": currency,
+        })
+      };
+      let mut offers = vec![offer(self.price, &self.currency)];
+      if let Some(usd) = self.price_usd {
+        offers.push(offer(usd, "USD"));
+      }
+      v["offers"] = offers.into();
+    } else {
+      v["isAccessibleForFree"] = true.into();
+    }
+    v
+  }
+
+  /// 未登录访客能读的课节路径（免费课程全部；付费课程只有试看课节），
+  /// 直接用 `can_access_lesson` 判定。供 sitemap 收录（G6）。
+  pub fn open_lesson_paths(&self) -> Vec<String> {
+    self
+      .chapters
+      .iter()
+      .flat_map(|ch| {
+        ch.lessons
+          .iter()
+          .filter(|l| can_access_lesson(&self.access_tier, l.preview, false, false, false))
+          .map(move |l| format!("/course/{}/{}/{}", self.slug, ch.slug, l.slug))
+      })
+      .collect()
+  }
+
+  pub fn pricing(&self) -> crate::pricing::Pricing {
+    crate::pricing::Pricing {
+      price: self.price,
+      currency: self.currency.clone(),
+      price_usd: self.price_usd,
+    }
+  }
+}
+
+/// 课程列表摘要（不含 chapters 详情，仅做卡片网格）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CourseSummary {
+  pub slug: String,
+  pub title: String,
+  pub description: String,
+  pub cover: Option<String>,
+  pub tags: Vec<String>,
+  pub level: Option<String>,
+  pub order: i32,
+  pub chapter_count: usize,
+  pub lesson_count: usize,
+  #[serde(default = "default_access_tier")]
+  pub access_tier: String,
+  #[serde(default)]
+  pub price: i64,
+  #[serde(default = "default_currency")]
+  pub currency: String,
+  #[serde(default)]
+  pub price_usd: Option<i64>,
+}
+
+impl CourseSummary {
+  pub fn pricing(&self) -> crate::pricing::Pricing {
+    crate::pricing::Pricing {
+      price: self.price,
+      currency: self.currency.clone(),
+      price_usd: self.price_usd,
+    }
+  }
+}
+
+impl From<&Course> for CourseSummary {
+  fn from(c: &Course) -> Self {
+    let lesson_count = c.chapters.iter().map(|ch| ch.lessons.len()).sum();
+    CourseSummary {
+      slug: c.slug.clone(),
+      title: c.title.clone(),
+      description: c.description.clone(),
+      cover: c.cover.clone(),
+      tags: c.tags.clone(),
+      level: c.level.clone(),
+      order: c.order,
+      chapter_count: c.chapters.len(),
+      lesson_count,
+      access_tier: c.access_tier.clone(),
+      price: c.price,
+      currency: c.currency.clone(),
+      price_usd: c.price_usd,
+    }
+  }
+}
+
+// =============================================================
+// YAML metadata (server-only deserialization helpers)
+// =============================================================
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Default)]
+struct CourseMeta {
+  #[serde(default)]
+  title: String,
+  #[serde(default)]
+  description: String,
+  #[serde(default)]
+  cover: String,
+  #[serde(default)]
+  tags: Vec<String>,
+  #[serde(default)]
+  level: Option<String>,
+  #[serde(default)]
+  order: Option<i32>,
+  #[serde(default)]
+  access_tier: Option<String>,
+  #[serde(default)]
+  price: Option<i64>,
+  #[serde(default)]
+  currency: Option<String>,
+  #[serde(default)]
+  price_usd: Option<i64>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Default)]
+struct ChapterMeta {
+  #[serde(default)]
+  title: String,
+  #[serde(default)]
+  description: String,
+  #[serde(default)]
+  order: Option<i32>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct LessonFrontmatter {
+  #[serde(default)]
+  title: String,
+  #[serde(default)]
+  description: String,
+  #[serde(default)]
+  audio_url: String,
+  #[serde(default)]
+  video_url: String,
+  #[serde(default)]
+  duration: Option<String>,
+  #[serde(default)]
+  sidebar_position: Option<i32>,
+  #[serde(default)]
+  preview: bool,
+}
+
+// =============================================================
+// File-extension whitelists
+// =============================================================
+
+pub const AUDIO_EXTS: &[&str] = &["mp3", "m4a", "wav", "ogg", "flac", "aac", "opus", "mpeg"];
+pub const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv"];
+pub const COVER_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp"];
+pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "svg"];
+pub const CODE_EXTS: &[&str] = &[
+  "rs", "toml", "ts", "tsx", "js", "jsx", "py", "sh", "bash", "zsh", "yaml", "yml", "json", "sql",
+  "go", "java", "kt", "swift", "c", "cpp", "h", "hpp", "html", "css",
+];
+
+// =============================================================
+// Pure helpers (no fs/server feature needed)
+// =============================================================
+
+/// 用文件扩展名判断属于哪个白名单
+pub fn ext_in(name: &str, exts: &[&str]) -> bool {
+  let lower = name.to_ascii_lowercase();
+  let dot = match lower.rfind('.') {
+    Some(i) => i,
+    None => return false,
+  };
+  let ext = &lower[dot + 1..];
+  exts.contains(&ext)
+}
+
+/// 以"数字前缀 + 分隔符"驱动顺序：`01-foo` → (1, "foo")；无前缀返回 (i32::MAX, slug)
+pub fn parse_order_prefix(slug: &str) -> (i32, String) {
+  let bytes = slug.as_bytes();
+  let mut i = 0;
+  while i < bytes.len() && bytes[i].is_ascii_digit() {
+    i += 1;
+  }
+  if i == 0 {
+    return (i32::MAX, slug.to_string());
+  }
+  let num: i32 = slug[..i].parse().unwrap_or(i32::MAX);
+  let mut rest_start = i;
+  while rest_start < bytes.len() && (bytes[rest_start] == b'-' || bytes[rest_start] == b'_') {
+    rest_start += 1;
+  }
+  let rest = slug[rest_start..].to_string();
+  (num, rest)
+}
+
+/// 标题美化：把目录名 `01-rust-basics` 转成 `Rust Basics`
+pub fn humanize_title(slug: &str) -> String {
+  let (_, rest) = parse_order_prefix(slug);
+  let base = if rest.is_empty() { slug.to_string() } else { rest };
+  base
+    .split(['-', '_'])
+    .filter(|s| !s.is_empty())
+    .map(|w| {
+      let mut chars = w.chars();
+      match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+      }
+    })
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// 推测代码文件语言（基础版；前端再交给 PrismJS 高亮）
+pub fn lang_from_ext(name: &str) -> String {
+  let lower = name.to_ascii_lowercase();
+  let ext = lower.rsplit('.').next().unwrap_or("");
+  match ext {
+    "rs" => "rust",
+    "ts" | "tsx" => "typescript",
+    "js" | "jsx" => "javascript",
+    "py" => "python",
+    "sh" | "bash" | "zsh" => "bash",
+    "yaml" | "yml" => "yaml",
+    "json" => "json",
+    "toml" => "toml",
+    "sql" => "sql",
+    "go" => "go",
+    "java" => "java",
+    "kt" => "kotlin",
+    "swift" => "swift",
+    "c" | "h" => "c",
+    "cpp" | "hpp" | "cc" | "hh" => "cpp",
+    "html" => "html",
+    "css" => "css",
+    "typ" | "typst" => "typst",
+    "tex" | "latex" => "latex",
+    "md" | "mdx" | "markdown" => "markdown",
+    _ => "text",
+  }
+  .to_string()
+}
+
+/// 把 markdown 里的相对路径图片重写为绝对 URL
+/// - `![](./diagram.png)` / `![](images/diagram.png)` → `<base>/diagram.png` 或 `<base>/images/diagram.png`
+/// - `![](/foo)` / `![](http(s)://...)` 原样保留
+///
+/// 仅支持 `![alt](url)` 格式（不处理 reference link 与 HTML img）
+pub fn rewrite_image_urls(markdown: &str, base: &str) -> String {
+  let mut out = String::with_capacity(markdown.len());
+  let bytes = markdown.as_bytes();
+  let mut i = 0;
+  while i < bytes.len() {
+    // 找 "![" 起始
+    if i + 1 < bytes.len() && bytes[i] == b'!' && bytes[i + 1] == b'[' {
+      // 找 alt 关闭 ']'
+      let mut j = i + 2;
+      let mut depth = 1;
+      while j < bytes.len() && depth > 0 {
+        match bytes[j] {
+          b'[' => depth += 1,
+          b']' => depth -= 1,
+          _ => {}
+        }
+        j += 1;
+      }
+      // 此时 j 指向 ']' 之后；要求紧跟 '('
+      if depth == 0 && j < bytes.len() && bytes[j] == b'(' {
+        // 找匹配 ')'
+        let url_start = j + 1;
+        let mut k = url_start;
+        let mut pdepth = 1;
+        while k < bytes.len() && pdepth > 0 {
+          match bytes[k] {
+            b'(' => pdepth += 1,
+            b')' => pdepth -= 1,
+            _ => {}
+          }
+          if pdepth > 0 {
+            k += 1;
+          }
+        }
+        if pdepth == 0 && k <= bytes.len() {
+          // 把 ![alt] 部分原样写入
+          out.push_str(&markdown[i..url_start]);
+          let raw_url_with_title = &markdown[url_start..k];
+          // 拆 url 与 title（"url title"）
+          let (raw_url, title_part) = match raw_url_with_title.find(char::is_whitespace) {
+            Some(p) => (&raw_url_with_title[..p], &raw_url_with_title[p..]),
+            None => (raw_url_with_title, ""),
+          };
+          let rewritten = rewrite_one_url(raw_url.trim(), base);
+          out.push_str(&rewritten);
+          out.push_str(title_part);
+          out.push(')');
+          i = k + 1;
+          continue;
+        }
+      }
+    }
+    // 按 UTF-8 char 边界拷贝切片，避免将多字节字符拆成单字节造成乱码。
+    let mut next = i + 1;
+    while next < bytes.len() && !markdown.is_char_boundary(next) {
+      next += 1;
+    }
+    out.push_str(&markdown[i..next]);
+    i = next;
+  }
+  out
+}
+
+fn rewrite_one_url(url: &str, base: &str) -> String {
+  if url.is_empty() {
+    return url.to_string();
+  }
+  if url.starts_with("http://") || url.starts_with("https://") || url.starts_with('/') {
+    return url.to_string();
+  }
+  let stripped = url.strip_prefix("./").unwrap_or(url);
+  let trimmed_base = base.trim_end_matches('/');
+  format!("{}/{}", trimmed_base, stripped)
+}
+
+/// 解析 markdown 中的 frontmatter (YAML between ---)
+#[cfg(feature = "server")]
+pub(crate) fn parse_frontmatter_lesson(content: &str) -> (LessonFrontmatter, String) {
+  match widgets::split_frontmatter(content) {
+    Some((yaml, body)) => (serde_yaml::from_str(yaml).unwrap_or_default(), body.to_string()),
+    None => (LessonFrontmatter::default(), content.to_string()),
+  }
+}
+
+// =============================================================
+// Server-only filesystem scanners
+// =============================================================
+
+#[cfg(feature = "server")]
+pub fn get_courses_root() -> PathBuf {
+  app_core::utils::content_dir("courses")
+}
+
+#[cfg(feature = "server")]
+fn skip_entry(name: &str) -> bool {
+  name.starts_with('_') || name.starts_with('.')
+}
+
+/// 在目录中查找第一个白名单扩展名的文件，按字母升序
+#[cfg(feature = "server")]
+fn find_first_with_ext(dir: &Path, exts: &[&str]) -> Option<String> {
+  let mut found: Vec<String> = fs::read_dir(dir)
+    .ok()?
+    .flatten()
+    .filter(|e| e.path().is_file())
+    .filter_map(|e| {
+      let name = e.file_name().to_str()?.to_string();
+      if ext_in(&name, exts) {
+        Some(name)
+      } else {
+        None
+      }
+    })
+    .collect();
+  found.sort();
+  found.into_iter().next()
+}
+
+#[cfg(feature = "server")]
+pub fn find_audio_file(dir: &Path) -> Option<String> {
+  find_first_with_ext(dir, AUDIO_EXTS)
+}
+
+#[cfg(feature = "server")]
+pub fn find_video_file(dir: &Path) -> Option<String> {
+  find_first_with_ext(dir, VIDEO_EXTS)
+}
+
+#[cfg(feature = "server")]
+pub fn find_cover_image(dir: &Path) -> Option<String> {
+  let candidates = ["cover", "Cover", "COVER"];
+  for stem in candidates {
+    for ext in COVER_EXTS {
+      let p = dir.join(format!("{stem}.{ext}"));
+      if p.exists() {
+        return Some(format!("{stem}.{ext}"));
+      }
+    }
+  }
+  None
+}
+
+/// 解析媒体相对/绝对/http URL -> 最终 URL
+/// - http(s):// 或 / 开头 → 原样
+/// - 否则相对于 base
+#[cfg(feature = "server")]
+pub fn resolve_media_url(value: &str, base: &str) -> Option<String> {
+  let v = value.trim();
+  if v.is_empty() {
+    return None;
+  }
+  if v.starts_with("http://") || v.starts_with("https://") || v.starts_with('/') {
+    return Some(v.to_string());
+  }
+  let trimmed_base = base.trim_end_matches('/');
+  let trimmed_v = v.strip_prefix("./").unwrap_or(v);
+  Some(format!("{}/{}", trimmed_base, trimmed_v))
+}
+
+/// 推断 lesson 类型；返回 None 表示该目录应被跳过
+#[cfg(feature = "server")]
+pub fn infer_lesson_kind(dir: &Path) -> Option<LessonKind> {
+  if dir.join("index.md").exists() || dir.join("index.mdx").exists() {
+    return Some(LessonKind::Doc);
+  }
+  if find_video_file(dir).is_some() {
+    return Some(LessonKind::Video);
+  }
+  if find_audio_file(dir).is_some() {
+    return Some(LessonKind::Audio);
+  }
+  // code: code/ 目录有白名单文件，或目录里直接有代码文件
+  let code_dir = dir.join("code");
+  if code_dir.is_dir() {
+    let any = fs::read_dir(&code_dir)
+      .ok()
+      .map(|it| {
+        it.flatten().any(|e| {
+          e.path().is_file()
+            && e.file_name().to_str().map(|n| ext_in(n, CODE_EXTS)).unwrap_or(false)
+        })
+      })
+      .unwrap_or(false);
+    if any {
+      return Some(LessonKind::Code);
+    }
+  }
+  let direct_code = fs::read_dir(dir)
+    .ok()
+    .map(|it| {
+      it.flatten().any(|e| {
+        e.path().is_file() && e.file_name().to_str().map(|n| ext_in(n, CODE_EXTS)).unwrap_or(false)
+      })
+    })
+    .unwrap_or(false);
+  if direct_code {
+    return Some(LessonKind::Code);
+  }
+  None
+}
+
+/// 扫描一个 lesson 目录的 attachments
+#[cfg(feature = "server")]
+pub fn scan_attachments(dir: &Path, base_url: &str) -> Vec<DownloadFile> {
+  let att = dir.join("attachments");
+  if !att.is_dir() {
+    return vec![];
+  }
+  let mut out: Vec<DownloadFile> = fs::read_dir(&att)
+    .into_iter()
+    .flatten()
+    .flatten()
+    .filter(|e| e.path().is_file())
+    .filter_map(|e| {
+      let name = e.file_name().to_str()?.to_string();
+      if name.starts_with('.') {
+        return None;
+      }
+      let size = e.metadata().ok().map(|m| m.len()).unwrap_or(0);
+      let url = format!("{}/attachments/{}", base_url.trim_end_matches('/'), name);
+      Some(DownloadFile { name, size_bytes: size, url })
+    })
+    .collect();
+  out.sort_by(|a, b| a.name.cmp(&b.name));
+  out
+}
+
+/// 扫描代码文件（先看 code/，再看 lesson 根目录里的代码文件）
+#[cfg(feature = "server")]
+pub fn scan_code_files(dir: &Path, base_url: &str) -> Vec<CodeFile> {
+  let mut out: Vec<CodeFile> = vec![];
+  let code_dir = dir.join("code");
+  let mut sources: Vec<(PathBuf, String)> = vec![];
+  if code_dir.is_dir() {
+    if let Ok(it) = fs::read_dir(&code_dir) {
+      for e in it.flatten() {
+        let p = e.path();
+        if !p.is_file() {
+          continue;
+        }
+        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+          if !name.starts_with('.') && ext_in(name, CODE_EXTS) {
+            sources.push((p.clone(), format!("code/{name}")));
+          }
+        }
+      }
+    }
+  } else {
+    // 仅 Code-only Lesson 时退化扫 lesson 根目录
+    if let Ok(it) = fs::read_dir(dir) {
+      for e in it.flatten() {
+        let p = e.path();
+        if !p.is_file() {
+          continue;
+        }
+        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+          if !name.starts_with('.')
+            && !name.eq_ignore_ascii_case("index.md")
+            && !name.eq_ignore_ascii_case("index.mdx")
+            && ext_in(name, CODE_EXTS)
+          {
+            sources.push((p.clone(), name.to_string()));
+          }
+        }
+      }
+    }
+  }
+  sources.sort_by(|a, b| a.1.cmp(&b.1));
+  for (path, rel) in sources {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
+    let content = fs::read_to_string(&path).unwrap_or_default();
+    let raw_url = format!("{}/{}", base_url.trim_end_matches('/'), rel);
+    out.push(CodeFile { name: name.clone(), lang: lang_from_ext(&name), content, raw_url });
+  }
+  out
+}
+
+/// 拆出正文开头的 `# 标题`：课节页已把标题渲染成 h1，正文里再有一个就会显示两次。
+/// 返回 `(标题文字, 去掉该行后的正文)`；开头不是 H1 时原样返回。
+#[cfg(feature = "server")]
+fn split_title_heading(body: &str) -> (Option<&str>, &str) {
+  let Some(heading) = body.trim_start().strip_prefix("# ") else {
+    return (None, body);
+  };
+  let (line, after) = heading.split_once('\n').unwrap_or((heading, ""));
+  (Some(line.trim()), after.trim_start())
+}
+
+/// 读取一个 lesson 目录的完整内容（含正文 / 媒体 / 代码 / 下载）
+#[cfg(feature = "server")]
+pub fn read_lesson(course_slug: &str, chapter_slug: &str, lesson_slug: &str) -> Option<Lesson> {
+  if ![course_slug, chapter_slug, lesson_slug].into_iter().all(app_core::utils::is_safe_slug) {
+    return None;
+  }
+  let root = get_courses_root();
+  let dir = root.join(course_slug).join(chapter_slug).join(lesson_slug);
+  if !dir.is_dir() {
+    return None;
+  }
+  let kind = infer_lesson_kind(&dir)?;
+  let base_url = format!("/courses/{}/{}/{}", course_slug, chapter_slug, lesson_slug);
+  let (order, _) = parse_order_prefix(lesson_slug);
+
+  // 解析 index.md 正文（如有）
+  let mut doc_body: Option<DocBody> = None;
+  let mut frontmatter = LessonFrontmatter::default();
+  let md_path = if dir.join("index.md").exists() {
+    Some(dir.join("index.md"))
+  } else if dir.join("index.mdx").exists() {
+    Some(dir.join("index.mdx"))
+  } else {
+    None
+  };
+  if let Some(p) = md_path {
+    let raw = fs::read_to_string(&p).unwrap_or_default();
+    let (fm, body) = parse_frontmatter_lesson(&raw);
+    // frontmatter 标题优先（列表页也用它），没有时退到正文 H1，再退到 slug
+    let (heading, body) = split_title_heading(&body);
+    let title = match (fm.title.is_empty(), heading) {
+      (false, _) => fm.title.clone(),
+      (true, Some(h)) if !h.is_empty() => h.to_string(),
+      _ => humanize_title(lesson_slug),
+    };
+    let rewritten = rewrite_image_urls(body, &base_url);
+    doc_body = Some(DocBody { markdown: rewritten, title, description: fm.description.clone() });
+    frontmatter = fm;
+  }
+
+  // 媒体
+  let audio = match resolve_media_url(&frontmatter.audio_url, &base_url) {
+    Some(u) => Some(MediaRef { url: u, duration: frontmatter.duration.clone(), poster: None }),
+    None => find_audio_file(&dir).map(|f| MediaRef {
+      url: format!("{}/{}", base_url, f),
+      duration: frontmatter.duration.clone(),
+      poster: None,
+    }),
+  };
+  let video = match resolve_media_url(&frontmatter.video_url, &base_url) {
+    Some(u) => Some(MediaRef { url: u, duration: frontmatter.duration.clone(), poster: None }),
+    None => find_video_file(&dir).map(|f| MediaRef {
+      url: format!("{}/{}", base_url, f),
+      duration: frontmatter.duration.clone(),
+      poster: None,
+    }),
+  };
+
+  let code = scan_code_files(&dir, &base_url);
+  let downloads = scan_attachments(&dir, &base_url);
+
+  let title =
+    doc_body.as_ref().map(|d| d.title.clone()).unwrap_or_else(|| humanize_title(lesson_slug));
+
+  Some(Lesson {
+    slug: lesson_slug.to_string(),
+    title,
+    kind,
+    order,
+    doc: doc_body,
+    audio,
+    video,
+    code,
+    downloads,
+    preview: frontmatter.preview,
+    locked: false,
+    pricing: Default::default(),
+    prev: None,
+    next: None,
+  })
+}
+
+/// 课程大纲里 `<chapter>/<lesson>` 的前后两节，跨章连续。
+pub fn lesson_neighbors(
+  course: &Course,
+  chapter: &str,
+  lesson: &str,
+) -> (Option<LessonLink>, Option<LessonLink>) {
+  let flat: Vec<LessonLink> = course
+    .chapters
+    .iter()
+    .flat_map(|ch| {
+      ch.lessons
+        .iter()
+        .map(|l| LessonLink { path: format!("{}/{}", ch.slug, l.slug), title: l.title.clone() })
+    })
+    .collect();
+  let current = format!("{chapter}/{lesson}");
+  let Some(i) = flat.iter().position(|l| l.path == current) else {
+    return (None, None);
+  };
+  let prev = i.checked_sub(1).and_then(|p| flat.get(p)).cloned();
+  (prev, flat.get(i + 1).cloned())
+}
+
+/// 扫描一个 chapter 目录，返回带 LessonSummary 的 Chapter
+#[cfg(feature = "server")]
+pub fn read_chapter(course_slug: &str, chapter_slug: &str) -> Option<Chapter> {
+  if ![course_slug, chapter_slug].into_iter().all(app_core::utils::is_safe_slug) {
+    return None;
+  }
+  let root = get_courses_root();
+  let dir = root.join(course_slug).join(chapter_slug);
+  if !dir.is_dir() {
+    return None;
+  }
+
+  // 元数据：_chapter.yaml 优先；否则从目录名推断
+  let meta_path = dir.join("_chapter.yaml");
+  let alt_meta_path = dir.join("_chapter.yml");
+  let mut meta = ChapterMeta::default();
+  let path = if meta_path.exists() {
+    Some(meta_path)
+  } else if alt_meta_path.exists() {
+    Some(alt_meta_path)
+  } else {
+    None
+  };
+  if let Some(p) = path {
+    if let Ok(content) = fs::read_to_string(&p) {
+      meta = serde_yaml::from_str(&content).unwrap_or_default();
+    }
+  }
+  let (prefix_order, _) = parse_order_prefix(chapter_slug);
+  let order = meta.order.unwrap_or(prefix_order);
+  let title =
+    if !meta.title.is_empty() { meta.title.clone() } else { humanize_title(chapter_slug) };
+
+  // 扫描 lesson 子目录
+  let mut lessons: Vec<LessonSummary> = vec![];
+  if let Ok(it) = fs::read_dir(&dir) {
+    for e in it.flatten() {
+      let p = e.path();
+      if !p.is_dir() {
+        continue;
+      }
+      let name = match p.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n.to_string(),
+        None => continue,
+      };
+      if skip_entry(&name) {
+        continue;
+      }
+      let kind = match infer_lesson_kind(&p) {
+        Some(k) => k,
+        None => continue,
+      };
+      let (lorder, _) = parse_order_prefix(&name);
+
+      // 标题：优先取 index.md frontmatter title，再退化目录名
+      let mut lesson_title = humanize_title(&name);
+      let mut duration: Option<String> = None;
+      let mut preview = false;
+      let md = p.join("index.md");
+      let mdx = p.join("index.mdx");
+      let md_path = if md.exists() {
+        Some(md)
+      } else if mdx.exists() {
+        Some(mdx)
+      } else {
+        None
+      };
+      if let Some(mp) = md_path {
+        if let Ok(raw) = fs::read_to_string(&mp) {
+          let (fm, _) = parse_frontmatter_lesson(&raw);
+          if !fm.title.is_empty() {
+            lesson_title = fm.title;
+          }
+          duration = fm.duration;
+          preview = fm.preview;
+        }
+      }
+
+      lessons.push(LessonSummary {
+        slug: name,
+        title: lesson_title,
+        kind,
+        order: lorder,
+        duration,
+        preview,
+      });
+    }
+  }
+  lessons.sort_by(|a, b| a.order.cmp(&b.order).then(a.slug.cmp(&b.slug)));
+
+  Some(Chapter {
+    slug: chapter_slug.to_string(),
+    title,
+    description: meta.description.clone(),
+    order,
+    lessons,
+  })
+}
+
+/// 解析 `course.yaml`；失败记 error 并返回 `None`（课程下线，而不是按免费放开）。
+#[cfg(feature = "server")]
+fn parse_course_meta(course_slug: &str, text: &str) -> Option<CourseMeta> {
+  match serde_yaml::from_str(text) {
+    Ok(meta) => Some(meta),
+    Err(e) => {
+      tracing::error!(course = course_slug, error = %e, "course: invalid course.yaml; course hidden");
+      None
+    }
+  }
+}
+
+/// 读取单个课程（含全部章节与 lesson summary）
+#[cfg(feature = "server")]
+pub fn read_course(course_slug: &str) -> Option<Course> {
+  // slug 来自可直接调用的 server fn；付费判断（read_course）与取正文（read_lesson）
+  // 必须解析到同一目录，所以三个读取函数都只接受单段 slug。
+  if !app_core::utils::is_safe_slug(course_slug) {
+    return None;
+  }
+  let root = get_courses_root();
+  let dir = root.join(course_slug);
+  if !dir.is_dir() {
+    return None;
+  }
+
+  // course.yaml 元数据
+  let mut meta = CourseMeta::default();
+  let yaml = dir.join("course.yaml");
+  let yml = dir.join("course.yml");
+  let path = if yaml.exists() {
+    Some(yaml)
+  } else if yml.exists() {
+    Some(yml)
+  } else {
+    None
+  };
+  if let Some(p) = path {
+    // 读不了或写错时整门课下线：回落默认值会把 access_tier 变成 free（Y4）。
+    let text = match fs::read_to_string(&p) {
+      Ok(t) => t,
+      Err(e) => {
+        tracing::error!(course = course_slug, error = %e, "course: cannot read course.yaml; course hidden");
+        return None;
+      }
+    };
+    meta = parse_course_meta(course_slug, &text)?;
+  }
+  let (prefix_order, _) = parse_order_prefix(course_slug);
+  let order = meta.order.unwrap_or(prefix_order);
+  let title = if !meta.title.is_empty() { meta.title.clone() } else { humanize_title(course_slug) };
+
+  // 封面：course.yaml.cover > 自动探测
+  let cover_url = if !meta.cover.is_empty() {
+    if meta.cover.starts_with("http") || meta.cover.starts_with('/') {
+      Some(meta.cover.clone())
+    } else {
+      Some(format!("/courses/{}/{}", course_slug, meta.cover.trim_start_matches("./")))
+    }
+  } else {
+    find_cover_image(&dir).map(|f| format!("/courses/{}/{}", course_slug, f))
+  };
+
+  // 扫章节
+  let mut chapters: Vec<Chapter> = vec![];
+  if let Ok(it) = fs::read_dir(&dir) {
+    for e in it.flatten() {
+      let p = e.path();
+      if !p.is_dir() {
+        continue;
+      }
+      let name = match p.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n.to_string(),
+        None => continue,
+      };
+      if skip_entry(&name) {
+        continue;
+      }
+      if let Some(ch) = read_chapter(course_slug, &name) {
+        if !ch.lessons.is_empty() {
+          chapters.push(ch);
+        }
+      }
+    }
+  }
+  chapters.sort_by(|a, b| a.order.cmp(&b.order).then(a.slug.cmp(&b.slug)));
+
+  Some(Course {
+    slug: course_slug.to_string(),
+    title,
+    description: meta.description.clone(),
+    cover: cover_url,
+    tags: meta.tags.clone(),
+    level: meta.level.clone(),
+    order,
+    access_tier: meta.access_tier.clone().unwrap_or_else(default_access_tier),
+    price: meta.price.unwrap_or(0),
+    currency: meta.currency.clone().unwrap_or_else(default_currency),
+    price_usd: meta.price_usd,
+    chapters,
+  })
+}
+
+/// 扫描整个 courses 根目录
+#[cfg(feature = "server")]
+pub fn scan_courses(root: &Path) -> Vec<Course> {
+  if !root.exists() {
+    return vec![];
+  }
+  let mut out: Vec<Course> = vec![];
+  if let Ok(it) = fs::read_dir(root) {
+    for e in it.flatten() {
+      let p = e.path();
+      if !p.is_dir() {
+        continue;
+      }
+      let name = match p.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n.to_string(),
+        None => continue,
+      };
+      if skip_entry(&name) {
+        continue;
+      }
+      if let Some(c) = read_course(&name) {
+        if !c.chapters.is_empty() {
+          out.push(c);
+        }
+      }
+    }
+  }
+  out.sort_by(|a, b| a.order.cmp(&b.order).then(a.slug.cmp(&b.slug)));
+  out
+}
+
+// =============================================================
+// Server functions exposed to the frontend
+// =============================================================
+
+#[post("/api/courses/list")]
+pub async fn list_courses() -> Result<Vec<CourseSummary>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    let root = get_courses_root();
+    let courses = scan_courses(&root);
+    Ok(courses.iter().map(CourseSummary::from).collect())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(vec![])
+  }
+}
+
+#[post("/api/courses/get")]
+pub async fn get_course(slug: String) -> Result<Option<Course>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    Ok(read_course(&slug))
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = slug;
+    Ok(None)
+  }
+}
+
+#[post("/api/courses/lesson")]
+pub async fn get_lesson(
+  slug: String,
+  chapter: String,
+  lesson: String,
+) -> Result<Option<Lesson>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    let mut lesson_opt = read_lesson(&slug, &chapter, &lesson);
+    if let Some(lesson_ref) = lesson_opt.as_mut() {
+      let course = read_course(&slug);
+      if let Some(course) = course.as_ref() {
+        (lesson_ref.prev, lesson_ref.next) = lesson_neighbors(course, &chapter, &lesson);
+      }
+      // 访问控制：付费/Pro 课程的非试看课节需鉴权（M4c + M6）。
+      // 鉴权在服务端进行，锁定时清空正文/媒体/代码，绝不把付费内容下发到客户端。
+      if let Some(course) = course.as_ref().filter(|c| c.is_paid()) {
+        lesson_ref.pricing = course.pricing();
+        let user = current_session_user();
+        if !lesson_access_allowed(course, &slug, lesson_ref.preview, user.as_ref()).await? {
+          lesson_ref.locked = true;
+          lesson_ref.doc = None;
+          lesson_ref.audio = None;
+          lesson_ref.video = None;
+          lesson_ref.code = Vec::new();
+          lesson_ref.downloads = Vec::new();
+        }
+      }
+    }
+    Ok(lesson_opt)
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (slug, chapter, lesson);
+    Ok(None)
+  }
+}
+
+/// 当前用户能否看某课节的正文与媒体（[`get_lesson`] 与 `/courses` 静态文件共用）。
+/// admin 直接放行，无需查库。
+#[cfg(feature = "server")]
+async fn lesson_access_allowed(
+  course: &Course,
+  course_slug: &str,
+  preview: bool,
+  user: Option<&app_core::session::SessionUser>,
+) -> Result<bool, ServerFnError> {
+  if !course.is_paid() {
+    return Ok(true);
+  }
+  let (is_admin, has_ent, is_pro) = match user {
+    Some(u) if u.is_admin() => (true, false, false),
+    Some(u) => {
+      let db = open_db().await?;
+      (false, has_entitlement(&db, u.id, course_slug).await, is_pro_member(&db, u.id).await)
+    }
+    None => (false, false, false),
+  };
+  Ok(can_access_lesson(&course.access_tier, preview, is_admin, has_ent, is_pro))
+}
+
+/// `/courses` 静态目录下一个文件的归属。
+#[cfg(feature = "server")]
+#[derive(Debug, PartialEq)]
+enum CourseFilePath {
+  /// 课程或章节目录下的文件（封面等），随课程公开。
+  Course,
+  /// 课时目录内的文件（正文 / 图片 / 音视频 / 代码 / 附件），与课时同权限。
+  Lesson { course: String, chapter: String, lesson: String },
+}
+
+/// 解析 `/courses` 之后的路径，如 `/rust-basics/01-x/01-y/a.mp3`。按 ServeDir
+/// 的方式逐段解码；出现空段 / `.` / `..` / 解码出的 `/` 或 `\` 时返回 `None`，由调用方拒绝。
+#[cfg(feature = "server")]
+fn parse_course_file_path(path: &str) -> Option<CourseFilePath> {
+  let segments = path
+    .trim_start_matches('/')
+    .split('/')
+    .map(|s| percent_encoding::percent_decode_str(s).decode_utf8().ok())
+    .collect::<Option<Vec<_>>>()?;
+  if segments.iter().any(|s| s.is_empty() || s == "." || s == ".." || s.contains(['/', '\\'])) {
+    return None;
+  }
+  match segments.as_slice() {
+    [_, _] | [_, _, _] => Some(CourseFilePath::Course),
+    [course, chapter, lesson, _, ..] => Some(CourseFilePath::Lesson {
+      course: course.to_string(),
+      chapter: chapter.to_string(),
+      lesson: lesson.to_string(),
+    }),
+    _ => None,
+  }
+}
+
+/// SEC-02：`/courses` 静态文件能否发给这个请求。`path` 是 nest 之后的路径。
+///
+/// 课时目录内的文件按 [`get_lesson`] 的同一规则判定；查不到课程 / 课时、
+/// 查库失败一律拒绝，免得课程配置出错时付费内容变成公开。
+#[cfg(feature = "server")]
+pub async fn may_serve_course_file(path: &str, cookie_header: Option<&str>) -> bool {
+  let (course_slug, preview) = match parse_course_file_path(path) {
+    None => return false,
+    Some(CourseFilePath::Course) => return true,
+    Some(CourseFilePath::Lesson { course, chapter, lesson }) => {
+      match read_lesson(&course, &chapter, &lesson) {
+        Some(l) => (course, l.preview),
+        None => return false,
+      }
+    }
+  };
+  let Some(course) = read_course(&course_slug) else {
+    return false;
+  };
+  let user = app_core::session::parse_session_from_cookie_header(cookie_header);
+  match lesson_access_allowed(&course, &course_slug, preview, user.as_ref()).await {
+    Ok(allowed) => allowed,
+    Err(e) => {
+      tracing::warn!(error = %e, path, "courses: access check failed, denying file");
+      false
+    }
+  }
+}
+
+// =============================================================
+// Progress tracking (PR-C)
+// =============================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct LessonProgress {
+  pub lesson_path: String,
+  pub completed: bool,
+  pub position_seconds: Option<i32>,
+}
+
+/// server-only: 从请求 cookie 提取当前用户
+#[cfg(feature = "server")]
+fn current_session_user() -> Option<app_core::session::SessionUser> {
+  app_core::session::current_session_user()
+}
+
+/// 限制：仅 admin / member 可写进度与标注。
+///
+/// SEC-13：先回查 DB 的 token_version（角色变更会 bump 它），降级 / 删除的用户
+/// 旧 JWT 立即失效，再看 JWT 内角色。
+#[cfg(feature = "server")]
+async fn require_writer() -> Result<app_core::session::SessionUser, ServerFnError> {
+  let user = app_core::session::require_session_verified().await?;
+  if user.role == "admin" || user.role == "member" {
+    Ok(user)
+  } else {
+    Err(ServerFnError::new("当前角色无权执行该操作".to_string()))
+  }
+}
+
+#[cfg(feature = "server")]
+async fn open_db() -> Result<sea_orm::DatabaseConnection, ServerFnError> {
+  app_core::db::get_or_init_pool().await.map_err(|e| ServerFnError::new(e.to_string()))
+}
+
+/// server-only：用户是否拥有某课程权益（get_lesson 访问控制复用）。
+#[cfg(feature = "server")]
+async fn has_entitlement(
+  db: &sea_orm::DatabaseConnection,
+  user_id: i32,
+  course_slug: &str,
+) -> bool {
+  use app_core::entities::entitlement;
+  use sea_orm::EntityTrait;
+  entitlement::Entity::find_by_id((user_id, course_slug.to_string()))
+    .one(db)
+    .await
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+/// server-only：用户是否为**有效** Pro 会员（M6）。
+#[cfg(feature = "server")]
+async fn is_pro_member(db: &sea_orm::DatabaseConnection, user_id: i32) -> bool {
+  use app_core::entities::membership;
+  use sea_orm::EntityTrait;
+  membership::Entity::find_by_id(user_id)
+    .one(db)
+    .await
+    .ok()
+    .flatten()
+    .map(|m| m.tier == "pro" && m.expires_at > chrono::Utc::now().fixed_offset())
+    .unwrap_or(false)
+}
+
+/// 课节访问判定（纯函数，便于单测）。
+///
+/// 规则：free 全开；其余在 试看 / admin / 单课权益 时放行；`pro` 课程额外允许
+/// 有效 Pro 会员。详见 docs/SITE_REDESIGN_SPEC.md §5.4 + §5.6 D。
+pub fn can_access_lesson(
+  access_tier: &str,
+  preview: bool,
+  is_admin: bool,
+  has_entitlement: bool,
+  is_pro_member: bool,
+) -> bool {
+  if access_tier == "free" {
+    return true;
+  }
+  if preview || is_admin || has_entitlement {
+    return true;
+  }
+  access_tier == "pro" && is_pro_member
+}
+
+/// Admin 列表项：一条权益 + 用户昵称。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EntitlementInfo {
+  pub user_id: i32,
+  pub nickname: String,
+  pub course_slug: String,
+  pub source: String,
+  pub granted_at: String,
+}
+
+/// 当前用户拥有的课程 slug 列表（前端判断按钮态用；真正鉴权在服务端）。
+#[post("/api/courses/entitlements/mine")]
+pub async fn list_my_entitlements() -> Result<Vec<String>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::entitlement;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let user = match current_session_user() {
+      Some(u) => u,
+      None => return Ok(vec![]),
+    };
+    let db = open_db().await?;
+    let rows = entitlement::Entity::find()
+      .filter(entitlement::Column::UserId.eq(user.id))
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(rows.into_iter().map(|r| r.course_slug).collect())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(vec![])
+  }
+}
+
+/// Admin：列出全部权益（含用户昵称）。
+#[post("/api/courses/entitlements/list")]
+pub async fn list_entitlements() -> Result<Vec<EntitlementInfo>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::{entitlement, user as user_entity};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    app_core::session::require_admin().await?;
+    let db = open_db().await?;
+    let rows = entitlement::Entity::find()
+      .order_by_desc(entitlement::Column::GrantedAt)
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    let mut ids: Vec<i32> = rows.iter().map(|r| r.user_id).collect();
+    ids.sort();
+    ids.dedup();
+    let users = user_entity::Entity::find()
+      .filter(user_entity::Column::Id.is_in(ids))
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    let name_of =
+      |id: i32| users.iter().find(|u| u.id == id).map(|u| u.nickname.clone()).unwrap_or_default();
+    Ok(
+      rows
+        .into_iter()
+        .map(|r| EntitlementInfo {
+          user_id: r.user_id,
+          nickname: name_of(r.user_id),
+          course_slug: r.course_slug,
+          source: r.source,
+          granted_at: r.granted_at.to_rfc3339(),
+        })
+        .collect(),
+    )
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(vec![])
+  }
+}
+
+/// server-only：写入/刷新权益（幂等）。供 admin 授予与支付回调发货共用，不做鉴权。
+/// 管理员授予覆盖已有来源；购买（`purchase`）已有权益时不动。
+#[cfg(feature = "server")]
+async fn grant_entitlement_internal(
+  db: &sea_orm::DatabaseConnection,
+  user_id: i32,
+  course_slug: String,
+  source: &str,
+) -> Result<(), ServerFnError> {
+  use app_core::entities::entitlement;
+  use chrono::Utc;
+  use sea_orm::{sea_query::OnConflict, ActiveValue::Set, EntityTrait};
+  let am = entitlement::ActiveModel {
+    user_id: Set(user_id),
+    course_slug: Set(course_slug),
+    source: Set(source.to_string()),
+    granted_at: Set(Utc::now().fixed_offset()),
+  };
+  let mut on_conflict =
+    OnConflict::columns([entitlement::Column::UserId, entitlement::Column::CourseSlug]);
+  // H3：购买不覆盖已有来源。退款只删 source=purchase，若购买把 admin_grant
+  // 改成了 purchase，退款会连管理员授予的权限一起删掉。
+  if source == "purchase" {
+    on_conflict.do_nothing();
+  } else {
+    on_conflict.update_columns([entitlement::Column::Source, entitlement::Column::GrantedAt]);
+  }
+  entitlement::Entity::insert(am)
+    .on_conflict(on_conflict)
+    .exec_without_returning(db)
+    .await
+    .map_err(|e| ServerFnError::new(e.to_string()))?;
+  Ok(())
+}
+
+/// Admin：授予课程权益（手动开通，幂等；重复授予刷新来源/时间）。
+#[post("/api/courses/entitlements/grant")]
+pub async fn grant_entitlement(user_id: i32, course_slug: String) -> Result<(), ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    app_core::session::require_admin().await?;
+    let db = open_db().await?;
+    grant_entitlement_internal(&db, user_id, course_slug, "admin_grant").await
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (user_id, course_slug);
+    Ok(())
+  }
+}
+
+/// Admin：撤销课程权益。
+#[post("/api/courses/entitlements/revoke")]
+pub async fn revoke_entitlement(user_id: i32, course_slug: String) -> Result<(), ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::entitlement;
+    use sea_orm::EntityTrait;
+    app_core::session::require_admin().await?;
+    let db = open_db().await?;
+    entitlement::Entity::delete_by_id((user_id, course_slug))
+      .exec(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (user_id, course_slug);
+    Ok(())
+  }
+}
+
+// =============================================================
+// Pro 会员（M6b：我的会员 + admin 授予/撤销/列表）
+// =============================================================
+
+/// 当前用户会员信息。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MembershipInfo {
+  pub tier: String,
+  pub expires_at: String,
+  pub active: bool,
+}
+
+/// Admin 列表项：会员 + 用户昵称。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MembershipAdminInfo {
+  pub user_id: i32,
+  pub nickname: String,
+  pub tier: String,
+  pub expires_at: String,
+  pub active: bool,
+}
+
+/// 当前用户的会员状态（个人中心展示）。
+#[post("/api/courses/membership/mine")]
+pub async fn my_membership() -> Result<Option<MembershipInfo>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::membership;
+    use sea_orm::EntityTrait;
+    let user = match current_session_user() {
+      Some(u) => u,
+      None => return Ok(None),
+    };
+    let db = open_db().await?;
+    let now = chrono::Utc::now().fixed_offset();
+    Ok(membership::Entity::find_by_id(user.id).one(&db).await.ok().flatten().map(|m| {
+      MembershipInfo {
+        active: m.tier == "pro" && m.expires_at > now,
+        tier: m.tier,
+        expires_at: m.expires_at.to_rfc3339(),
+      }
+    }))
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(None)
+  }
+}
+
+/// Admin：列出全部会员（含昵称）。
+#[post("/api/courses/membership/list")]
+pub async fn list_memberships() -> Result<Vec<MembershipAdminInfo>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::{membership, user as user_entity};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    app_core::session::require_admin().await?;
+    let db = open_db().await?;
+    let now = chrono::Utc::now().fixed_offset();
+    let rows = membership::Entity::find()
+      .order_by_desc(membership::Column::ExpiresAt)
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    let mut ids: Vec<i32> = rows.iter().map(|r| r.user_id).collect();
+    ids.sort();
+    ids.dedup();
+    let users = user_entity::Entity::find()
+      .filter(user_entity::Column::Id.is_in(ids))
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    let name_of =
+      |id: i32| users.iter().find(|u| u.id == id).map(|u| u.nickname.clone()).unwrap_or_default();
+    Ok(
+      rows
+        .into_iter()
+        .map(|m| MembershipAdminInfo {
+          user_id: m.user_id,
+          nickname: name_of(m.user_id),
+          active: m.tier == "pro" && m.expires_at > now,
+          tier: m.tier,
+          expires_at: m.expires_at.to_rfc3339(),
+        })
+        .collect(),
+    )
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(vec![])
+  }
+}
+
+/// Admin：授予/续期 Pro 会员（在现有有效期或当前时间基础上加 `days` 天）。
+#[post("/api/courses/membership/grant")]
+pub async fn grant_membership(user_id: i32, days: i64) -> Result<(), ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::membership;
+    use chrono::Utc;
+    use sea_orm::{sea_query::OnConflict, ActiveValue::Set, EntityTrait};
+    app_core::session::require_admin().await?;
+    if days <= 0 {
+      return Err(ServerFnError::new("天数需为正".to_string()));
+    }
+    let db = open_db().await?;
+    let now = Utc::now().fixed_offset();
+    let base = match membership::Entity::find_by_id(user_id).one(&db).await.ok().flatten() {
+      Some(m) if m.expires_at > now => m.expires_at,
+      _ => now,
+    };
+    let new_expiry = base + chrono::Duration::days(days);
+    let am = membership::ActiveModel {
+      user_id: Set(user_id),
+      tier: Set("pro".to_string()),
+      expires_at: Set(new_expiry),
+      source: Set("admin_grant".to_string()),
+      updated_at: Set(now),
+    };
+    membership::Entity::insert(am)
+      .on_conflict(
+        OnConflict::column(membership::Column::UserId)
+          .update_columns([
+            membership::Column::Tier,
+            membership::Column::ExpiresAt,
+            membership::Column::Source,
+            membership::Column::UpdatedAt,
+          ])
+          .to_owned(),
+      )
+      .exec(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (user_id, days);
+    Ok(())
+  }
+}
+
+/// Admin：撤销会员。
+#[post("/api/courses/membership/revoke")]
+pub async fn revoke_membership(user_id: i32) -> Result<(), ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::membership;
+    use sea_orm::EntityTrait;
+    app_core::session::require_admin().await?;
+    let db = open_db().await?;
+    membership::Entity::delete_by_id(user_id)
+      .exec(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = user_id;
+    Ok(())
+  }
+}
+
+// =============================================================
+// Orders / 在线支付（M5； PM4 起整区 feature = "payments" 门控，
+// 网关实现经 module-payment 的 PaymentProvider + 统一 notify 流水线）
+// =============================================================
+
+/// 下单结果：订单号 + 支付凭据。
+#[cfg(feature = "payments")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OrderInit {
+  pub out_trade_no: String,
+  pub provider: String,
+  pub scene: String,
+  pub amount: i64,
+  pub currency: String,
+  /// stub | redirect | qrcode | h5
+  pub kind: String,
+  /// 跳转 URL / code_url / 自动提交表单；M5a 为空。
+  pub payload: String,
+}
+
+/// 订单状态（前端扫码后轮询）。
+#[cfg(feature = "payments")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct OrderStatus {
+  pub out_trade_no: String,
+  pub status: String,
+  pub paid: bool,
+}
+
+/// 「我的订单」列表项。
+#[cfg(feature = "payments")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OrderInfo {
+  pub out_trade_no: String,
+  pub product_kind: crate::product::ProductKind,
+  /// 课程 slug，或打赏发生的页面路径。
+  pub product_ref: String,
+  pub provider: String,
+  pub amount: i64,
+  #[serde(default = "default_currency")]
+  pub currency: String,
+  pub status: String,
+  pub created_at: String,
+  pub paid_at: Option<String>,
+}
+
+/// server-only：生成不易猜测的我方订单号（时间戳 + 用户 + 随机段）。
+#[cfg(all(feature = "server", feature = "payments"))]
+fn gen_out_trade_no(user_id: i32) -> String {
+  use rand::Rng;
+  let ts = chrono::Utc::now().timestamp_millis();
+  let r: u32 = rand::rng().random();
+  format!("RIE{ts}{user_id}{r:08x}")
+}
+
+/// server-only：订单行的商品种类。不认识的种类（只会来自更新版本写入的数据）
+/// 留痕后不列出，免得界面按错误种类展示。
+#[cfg(all(feature = "server", feature = "payments"))]
+fn known_kind(o: &app_core::entities::order::Model) -> Option<crate::product::ProductKind> {
+  let kind = crate::product::ProductKind::parse(&o.product_kind);
+  if kind.is_none() {
+    tracing::warn!(target: "pay_audit", "order {} has unknown product kind {}", o.out_trade_no, o.product_kind);
+  }
+  kind
+}
+
+/// server-only：付款成功后的发货（三个回调与对账共用，须幂等）。课程写权益，
+/// 打赏不发货；不认识的种类返回错误，网关会重试并留下 pay_audit 记录。
+#[cfg(all(feature = "server", feature = "payments"))]
+async fn deliver(
+  db: &sea_orm::DatabaseConnection,
+  order: module_payment::pipeline::OrderSnapshot,
+) -> Result<(), String> {
+  let kind = crate::product::ProductKind::parse(&order.product_kind)
+    .ok_or_else(|| format!("unknown product kind {}", order.product_kind))?;
+  if !kind.grants_entitlement() {
+    return Ok(());
+  }
+  grant_entitlement_internal(db, order.user_id, order.product_ref, "purchase")
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// server-only：钱已退回买家后的落库（管理员退款与 Stripe 退款 / 拒付回调共用）：
+/// 条件 UPDATE `paid → refunded`，课程订单再撤销 `source=purchase` 的权益
+/// （admin_grant 等其它来源不动；打赏没发过货）。重复调用无副作用。
+/// 返回是否撤销了权益（供日志）。
+#[cfg(all(feature = "server", feature = "payments"))]
+async fn mark_refunded(
+  db: &sea_orm::DatabaseConnection,
+  row: &app_core::entities::order::Model,
+) -> Result<bool, String> {
+  use app_core::entities::{entitlement, order};
+  use sea_orm::sea_query::Expr;
+  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+  order::Entity::update_many()
+    .col_expr(order::Column::Status, Expr::value("refunded"))
+    .filter(order::Column::OutTradeNo.eq(&row.out_trade_no))
+    .filter(order::Column::Status.eq("paid"))
+    .exec(db)
+    .await
+    .map_err(|e| e.to_string())?;
+  let revoke =
+    crate::product::ProductKind::parse(&row.product_kind).is_some_and(|k| k.grants_entitlement());
+  if revoke {
+    entitlement::Entity::delete_many()
+      .filter(entitlement::Column::UserId.eq(row.user_id))
+      .filter(entitlement::Column::CourseSlug.eq(row.product_ref.clone()))
+      .filter(entitlement::Column::Source.eq("purchase"))
+      .exec(db)
+      .await
+      .map_err(|e| e.to_string())?;
+  }
+  Ok(revoke)
+}
+
+/// server-only：把 PayError 展开为用户可读错误（取内层文案，与重构前
+/// 直接透传 String 错误的响应文案一致）。
+#[cfg(all(feature = "server", feature = "payments"))]
+fn pay_err(e: module_payment::PayError) -> ServerFnError {
+  use module_payment::PayError;
+  match e {
+    PayError::Unconfigured(m)
+    | PayError::Sign(m)
+    | PayError::Gateway(m)
+    | PayError::Parse(m)
+    | PayError::Unsupported(m) => ServerFnError::new(m),
+  }
+}
+
+/// 服务端已配置的网关（购买弹窗按地区取交集后展示，DI4）。
+#[cfg(feature = "payments")]
+#[post("/api/orders/providers")]
+pub async fn payment_providers() -> Result<Vec<String>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    Ok(module_payment::host::configured())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(vec![])
+  }
+}
+
+/// server-only：下单前的公共校验——登录（写路径回查 token_version，SEC-13）、
+/// 场景、地区。错误是 `pay.err.*` i18n key。
+#[cfg(all(feature = "server", feature = "payments"))]
+async fn checkout_preamble(
+  scene: &str,
+  region: &str,
+) -> Result<(app_core::session::SessionUser, crate::pricing::Region), ServerFnError> {
+  let user = app_core::session::require_session_verified()
+    .await
+    .map_err(|_| ServerFnError::new("pay.err.sign_in".to_string()))?;
+  if !matches!(scene, "native" | "h5" | "page" | "wap" | "qr") {
+    return Err(ServerFnError::new("pay.err.bad_request".to_string()));
+  }
+  let region = crate::pricing::Region::parse(region)
+    .ok_or_else(|| ServerFnError::new("pay.err.bad_request".to_string()))?;
+  Ok((user, region))
+}
+
+/// server-only：一张待付订单的内容（课程与打赏的下单入口各自算好后交给 [`start_payment`]）。
+#[cfg(all(feature = "server", feature = "payments"))]
+struct Checkout {
+  user_id: i32,
+  kind: crate::product::ProductKind,
+  product_ref: String,
+  /// 网关收银台上的商品名。
+  subject: String,
+  price: crate::pricing::Price,
+  provider: String,
+  scene: String,
+  return_path: String,
+}
+
+/// server-only：建 pending 订单，再经 PaymentProvider + host 执行器生成支付凭据（PM4）。
+/// `gateway` 由调用方先取好：网关未配置时不建单，免得留下一张永远付不了的 pending 单。
+#[cfg(all(feature = "server", feature = "payments"))]
+async fn start_payment(
+  db: &sea_orm::DatabaseConnection,
+  gateway: &(dyn module_payment::PaymentProvider + Send + Sync),
+  c: Checkout,
+) -> Result<OrderInit, ServerFnError> {
+  use app_core::entities::order;
+  use module_payment::{host, OrderRequest as PayOrderRequest, PayAction};
+  use sea_orm::{ActiveValue::NotSet, ActiveValue::Set, EntityTrait};
+
+  let out_trade_no = gen_out_trade_no(c.user_id);
+  let am = order::ActiveModel {
+    id: NotSet,
+    out_trade_no: Set(out_trade_no.clone()),
+    user_id: Set(c.user_id),
+    product_kind: Set(c.kind.as_str().to_string()),
+    product_ref: Set(c.product_ref),
+    provider: Set(c.provider.clone()),
+    scene: Set(c.scene.clone()),
+    amount: Set(c.price.amount),
+    currency: Set(c.price.currency.clone()),
+    status: Set("pending".to_string()),
+    provider_txn: Set(None),
+    created_at: Set(chrono::Utc::now().fixed_offset()),
+    paid_at: Set(None),
+  };
+  order::Entity::insert(am).exec(db).await.map_err(|e| ServerFnError::new(e.to_string()))?;
+
+  let pay_req = PayOrderRequest {
+    out_trade_no: out_trade_no.clone(),
+    subject: c.subject,
+    amount_cents: c.price.amount,
+    currency: c.price.currency.clone(),
+    scene: c.scene.clone(),
+    // H5 需付款用户 IP；生产应从请求头 X-Forwarded-For 取，这里占位
+    // （None → provider 内缺省 0.0.0.0，同旧实现）。
+    client_ip: None,
+    return_path: c.return_path,
+  };
+  let action = host::execute_order(gateway, &pay_req).await.map_err(pay_err)?;
+  // kind 标签保持旧协议：二维码 → qrcode；微信 h5 → h5；其余跳转 → redirect。
+  let (kind, payload) = match action {
+    PayAction::QrCode(qr) => ("qrcode".to_string(), qr),
+    PayAction::PayUrl(u) if c.provider == "wechat" && c.scene == "h5" => ("h5".to_string(), u),
+    PayAction::PayUrl(u) => ("redirect".to_string(), u),
+  };
+  Ok(OrderInit {
+    out_trade_no,
+    provider: c.provider,
+    scene: c.scene,
+    amount: c.price.amount,
+    currency: c.price.currency,
+    kind,
+    payload,
+  })
+}
+
+/// 创建课程购买订单。校验登录 / 课程付费 / 未拥有，按网关与地区报价
+/// （`Pricing::quote`，阶段 I），再交给 [`start_payment`]。
+/// 面向用户的错误返回 `pay.err.*` i18n key，购买弹窗按界面语言翻译。
+#[cfg(feature = "payments")]
+#[post("/api/orders/create")]
+pub async fn create_order(
+  course_slug: String,
+  provider: String,
+  scene: String,
+  region: String,
+) -> Result<OrderInit, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    let (user, region) = checkout_preamble(&scene, &region).await?;
+    let course = read_course(&course_slug)
+      .ok_or_else(|| ServerFnError::new("pay.err.no_course".to_string()))?;
+    if !course.is_paid() {
+      return Err(ServerFnError::new("pay.err.free".to_string()));
+    }
+    let price = course
+      .pricing()
+      .quote(&provider, region)
+      .map_err(|key| ServerFnError::new(key.to_string()))?;
+    let gateway = module_payment::host::from_env(&provider).map_err(pay_err)?;
+    let db = open_db().await?;
+    if has_entitlement(&db, user.id, &course_slug).await {
+      return Err(ServerFnError::new("pay.err.owned".to_string()));
+    }
+    let checkout = Checkout {
+      user_id: user.id,
+      kind: crate::product::ProductKind::Course,
+      return_path: format!("/course/{course_slug}"),
+      product_ref: course_slug,
+      subject: course.title,
+      price,
+      provider,
+      scene,
+    };
+    start_payment(&db, gateway.as_ref(), checkout).await
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (course_slug, provider, scene, region);
+    Err(ServerFnError::new("server only".to_string()))
+  }
+}
+
+/// 创建打赏订单（FEATURE_TIERS.md §6）。`tier` 是 [`crate::product::TIP_TIERS`]
+/// 的序号，`source` 是打赏发生的页面（`/blog/<slug>`、`/podcast`），付款后回到那里。
+#[cfg(feature = "payments")]
+#[post("/api/orders/tip")]
+pub async fn create_tip_order(
+  tier: u32,
+  source: String,
+  provider: String,
+  scene: String,
+  region: String,
+) -> Result<OrderInit, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use crate::pricing::Region;
+    let (user, region) = checkout_preamble(&scene, &region).await?;
+    let pricing = crate::product::tip_pricing(tier as usize)
+      .ok_or_else(|| ServerFnError::new("pay.err.bad_request".to_string()))?;
+    if !crate::product::is_tip_source(&source) {
+      return Err(ServerFnError::new("pay.err.bad_request".to_string()));
+    }
+    let price =
+      pricing.quote(&provider, region).map_err(|key| ServerFnError::new(key.to_string()))?;
+    let gateway = module_payment::host::from_env(&provider).map_err(pay_err)?;
+    let db = open_db().await?;
+    let site = widgets::site_name();
+    let subject = match region {
+      Region::Mainland => format!("打赏 · {site}"),
+      Region::Overseas => format!("Tip · {site}"),
+    };
+    let checkout = Checkout {
+      user_id: user.id,
+      kind: crate::product::ProductKind::Tip,
+      return_path: source.clone(),
+      product_ref: source,
+      subject,
+      price,
+      provider,
+      scene,
+    };
+    start_payment(&db, gateway.as_ref(), checkout).await
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (tier, source, provider, scene, region);
+    Err(ServerFnError::new("server only".to_string()))
+  }
+}
+
+/// 查询订单状态（仅本人可查）。扫码场景前端轮询用。
+#[cfg(feature = "payments")]
+#[post("/api/orders/query")]
+pub async fn query_order(out_trade_no: String) -> Result<OrderStatus, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::order;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let user =
+      current_session_user().ok_or_else(|| ServerFnError::new("pay.err.sign_in".to_string()))?;
+    let db = open_db().await?;
+    let row = order::Entity::find()
+      .filter(order::Column::OutTradeNo.eq(&out_trade_no))
+      .one(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    match row {
+      Some(o) if o.user_id == user.id => {
+        Ok(OrderStatus { paid: o.status == "paid", out_trade_no: o.out_trade_no, status: o.status })
+      }
+      _ => Err(ServerFnError::new("pay.err.no_order".to_string())),
+    }
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = out_trade_no;
+    Err(ServerFnError::new("server only".to_string()))
+  }
+}
+
+/// 当前用户的订单列表（个人中心「我的订单」）。
+#[cfg(feature = "payments")]
+#[post("/api/orders/mine")]
+pub async fn list_my_orders() -> Result<Vec<OrderInfo>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::order;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    let user = match current_session_user() {
+      Some(u) => u,
+      None => return Ok(vec![]),
+    };
+    let db = open_db().await?;
+    let rows = order::Entity::find()
+      .filter(order::Column::UserId.eq(user.id))
+      .order_by_desc(order::Column::CreatedAt)
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(
+      rows
+        .into_iter()
+        .filter_map(|o| {
+          Some(OrderInfo {
+            product_kind: known_kind(&o)?,
+            out_trade_no: o.out_trade_no,
+            product_ref: o.product_ref,
+            provider: o.provider,
+            amount: o.amount,
+            currency: o.currency,
+            status: o.status,
+            created_at: o.created_at.to_rfc3339(),
+            paid_at: o.paid_at.map(|t| t.to_rfc3339()),
+          })
+        })
+        .collect(),
+    )
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(vec![])
+  }
+}
+
+/// 处理支付宝异步回调（由 app 的 Axum 路由 `/api/pay/alipay/notify` 调用）。
+///
+/// 流程（PM4）：验签 + app_id 比对（宿主侧，S6）→ 状态成功 →
+/// `parse_notify` 中立化 → 统一流水线 `pipeline::process_event`
+/// （找单 / 核金额 / 原子认领 / 注入发货 / pay_audit，S6 成果收敛）。
+/// 返回值为应答给支付宝的纯文本（`success` / `failure`），失败会触发其重试。
+#[cfg(all(feature = "server", feature = "payments"))]
+pub async fn handle_alipay_notify(
+  params: std::collections::HashMap<String, String>,
+) -> &'static str {
+  use module_payment::{pipeline, NotifyPayload, PaymentProvider};
+
+  // 审计留痕：验签前先记录关键字段（不含买家敏感信息），便于对账与攻击排查。
+  tracing::info!(
+    target: "pay_audit",
+    provider = "alipay",
+    out_trade_no = %params.get("out_trade_no").map(|s| s.as_str()).unwrap_or(""),
+    trade_status = %params.get("trade_status").map(|s| s.as_str()).unwrap_or(""),
+    total_amount = %params.get("total_amount").map(|s| s.as_str()).unwrap_or(""),
+    "notify received"
+  );
+
+  let provider = match module_payment::alipay::AlipayProvider::from_env() {
+    Ok(p) => p,
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, "alipay notify: provider not configured");
+      return "failure";
+    }
+  };
+  // 1) 验签——一切发货的前提（宿主侧，不入 provider trait）。
+  if !module_payment::alipay::verify_notify(provider.config(), &params) {
+    tracing::warn!(target: "pay_audit", "alipay notify: signature verify failed");
+    return "failure";
+  }
+  // 1.5) S6：app_id 比对。签名是支付宝全局公钥签的，其它商户应用的合法
+  // 回调也能过验签；比对 app_id 封死跨应用串单。
+  if params.get("app_id").map(|s| s.as_str()) != Some(provider.config().app_id.as_str()) {
+    tracing::warn!(target: "pay_audit", "alipay notify: app_id mismatch");
+    return "failure";
+  }
+  // 2) 仅成功状态发货；其它状态确认收到（避免无谓重试）但不发货。
+  let status = params.get("trade_status").map(|s| s.as_str()).unwrap_or("");
+  if status != "TRADE_SUCCESS" && status != "TRADE_FINISHED" {
+    return "success";
+  }
+  // 3) 中立化 → 统一流水线（找单 / 核金额 / 原子认领 / 发货 / 审计）。
+  let event = match provider.parse_notify(&NotifyPayload::Form(params)) {
+    Ok(e) => e,
+    Err(e) => {
+      tracing::warn!(target: "pay_audit", error = %e, "alipay notify: parse failed");
+      return "failure";
+    }
+  };
+  let db = match open_db().await {
+    Ok(db) => db,
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, "alipay notify: database unavailable");
+      return "failure";
+    }
+  };
+  let outcome = pipeline::process_event(&db, &event, |order| deliver(&db, order)).await;
+  if outcome.is_ok() {
+    "success"
+  } else {
+    "failure"
+  }
+}
+
+/// 处理微信支付 v3 异步回调（由 app 的 Axum 路由 `/api/pay/wechat/notify` 调用）。
+///
+/// 入参：HTTP 头（key 小写）+ 原始 body 字符串（验签需逐字节一致）。
+/// 流程（PM4）：时间戳新鲜度 → 验签 → 解密 resource → appid/mchid 比对
+/// （以上宿主侧，S6）→ 状态成功 → `parse_notify` 中立化 → 统一流水线
+/// `pipeline::process_event`（找单 / 核金额 / 原子认领 / 注入发货 / pay_audit）。
+/// 返回 `(http_status, body)`：成功 `(200,{"code":"SUCCESS"})`，失败非 200 触发重试。
+#[cfg(all(feature = "server", feature = "payments"))]
+pub async fn handle_wechat_notify(
+  headers: std::collections::HashMap<String, String>,
+  body: String,
+) -> (u16, String) {
+  use module_payment::{pipeline, NotifyPayload, PaymentProvider};
+
+  let ok = || (200u16, "{\"code\":\"SUCCESS\"}".to_string());
+  let fail = |m: &str| (500u16, format!("{{\"code\":\"FAIL\",\"message\":\"{m}\"}}"));
+
+  let provider = match module_payment::wechat::WechatProvider::from_env() {
+    Ok(p) => p,
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, "wechat notify: provider not configured");
+      return fail("unconfigured");
+    }
+  };
+  let cfg = provider.config();
+  let get = |k: &str| headers.get(k).map(|s| s.as_str()).unwrap_or("");
+  let (ts, nonce, sig) =
+    (get("wechatpay-timestamp"), get("wechatpay-nonce"), get("wechatpay-signature"));
+  if ts.is_empty() || nonce.is_empty() || sig.is_empty() {
+    return fail("missing signature headers");
+  }
+  // 0) S6：时间戳新鲜度。签名覆盖 ts，但不限制时效；拒绝 ±5 分钟外的
+  // 回调，把捕获重放的窗口从无限缩到 5 分钟（幂等认领是第二道防线）。
+  match ts.parse::<i64>() {
+    Ok(ts_secs) => {
+      let skew = (chrono::Utc::now().timestamp() - ts_secs).abs();
+      if skew > 300 {
+        tracing::warn!(target: "pay_audit", skew, "wechat notify: stale timestamp");
+        return fail("stale timestamp");
+      }
+    }
+    Err(_) => return fail("bad timestamp"),
+  }
+  // 1) 验签（宿主侧，不入 provider trait）。
+  if !module_payment::wechat::verify_notify(cfg, ts, nonce, &body, sig) {
+    tracing::warn!(target: "pay_audit", "wechat notify: signature verify failed");
+    return fail("bad signature");
+  }
+  // 2) 解密 resource（宿主侧）。
+  let envelope = match serde_json::from_str::<serde_json::Value>(&body) {
+    Ok(v) => v,
+    Err(e) => {
+      tracing::warn!(target: "pay_audit", error = %e, "wechat notify: bad body");
+      return fail("bad body");
+    }
+  };
+  let res = &envelope["resource"];
+  let (ct, rnonce, aad) = (
+    res["ciphertext"].as_str().unwrap_or(""),
+    res["nonce"].as_str().unwrap_or(""),
+    res["associated_data"].as_str().unwrap_or(""),
+  );
+  let plain = match module_payment::wechat::decrypt_resource(cfg, rnonce, aad, ct) {
+    Ok(p) => p,
+    Err(e) => {
+      tracing::warn!(target: "pay_audit", error = %e, "wechat notify: decrypt failed");
+      return fail("decrypt failed");
+    }
+  };
+  let tx = match serde_json::from_str::<serde_json::Value>(&plain) {
+    Ok(v) => v,
+    Err(e) => {
+      tracing::warn!(target: "pay_audit", error = %e, "wechat notify: bad plaintext");
+      return fail("bad plaintext");
+    }
+  };
+  // 2.5) S6：appid / mchid 交叉校验（字段存在时强制一致），防跨商户/应用串单。
+  if let Some(appid) = tx["appid"].as_str() {
+    if appid != cfg.appid {
+      tracing::warn!(target: "pay_audit", "wechat notify: appid mismatch");
+      return fail("appid mismatch");
+    }
+  }
+  if let Some(mchid) = tx["mchid"].as_str() {
+    if mchid != cfg.mchid {
+      tracing::warn!(target: "pay_audit", "wechat notify: mchid mismatch");
+      return fail("mchid mismatch");
+    }
+  }
+  // 审计留痕：解密成功后记录关键字段。
+  tracing::info!(
+    target: "pay_audit",
+    provider = "wechat",
+    out_trade_no = %tx["out_trade_no"].as_str().unwrap_or(""),
+    trade_state = %tx["trade_state"].as_str().unwrap_or(""),
+    total = tx["amount"]["total"].as_i64().unwrap_or(-1),
+    "notify received (decrypted)"
+  );
+  // 3) 仅成功状态发货；其它状态确认收到但不发货。
+  if tx["trade_state"].as_str() != Some("SUCCESS") {
+    return ok();
+  }
+  // 4) 中立化 → 统一流水线（找单 / 核金额 / 原子认领 / 发货 / 审计）。
+  let event = match provider.parse_notify(&NotifyPayload::Json(tx)) {
+    Ok(e) => e,
+    Err(e) => {
+      tracing::warn!(target: "pay_audit", error = %e, "wechat notify: parse failed");
+      return fail("no out_trade_no");
+    }
+  };
+  let db = match open_db().await {
+    Ok(db) => db,
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, "wechat notify: database unavailable");
+      return fail("db");
+    }
+  };
+  let outcome = pipeline::process_event(&db, &event, |order| deliver(&db, order)).await;
+  match outcome {
+    pipeline::NotifyOutcome::Ok => ok(),
+    pipeline::NotifyOutcome::Failed(m) => fail(m),
+  }
+}
+
+/// 处理 Stripe webhook（由 app 的 Axum 路由 `/api/pay/stripe/notify` 调用；阶段 I）。
+///
+/// 入参：`Stripe-Signature` 头 + 原始 body（验签需逐字节一致）。流程：验签（含
+/// ±300s 时间戳，宿主侧，DI6）→ 全额退款 / 拒付走 `stripe_reversal`（H2）→
+/// 其余只处理 `checkout.session.*` 事件 → `parse_notify` 中立化 → 统一流水线。返回 HTTP 状态：200 确认；验签失败 400；
+/// 处理失败 500（Stripe 会重试）。
+#[cfg(all(feature = "server", feature = "payments"))]
+pub async fn handle_stripe_notify(signature: String, body: String) -> u16 {
+  use module_payment::{pipeline, NotifyPayload, PaymentProvider};
+
+  let provider = match module_payment::stripe::StripeProvider::from_env() {
+    Ok(p) => p,
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, "stripe notify: provider not configured");
+      return 500;
+    }
+  };
+  let now = chrono::Utc::now().timestamp();
+  if !module_payment::stripe::verify_notify(provider.config(), &signature, &body, now) {
+    tracing::warn!(target: "pay_audit", "stripe notify: signature verify failed");
+    return 400;
+  }
+  let event = match serde_json::from_str::<serde_json::Value>(&body) {
+    Ok(v) => v,
+    Err(e) => {
+      tracing::warn!(target: "pay_audit", error = %e, "stripe notify: bad body");
+      return 400;
+    }
+  };
+  let kind = event["type"].as_str().unwrap_or("");
+  tracing::info!(
+    target: "pay_audit",
+    provider = "stripe",
+    event_type = %kind,
+    out_trade_no = %event["data"]["object"]["client_reference_id"].as_str().unwrap_or(""),
+    amount_total = event["data"]["object"]["amount_total"].as_i64().unwrap_or(-1),
+    "notify received"
+  );
+  // H2：在 Stripe 后台全额退款或买家拒付 → 订单 refunded、撤销购买权益。
+  if let Some(intent) = module_payment::stripe::reversed_payment_intent(&event) {
+    return stripe_reversal(&intent, kind).await;
+  }
+  // 其他事件（订阅了但不处理的）确认收到，免得 Stripe 重试。
+  if !kind.starts_with("checkout.session.") {
+    return 200;
+  }
+  let event = match provider.parse_notify(&NotifyPayload::Json(event)) {
+    Ok(e) => e,
+    Err(e) => {
+      tracing::warn!(target: "pay_audit", error = %e, "stripe notify: parse failed");
+      return 400;
+    }
+  };
+  let db = match open_db().await {
+    Ok(db) => db,
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, "stripe notify: database unavailable");
+      return 500;
+    }
+  };
+  let outcome = pipeline::process_event(&db, &event, |order| deliver(&db, order)).await;
+  if outcome.is_ok() {
+    200
+  } else {
+    500
+  }
+}
+
+/// H2：按 PaymentIntent 找 Stripe 订单并标记退款。找不到订单（非本站付款）也
+/// 确认收到；只有数据库出错返回 500 让 Stripe 重试。
+#[cfg(all(feature = "server", feature = "payments"))]
+async fn stripe_reversal(intent: &str, kind: &str) -> u16 {
+  use app_core::entities::order;
+  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+  let db = match open_db().await {
+    Ok(db) => db,
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, event_type = %kind, "stripe reversal: database unavailable");
+      return 500;
+    }
+  };
+  let row = match order::Entity::find()
+    .filter(order::Column::Provider.eq("stripe"))
+    .filter(order::Column::ProviderTxn.eq(intent))
+    .one(&db)
+    .await
+  {
+    Ok(Some(row)) => row,
+    Ok(None) => {
+      tracing::warn!(target: "pay_audit", event_type = %kind, "stripe reversal: no order for payment intent");
+      return 200;
+    }
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, event_type = %kind, "stripe reversal: order lookup failed");
+      return 500;
+    }
+  };
+  if row.status != "paid" {
+    // 我方管理员退款也会收到 charge.refunded，此时订单已是 refunded。
+    return 200;
+  }
+  match mark_refunded(&db, &row).await {
+    Ok(revoked) => {
+      tracing::warn!(
+        target: "pay_audit",
+        "stripe {}: {} order {} refunded{}",
+        kind,
+        row.product_kind,
+        row.out_trade_no,
+        if revoked { " + purchase entitlement revoked" } else { "" }
+      );
+      200
+    }
+    Err(e) => {
+      tracing::error!(
+        target: "pay_audit",
+        error = %e,
+        out_trade_no = %row.out_trade_no,
+        "stripe {kind}: marking order refunded failed"
+      );
+      500
+    }
+  }
+}
+
+// =============================================================
+// M5e 对账：滞留 pending 单定时核对（gateway query 回填 / 关单）
+// =============================================================
+
+/// server-only：执行一轮对账（由 app 启动的定时任务调用）。
+///
+/// 扫描 `pending` 且创建超过 `PAY_RECONCILE_MIN_AGE_SECS`（默认 300s）的
+/// 订单（单轮最多 50 单），逐单向网关查单：
+/// - 已支付 → 统一流水线回填发货（与回调同一路径：金额核验/原子认领）；
+/// - 未支付且超过 `PAY_RECONCILE_CLOSE_AFTER_SECS`（默认 7200s）→ 关单；
+/// - 网关未配置 / 查询失败 → 跳过（fail-safe，绝不误关）。
+///
+/// 返回 (回填发货数, 关单数)。
+#[cfg(all(feature = "server", feature = "payments"))]
+pub async fn reconcile_pending_orders_once() -> (u32, u32) {
+  use module_payment::pipeline::OrderStore;
+  use module_payment::reconcile::{reconcile_order, ReconcileAction, ReconcilePolicy};
+  use module_payment::{host, PayError};
+
+  fn env_secs(key: &str, default: i64) -> i64 {
+    std::env::var(key)
+      .ok()
+      .and_then(|v| v.trim().parse::<i64>().ok())
+      .filter(|v| *v > 0)
+      .unwrap_or(default)
+  }
+  let min_age = chrono::Duration::seconds(env_secs("PAY_RECONCILE_MIN_AGE_SECS", 300));
+  let policy = ReconcilePolicy {
+    close_after: chrono::Duration::seconds(env_secs("PAY_RECONCILE_CLOSE_AFTER_SECS", 7200)),
+  };
+
+  let Ok(db) = open_db().await else {
+    return (0, 0);
+  };
+  let now = chrono::Utc::now().fixed_offset();
+  let stale = match db.list_stale_pending(now - min_age, 50).await {
+    Ok(v) => v,
+    Err(e) => {
+      tracing::warn!(target: "pay_audit", error = %e, "reconcile: list stale pending failed");
+      return (0, 0);
+    }
+  };
+  let (mut delivered, mut closed) = (0u32, 0u32);
+  for order in stale {
+    let event = match host::from_env(&order.provider) {
+      Ok(p) => host::execute_query(p.as_ref(), &order.out_trade_no).await,
+      Err(e) => Err(e),
+    };
+    let event = match event {
+      Ok(ev) => ev,
+      // 网关未配置：静默跳过（本地 / 未接网关部署的常态）。
+      Err(PayError::Unconfigured(_)) => continue,
+      Err(e) => {
+        tracing::warn!(target: "pay_audit", "reconcile: query {} failed: {e}", order.out_trade_no);
+        continue;
+      }
+    };
+    let action =
+      reconcile_order(&db, &order, &event, now, &policy, |order| deliver(&db, order)).await;
+    match action {
+      ReconcileAction::Delivered => delivered += 1,
+      ReconcileAction::Closed => closed += 1,
+      ReconcileAction::Failed(m) => {
+        tracing::warn!(target: "pay_audit", "reconcile: {} failed: {m}", order.out_trade_no);
+      }
+      ReconcileAction::Pending | ReconcileAction::Raced => {}
+    }
+  }
+  if delivered + closed > 0 {
+    tracing::info!(target: "pay_audit", delivered, closed, "reconcile: round done");
+  }
+  (delivered, closed)
+}
+
+// =============================================================
+// M5e 退款：Admin 订单列表 + 全额退款
+// =============================================================
+
+/// Admin 订单列表项（订单管理 / 退款）。
+#[cfg(feature = "payments")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AdminOrderInfo {
+  pub out_trade_no: String,
+  pub user_id: i32,
+  pub nickname: String,
+  pub product_kind: crate::product::ProductKind,
+  pub product_ref: String,
+  pub provider: String,
+  pub amount: i64,
+  #[serde(default = "default_currency")]
+  pub currency: String,
+  pub status: String,
+  pub created_at: String,
+  pub paid_at: Option<String>,
+}
+
+/// Admin：最近订单（最多 100 条，按创建时间倒序，含用户昵称）。
+#[cfg(feature = "payments")]
+#[post("/api/orders/admin/list")]
+pub async fn admin_list_orders() -> Result<Vec<AdminOrderInfo>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::{order, user as user_entity};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+    app_core::session::require_admin().await?;
+    let db = open_db().await?;
+    let rows = order::Entity::find()
+      .order_by_desc(order::Column::CreatedAt)
+      .limit(100)
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    let mut ids: Vec<i32> = rows.iter().map(|r| r.user_id).collect();
+    ids.sort();
+    ids.dedup();
+    let users = user_entity::Entity::find()
+      .filter(user_entity::Column::Id.is_in(ids))
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    let name_of =
+      |id: i32| users.iter().find(|u| u.id == id).map(|u| u.nickname.clone()).unwrap_or_default();
+    Ok(
+      rows
+        .into_iter()
+        .filter_map(|o| {
+          Some(AdminOrderInfo {
+            product_kind: known_kind(&o)?,
+            nickname: name_of(o.user_id),
+            out_trade_no: o.out_trade_no,
+            user_id: o.user_id,
+            product_ref: o.product_ref,
+            provider: o.provider,
+            amount: o.amount,
+            currency: o.currency,
+            status: o.status,
+            created_at: o.created_at.to_rfc3339(),
+            paid_at: o.paid_at.map(|t| t.to_rfc3339()),
+          })
+        })
+        .collect(),
+    )
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(vec![])
+  }
+}
+
+/// Admin：全额退款（仅 `paid` 订单；M5e）。
+///
+/// 流程：网关 refund（我方退款单号 = `{out_trade_no}R1`，网关侧幂等，
+/// 重试安全）→ 受理后条件 UPDATE `paid → refunded` → 撤销
+/// `source=purchase` 的课程权益（admin 手动授予的不动）→ pay_audit 留痕。
+/// 微信退款为异步到账（processing 即受理）；到账异常需在网关后台处理。
+#[cfg(feature = "payments")]
+#[post("/api/orders/admin/refund")]
+pub async fn admin_refund_order(out_trade_no: String) -> Result<(), ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::order;
+    use module_payment::{host, RefundRequest};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let admin = app_core::session::require_admin().await?;
+    let db = open_db().await?;
+    let row = order::Entity::find()
+      .filter(order::Column::OutTradeNo.eq(&out_trade_no))
+      .one(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?
+      .ok_or_else(|| ServerFnError::new("订单不存在".to_string()))?;
+    if row.status != "paid" {
+      return Err(ServerFnError::new("仅已支付订单可退款".to_string()));
+    }
+    let refund_req = RefundRequest {
+      out_trade_no: out_trade_no.clone(),
+      refund_no: format!("{out_trade_no}R1"),
+      amount_cents: row.amount,
+      total_cents: row.amount,
+      reason: "管理员退款".to_string(),
+      txn_id: row.provider_txn.clone(),
+    };
+    let gateway = host::from_env(&row.provider).map_err(pay_err)?;
+    let result = host::execute_refund(gateway.as_ref(), &refund_req).await.map_err(pay_err)?;
+    if !result.is_accepted() {
+      tracing::warn!(
+        target: "pay_audit",
+        "refund: order {} rejected by gateway (status {})",
+        out_trade_no,
+        result.status
+      );
+      return Err(ServerFnError::new(format!("网关退款未受理（状态 {}）", result.status)));
+    }
+    let revoke = mark_refunded(&db, &row).await.map_err(ServerFnError::new)?;
+    tracing::info!(
+      target: "pay_audit",
+      "refund: {} order {} refunded (gateway status {}, by admin {}){}",
+      row.product_kind,
+      out_trade_no,
+      result.status,
+      admin.id,
+      if revoke { " + purchase entitlement revoked" } else { "" }
+    );
+    Ok(())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = out_trade_no;
+    Err(ServerFnError::new("server only".to_string()))
+  }
+}
+
+#[post("/api/courses/progress/list")]
+pub async fn get_progress(slug: String) -> Result<Vec<LessonProgress>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::course_progress;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let user = match current_session_user() {
+      Some(u) => u,
+      None => return Ok(vec![]),
+    };
+    let db = open_db().await?;
+    let rows = course_progress::Entity::find()
+      .filter(course_progress::Column::UserId.eq(user.id))
+      .filter(course_progress::Column::CourseSlug.eq(&slug))
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(
+      rows
+        .into_iter()
+        .map(|r| LessonProgress {
+          lesson_path: r.lesson_path,
+          completed: r.completed,
+          position_seconds: r.position_seconds,
+        })
+        .collect(),
+    )
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = slug;
+    Ok(vec![])
+  }
+}
+
+#[post("/api/courses/progress/complete")]
+pub async fn mark_lesson_complete(
+  slug: String,
+  lesson_path: String,
+  completed: bool,
+) -> Result<(), ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::course_progress;
+    use chrono::Utc;
+    use sea_orm::{sea_query::OnConflict, ActiveValue::Set, EntityTrait};
+    let user = require_writer().await?;
+    let db = open_db().await?;
+    let am = course_progress::ActiveModel {
+      user_id: Set(user.id),
+      course_slug: Set(slug),
+      lesson_path: Set(lesson_path),
+      completed: Set(completed),
+      position_seconds: Set(None),
+      updated_at: Set(Utc::now().fixed_offset()),
+    };
+    course_progress::Entity::insert(am)
+      .on_conflict(
+        OnConflict::columns([
+          course_progress::Column::UserId,
+          course_progress::Column::CourseSlug,
+          course_progress::Column::LessonPath,
+        ])
+        .update_columns([course_progress::Column::Completed, course_progress::Column::UpdatedAt])
+        .to_owned(),
+      )
+      .exec(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (slug, lesson_path, completed);
+    Ok(())
+  }
+}
+
+#[post("/api/courses/progress/last")]
+pub async fn get_last_lesson(slug: String) -> Result<Option<String>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::course_progress;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    let user = match current_session_user() {
+      Some(u) => u,
+      None => return Ok(None),
+    };
+    let db = open_db().await?;
+    let row = course_progress::Entity::find()
+      .filter(course_progress::Column::UserId.eq(user.id))
+      .filter(course_progress::Column::CourseSlug.eq(&slug))
+      .order_by_desc(course_progress::Column::UpdatedAt)
+      .one(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(row.map(|r| r.lesson_path))
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = slug;
+    Ok(None)
+  }
+}
+
+// =============================================================
+// Annotations (PR-D)
+// =============================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Annotation {
+  pub id: i64,
+  pub user_id: i32,
+  pub resource_kind: String,
+  pub resource_path: String,
+  pub block_id: String,
+  pub start_offset: i32,
+  pub end_offset: i32,
+  pub exact_text: String,
+  pub prefix_text: Option<String>,
+  pub suffix_text: Option<String>,
+  pub style: String,
+  pub note: Option<String>,
+  pub visibility: String,
+  pub created_at: String,
+  /// 仅在该标注为"他人公开标注"时填充，帮助 UI 显示作者。本人标注为 None。
+  #[serde(default)]
+  pub author_nickname: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AnnotationCreate {
+  pub resource_kind: String,
+  pub resource_path: String,
+  pub block_id: String,
+  pub start_offset: i32,
+  pub end_offset: i32,
+  pub exact_text: String,
+  pub prefix_text: Option<String>,
+  pub suffix_text: Option<String>,
+  pub style: String,
+  pub note: Option<String>,
+  /// 'private' | 'course-public' | 'doc-public' | 'public'。缺省 'private'。
+  #[serde(default)]
+  pub visibility: Option<String>,
+}
+
+/// 表示合法的 visibility 取值
+#[cfg(feature = "server")]
+fn normalize_visibility(v: Option<&str>) -> String {
+  match v.unwrap_or("private") {
+    "public" => "public".to_string(),
+    "course-public" => "course-public".to_string(),
+    "doc-public" => "doc-public".to_string(),
+    _ => "private".to_string(),
+  }
+}
+
+/// 读 site.json 中 annotations 开关（统一走 `SiteConfig::load_cached`）
+#[cfg(feature = "server")]
+fn read_annotations_switch(kind: &str) -> bool {
+  let site_path = app_core::utils::site_json_path();
+  if let Ok(cfg) =
+    app_core::settings::SiteConfig::load_cached(site_path.to_str().unwrap_or_default())
+  {
+    return cfg.annotations.is_enabled(kind);
+  }
+  default_annotation_enabled(kind)
+}
+
+#[cfg(feature = "server")]
+fn default_annotation_enabled(kind: &str) -> bool {
+  matches!(kind, "course" | "doc")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AnnotationsConfig {
+  pub course: bool,
+  pub doc: bool,
+  pub blog: bool,
+}
+
+#[post("/api/annotations/config")]
+pub async fn get_annotations_config() -> Result<AnnotationsConfig, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    Ok(AnnotationsConfig {
+      course: read_annotations_switch("course"),
+      doc: read_annotations_switch("doc"),
+      blog: read_annotations_switch("blog"),
+    })
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(AnnotationsConfig { course: true, doc: true, blog: false })
+  }
+}
+
+#[cfg(feature = "server")]
+fn model_to_annotation(m: app_core::entities::annotation::Model) -> Annotation {
+  Annotation {
+    id: m.id,
+    user_id: m.user_id,
+    resource_kind: m.resource_kind,
+    resource_path: m.resource_path,
+    block_id: m.block_id,
+    start_offset: m.start_offset,
+    end_offset: m.end_offset,
+    exact_text: m.exact_text,
+    prefix_text: m.prefix_text,
+    suffix_text: m.suffix_text,
+    style: m.style,
+    note: m.note,
+    visibility: m.visibility,
+    created_at: m.created_at.format("%Y-%m-%d %H:%M").to_string(),
+    author_nickname: None,
+  }
+}
+
+/// 列出当前登录用户的全部标注（不受资源过滤，供个人标注列表页使用）。
+/// 未登录返回空。
+#[post("/api/annotations/list_my")]
+pub async fn list_my_annotations() -> Result<Vec<Annotation>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::annotation;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    let user = match current_session_user() {
+      Some(u) => u,
+      None => return Ok(vec![]),
+    };
+    let db = open_db().await?;
+    let rows = annotation::Entity::find()
+      .filter(annotation::Column::UserId.eq(user.id))
+      .order_by_desc(annotation::Column::CreatedAt)
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(rows.into_iter().map(model_to_annotation).collect())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    Ok(vec![])
+  }
+}
+
+#[post("/api/annotations/list")]
+pub async fn list_annotations(
+  resource_kind: String,
+  resource_path: String,
+) -> Result<Vec<Annotation>, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    if !read_annotations_switch(&resource_kind) {
+      return Ok(vec![]);
+    }
+    use app_core::entities::{annotation, user as user_entity};
+    use sea_orm::{sea_query::Expr, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
+    let me = current_session_user();
+    let db = open_db().await?;
+
+    // 同资源路径下：本人全部标注 + 他人不为 private 且不在等审核的标注。
+    // 未登录只能看他人公开标注。
+    let me_id = me.as_ref().map(|u| u.id).unwrap_or(-1);
+    let visible_cond = Condition::any().add(Expr::col(annotation::Column::UserId).eq(me_id)).add(
+      Condition::all()
+        .add(Expr::col(annotation::Column::Visibility).ne("private"))
+        .add(Expr::col(annotation::Column::PendingReview).eq(false)),
+    );
+
+    let rows = annotation::Entity::find()
+      .filter(annotation::Column::ResourceKind.eq(&resource_kind))
+      .filter(annotation::Column::ResourcePath.eq(&resource_path))
+      .filter(visible_cond)
+      .order_by_asc(annotation::Column::CreatedAt)
+      .all(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+
+    // 收集需要查询 nickname 的 user_id（仅他人标注需要增量查询）
+    let mut other_ids: Vec<i32> =
+      rows.iter().filter(|r| r.user_id != me_id).map(|r| r.user_id).collect();
+    other_ids.sort();
+    other_ids.dedup();
+
+    let mut nick_map: std::collections::HashMap<i32, String> = std::collections::HashMap::new();
+    if !other_ids.is_empty() {
+      let users = user_entity::Entity::find()
+        .filter(user_entity::Column::Id.is_in(other_ids))
+        .all(&db)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+      for u in users {
+        nick_map.insert(u.id, u.nickname);
+      }
+    }
+
+    Ok(
+      rows
+        .into_iter()
+        .map(|m| {
+          let mut a = model_to_annotation(m);
+          if a.user_id != me_id {
+            a.author_nickname = nick_map.get(&a.user_id).cloned();
+          }
+          a
+        })
+        .collect(),
+    )
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (resource_kind, resource_path);
+    Ok(vec![])
+  }
+}
+
+#[post("/api/annotations/create")]
+pub async fn create_annotation(payload: AnnotationCreate) -> Result<Annotation, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    if !read_annotations_switch(&payload.resource_kind) {
+      return Err(ServerFnError::new("当前资源未启用标注".to_string()));
+    }
+    use app_core::engines::moderation::ModerationLabel;
+    use app_core::entities::annotation;
+    use chrono::Utc;
+    use module_moderation::enqueue_if_flagged;
+    use sea_orm::{ActiveValue::Set, EntityTrait};
+    let user = require_writer().await?;
+
+    // ── 审核：只对 note 非空时调；exact_text 是被引用的原文，不是用户内容 ──
+    // resource_kind + resource_path 组成 ref_path（便于 admin 复核时跳回原文）
+    let ref_path = format!("{}:{}", payload.resource_kind, payload.resource_path);
+    let note_content = payload.note.clone().unwrap_or_default();
+    let mod_outcome = moderate_note(&note_content, &ref_path, &user.nickname).await?;
+
+    let db = open_db().await?;
+    let now = Utc::now().fixed_offset();
+    let visibility = normalize_visibility(payload.visibility.as_deref());
+    let am = annotation::ActiveModel {
+      user_id: Set(user.id),
+      resource_kind: Set(payload.resource_kind),
+      resource_path: Set(payload.resource_path),
+      block_id: Set(payload.block_id),
+      start_offset: Set(payload.start_offset),
+      end_offset: Set(payload.end_offset),
+      exact_text: Set(payload.exact_text),
+      prefix_text: Set(payload.prefix_text),
+      suffix_text: Set(payload.suffix_text),
+      style: Set(payload.style),
+      note: Set(payload.note),
+      visibility: Set(visibility),
+      created_at: Set(now),
+      updated_at: Set(now),
+      // Flag：作者自己照常看得到，别人要等 admin 通过
+      pending_review: Set(mod_outcome.as_ref().is_some_and(|v| v.label == ModerationLabel::Flag)),
+      ..Default::default()
+    };
+    let res = annotation::Entity::insert(am)
+      .exec_with_returning(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+
+    // Flag note → 入审核队列（annotation.id 是 i64 BIGSERIAL）
+    if let Some(verdict) = mod_outcome {
+      enqueue_if_flagged(
+        &db,
+        &verdict,
+        "annotation",
+        Some(res.id),
+        &ref_path,
+        Some(user.id),
+        &note_content,
+        &[],
+      )
+      .await;
+    }
+
+    Ok(model_to_annotation(res))
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = payload;
+    Err(ServerFnError::new("server only".to_string()))
+  }
+}
+
+#[post("/api/annotations/delete")]
+pub async fn delete_annotation(id: i64) -> Result<(), ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::annotation;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let user = require_writer().await?;
+    let db = open_db().await?;
+    annotation::Entity::delete_many()
+      .filter(annotation::Column::Id.eq(id))
+      .filter(annotation::Column::UserId.eq(user.id))
+      .exec(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(())
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = id;
+    Ok(())
+  }
+}
+
+/// 标注 note 的审核，新建和编辑共用。空 note 不审（返回 None）；Block 直接拒绝。
+#[cfg(feature = "server")]
+async fn moderate_note(
+  note: &str,
+  ref_path: &str,
+  nickname: &str,
+) -> Result<Option<app_core::engines::moderation::Verdict>, ServerFnError> {
+  use module_moderation::evaluate_submission;
+  use sdk::ModerationSubmission;
+  if note.trim().is_empty() {
+    return Ok(None);
+  }
+  let submission = ModerationSubmission::new(note).with_kind("annotation").with_ref_path(ref_path);
+  let verdict = evaluate_submission(submission).await;
+  if verdict.is_block() {
+    tracing::warn!(
+        user = %nickname,
+        ref_path = %ref_path,
+        score = verdict.score,
+        reason = %verdict.reason,
+        "moderation: annotation BLOCKED"
+    );
+    return Err(ServerFnError::new(format!(
+      "标注被审核拒绝：{}",
+      if verdict.reason.is_empty() { "未通过内容审核".to_string() } else { verdict.reason }
+    )));
+  }
+  Ok(Some(verdict))
+}
+
+/// 编辑后的 `pending_review`：新内容被 Flag 就扣住；没 Flag 时保持原状——
+/// 已在队列里的仍等 admin 处理，不因为改了一次就自动放出。
+#[cfg(feature = "server")]
+fn pending_after_edit(
+  current: bool,
+  verdict: Option<&app_core::engines::moderation::Verdict>,
+) -> bool {
+  current
+    || verdict.is_some_and(|v| v.label == app_core::engines::moderation::ModerationLabel::Flag)
+}
+
+#[post("/api/annotations/update")]
+pub async fn update_annotation(
+  id: i64,
+  style: Option<String>,
+  note: Option<String>,
+  visibility: Option<String>,
+) -> Result<Annotation, ServerFnError> {
+  #[cfg(feature = "server")]
+  {
+    use app_core::entities::annotation;
+    use chrono::Utc;
+    use module_moderation::enqueue_if_flagged;
+    use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
+    let user = require_writer().await?;
+    let db = open_db().await?;
+    let row = annotation::Entity::find_by_id(id)
+      .filter(annotation::Column::UserId.eq(user.id))
+      .one(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?
+      .ok_or_else(|| ServerFnError::new("未找到标注".to_string()))?;
+    // 改 note 和新建一样过审核：否则可以先发无害内容，再改成别的并公开
+    let ref_path = format!("{}:{}", row.resource_kind, row.resource_path);
+    let verdict = match note.as_deref() {
+      Some(n) => moderate_note(n, &ref_path, &user.nickname).await?,
+      None => None,
+    };
+    let pending = pending_after_edit(row.pending_review, verdict.as_ref());
+    let mut am: annotation::ActiveModel = row.into();
+    if let Some(s) = style {
+      am.style = Set(s);
+    }
+    if let Some(n) = note.clone() {
+      am.note = Set(Some(n));
+    }
+    if let Some(v) = visibility {
+      am.visibility = Set(normalize_visibility(Some(&v)));
+    }
+    am.pending_review = Set(pending);
+    am.updated_at = Set(Utc::now().fixed_offset());
+    let updated = annotation::Entity::update(am)
+      .exec(&db)
+      .await
+      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    if let Some(v) = verdict {
+      enqueue_if_flagged(
+        &db,
+        &v,
+        "annotation",
+        Some(updated.id),
+        &ref_path,
+        Some(user.id),
+        note.as_deref().unwrap_or_default(),
+        &[],
+      )
+      .await;
+    }
+    Ok(model_to_annotation(updated))
+  }
+  #[cfg(not(feature = "server"))]
+  {
+    let _ = (id, style, note, visibility);
+    Err(ServerFnError::new("server only".to_string()))
+  }
+}
+
+// =============================================================
+// Tests
+// =============================================================
+
+#[cfg(all(test, feature = "server"))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+  use super::*;
+  use std::fs as stdfs;
+  use tempfile::TempDir;
+
+  /// 编辑标注：Flag 扣住；Allow / 未改 note 保持原状，已扣住的不会因编辑放出。
+  #[test]
+  fn edited_annotation_pending_review() {
+    use app_core::engines::moderation::Verdict;
+    assert!(pending_after_edit(false, Some(&Verdict::flag(0.6, "spam"))));
+    assert!(!pending_after_edit(false, Some(&Verdict::allow())));
+    assert!(!pending_after_edit(false, None));
+    assert!(pending_after_edit(true, Some(&Verdict::allow())));
+    assert!(pending_after_edit(true, None));
+  }
+
+  /// 空白 note 不进审核，也不会被拒。
+  #[tokio::test]
+  async fn blank_note_skips_moderation() {
+    assert!(matches!(moderate_note("  \n", "blog:x", "u").await, Ok(None)));
+  }
+
+  fn write(path: &Path, content: &str) {
+    if let Some(parent) = path.parent() {
+      stdfs::create_dir_all(parent).unwrap();
+    }
+    stdfs::write(path, content).unwrap();
+  }
+
+  fn touch(path: &Path) {
+    write(path, "");
+  }
+
+  /// 课程读取走相对 cwd 的 `assets/courses`，改 cwd 的测试必须串行。
+  static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+  fn lock_cwd() -> std::sync::MutexGuard<'static, ()> {
+    CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+  }
+
+  /// G8：schema.org Course。付费课程每个币种一条 Offer，免费课程标 isAccessibleForFree。
+  #[test]
+  fn schema_lists_offers_per_currency() {
+    let mut course = read_course_fixture();
+    let v = course.schema();
+    assert_eq!(v["@type"], "Course");
+    assert_eq!(v["name"], "C");
+    assert_eq!(v["provider"]["name"], widgets::site_name());
+    assert_eq!(v["offers"][0]["price"], "99.50");
+    assert_eq!(v["offers"][0]["priceCurrency"], "CNY");
+    assert_eq!(v["offers"][1]["price"], "14.99");
+    assert_eq!(v["offers"][1]["priceCurrency"], "USD");
+    course.price_usd = None;
+    assert_eq!(course.schema()["offers"].as_array().map(Vec::len), Some(1));
+    course.access_tier = "free".into();
+    let free = course.schema();
+    assert_eq!(free["isAccessibleForFree"], true);
+    assert!(free.get("offers").is_none());
+  }
+
+  /// Y4：写错的 course.yaml 不能回落成默认的免费课程。
+  #[test]
+  fn invalid_course_yaml_hides_course() {
+    assert!(parse_course_meta("c", "title: Rust: 入门\naccess_tier: paid\n").is_none());
+    assert!(parse_course_meta("c", "access_tier: paid\nprice: \"99\"\n").is_none());
+    let meta = parse_course_meta("c", "title: \"Rust: 入门\"\naccess_tier: paid\nprice: 99\n");
+    assert_eq!(meta.and_then(|m| m.access_tier).as_deref(), Some("paid"));
+    assert!(parse_course_meta("c", "").is_some(), "empty course.yaml should mean defaults");
+  }
+
+  /// T1：上一节 / 下一节按大纲顺序跨章连续，首尾与不存在的课节没有对应的一侧。
+  #[test]
+  fn lesson_neighbors_cross_chapters() {
+    let lesson = |slug: &str| LessonSummary {
+      slug: slug.into(),
+      title: slug.to_uppercase(),
+      kind: LessonKind::Doc,
+      order: 0,
+      duration: None,
+      preview: false,
+    };
+    let chapter = |slug: &str, lessons: Vec<LessonSummary>| Chapter {
+      slug: slug.into(),
+      title: slug.into(),
+      description: String::new(),
+      order: 0,
+      lessons,
+    };
+    let mut course = read_course_fixture();
+    course.chapters = vec![
+      chapter("c1", vec![lesson("a"), lesson("b")]),
+      chapter("c2", vec![]),
+      chapter("c3", vec![lesson("c")]),
+    ];
+    let path = |l: Option<LessonLink>| l.map(|l| l.path);
+    let (prev, next) = lesson_neighbors(&course, "c1", "b");
+    assert_eq!((path(prev), path(next)), (Some("c1/a".into()), Some("c3/c".into())));
+    let (prev, next) = lesson_neighbors(&course, "c1", "a");
+    assert_eq!((path(prev), next.map(|l| l.title)), (None, Some("B".into())));
+    let (prev, next) = lesson_neighbors(&course, "c3", "c");
+    assert_eq!((path(prev), path(next)), (Some("c1/b".into()), None));
+    assert_eq!(lesson_neighbors(&course, "c2", "a"), (None, None));
+  }
+
+  fn read_course_fixture() -> Course {
+    Course {
+      slug: "c".into(),
+      title: "C".into(),
+      description: "d".into(),
+      cover: None,
+      tags: vec![],
+      level: None,
+      order: 0,
+      access_tier: "paid".into(),
+      price: 9950,
+      currency: "CNY".into(),
+      price_usd: Some(1499),
+      chapters: vec![],
+    }
+  }
+
+  /// G6：免费课程的课节全部公开；付费课程只有试看课节公开。
+  #[test]
+  fn open_lesson_paths_follow_access_rules() {
+    let lesson = |slug: &str, preview: bool| LessonSummary {
+      slug: slug.into(),
+      title: slug.into(),
+      kind: LessonKind::Doc,
+      order: 0,
+      duration: None,
+      preview,
+    };
+    let mut course = Course {
+      slug: "c".into(),
+      title: "C".into(),
+      description: String::new(),
+      cover: None,
+      tags: vec![],
+      level: None,
+      order: 0,
+      access_tier: "paid".into(),
+      price: 100,
+      currency: default_currency(),
+      price_usd: None,
+      chapters: vec![Chapter {
+        slug: "ch".into(),
+        title: "Ch".into(),
+        description: String::new(),
+        order: 0,
+        lessons: vec![lesson("a", true), lesson("b", false)],
+      }],
+    };
+    assert_eq!(course.open_lesson_paths(), vec!["/course/c/ch/a"]);
+    course.access_tier = "free".into();
+    assert_eq!(course.open_lesson_paths(), vec!["/course/c/ch/a", "/course/c/ch/b"]);
+  }
+
+  #[test]
+  fn test_parse_order_prefix_numeric() {
+    assert_eq!(parse_order_prefix("01-foo"), (1, "foo".to_string()));
+    assert_eq!(parse_order_prefix("10_bar"), (10, "bar".to_string()));
+    assert_eq!(parse_order_prefix("3-baz-qux"), (3, "baz-qux".to_string()));
+  }
+
+  #[test]
+  fn test_parse_order_prefix_no_prefix() {
+    assert_eq!(parse_order_prefix("foo"), (i32::MAX, "foo".to_string()));
+    assert_eq!(parse_order_prefix("rust-basics"), (i32::MAX, "rust-basics".to_string()));
+  }
+
+  #[test]
+  fn test_humanize_title() {
+    assert_eq!(humanize_title("01-rust-basics"), "Rust Basics");
+    assert_eq!(humanize_title("ownership"), "Ownership");
+    assert_eq!(humanize_title("01-what_is-rust"), "What Is Rust");
+  }
+
+  #[test]
+  fn test_ext_in() {
+    assert!(ext_in("foo.MP3", AUDIO_EXTS));
+    assert!(ext_in("hello.rs", CODE_EXTS));
+    assert!(!ext_in("README", CODE_EXTS));
+    assert!(!ext_in("foo.txt", CODE_EXTS));
+  }
+
+  #[test]
+  fn test_lang_from_ext() {
+    assert_eq!(lang_from_ext("hello.rs"), "rust");
+    assert_eq!(lang_from_ext("Cargo.toml"), "toml");
+    assert_eq!(lang_from_ext("script.sh"), "bash");
+    assert_eq!(lang_from_ext("noext"), "text");
+  }
+
+  #[test]
+  fn test_rewrite_one_url_keeps_absolute() {
+    assert_eq!(rewrite_one_url("/foo.png", "/base"), "/foo.png");
+    assert_eq!(rewrite_one_url("https://x.com/a.png", "/base"), "https://x.com/a.png");
+  }
+
+  #[test]
+  fn test_rewrite_one_url_relative() {
+    assert_eq!(rewrite_one_url("foo.png", "/base"), "/base/foo.png");
+    assert_eq!(rewrite_one_url("./foo.png", "/base"), "/base/foo.png");
+    assert_eq!(rewrite_one_url("img/foo.png", "/base/"), "/base/img/foo.png");
+  }
+
+  #[test]
+  fn test_rewrite_image_urls_basic() {
+    let md = "Hello\n![diagram](./diagram.png)\nworld\n![](images/x.jpg \"caption\")";
+    let out = rewrite_image_urls(md, "/courses/c/ch/le");
+    assert!(out.contains("![diagram](/courses/c/ch/le/diagram.png)"));
+    assert!(out.contains("![](/courses/c/ch/le/images/x.jpg \"caption\")"));
+  }
+
+  #[test]
+  fn test_rewrite_image_urls_preserves_utf8() {
+    // 中文不能被拆成单字节 — 上一个版本发生过 mojibake
+    let md = "# 安装与环境\n\nRust 是一门系统编程语言。\n\n![架构](./d.png)\n";
+    let out = rewrite_image_urls(md, "/courses/c/ch/le");
+    assert!(out.contains("安装与环境"));
+    assert!(out.contains("Rust 是一门系统编程语言。"));
+    assert!(out.contains("![架构](/courses/c/ch/le/d.png)"));
+  }
+
+  #[test]
+  fn test_split_title_heading_takes_leading_h1() {
+    let body = "\n# 安装与开发环境\n\nRust 是一门系统编程语言。\n\n## 安装\n";
+    assert_eq!(
+      split_title_heading(body),
+      (Some("安装与开发环境"), "Rust 是一门系统编程语言。\n\n## 安装\n")
+    );
+    assert_eq!(split_title_heading("# 只有标题"), (Some("只有标题"), ""));
+  }
+
+  #[test]
+  fn test_split_title_heading_keeps_body_without_leading_h1() {
+    // 首个非空行不是 H1、只有 H2：都不动
+    for body in ["正文\n\n# 后面的 H1\n", "## 小节\n\n正文", "#不是标题\n"] {
+      assert_eq!(split_title_heading(body), (None, body));
+    }
+  }
+
+  #[test]
+  fn test_rewrite_image_urls_keeps_external_and_absolute() {
+    let md = "![](/already/abs.png)\n![](https://cdn.example.com/x.png)";
+    let out = rewrite_image_urls(md, "/courses/c/ch/le");
+    assert!(out.contains("/already/abs.png"));
+    assert!(out.contains("https://cdn.example.com/x.png"));
+    assert!(!out.contains("/courses/c/ch/le/already"));
+  }
+
+  #[test]
+  fn test_infer_lesson_kind_doc() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("index.md"), "# hi");
+    assert_eq!(infer_lesson_kind(tmp.path()), Some(LessonKind::Doc));
+  }
+
+  #[test]
+  fn test_infer_lesson_kind_video() {
+    let tmp = TempDir::new().unwrap();
+    touch(&tmp.path().join("clip.mp4"));
+    assert_eq!(infer_lesson_kind(tmp.path()), Some(LessonKind::Video));
+  }
+
+  #[test]
+  fn test_infer_lesson_kind_audio() {
+    let tmp = TempDir::new().unwrap();
+    touch(&tmp.path().join("show.m4a"));
+    assert_eq!(infer_lesson_kind(tmp.path()), Some(LessonKind::Audio));
+  }
+
+  #[test]
+  fn test_infer_lesson_kind_code_via_subdir() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("code/main.rs"), "fn main() {}");
+    assert_eq!(infer_lesson_kind(tmp.path()), Some(LessonKind::Code));
+  }
+
+  #[test]
+  fn test_infer_lesson_kind_code_via_root() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("solution.py"), "print('hi')");
+    assert_eq!(infer_lesson_kind(tmp.path()), Some(LessonKind::Code));
+  }
+
+  #[test]
+  fn test_infer_lesson_kind_skip_empty() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("README.txt"), "ignored");
+    assert_eq!(infer_lesson_kind(tmp.path()), None);
+  }
+
+  #[test]
+  fn test_infer_priority_doc_over_video() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("index.md"), "# h");
+    touch(&tmp.path().join("clip.mp4"));
+    assert_eq!(infer_lesson_kind(tmp.path()), Some(LessonKind::Doc));
+  }
+
+  #[test]
+  fn test_resolve_media_url() {
+    assert_eq!(
+      resolve_media_url("audio.mp3", "/courses/a/ch/le"),
+      Some("/courses/a/ch/le/audio.mp3".to_string())
+    );
+    assert_eq!(resolve_media_url("/abs.mp3", "/courses/a/ch/le"), Some("/abs.mp3".to_string()));
+    assert_eq!(
+      resolve_media_url("https://cdn/x.mp3", "/courses/a/ch/le"),
+      Some("https://cdn/x.mp3".to_string())
+    );
+    assert_eq!(resolve_media_url("", "/courses/a/ch/le"), None);
+  }
+
+  #[test]
+  fn test_scan_attachments_orders_alphabetically() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("attachments/zeta.pdf"), "z");
+    write(&tmp.path().join("attachments/alpha.zip"), "a");
+    write(&tmp.path().join("attachments/.hidden"), "");
+    let list = scan_attachments(tmp.path(), "/base");
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[0].name, "alpha.zip");
+    assert_eq!(list[1].name, "zeta.pdf");
+    assert_eq!(list[0].url, "/base/attachments/alpha.zip");
+  }
+
+  #[test]
+  fn test_scan_code_files_under_code_dir() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("code/main.rs"), "fn main() {}");
+    write(&tmp.path().join("code/Cargo.toml"), "[package]");
+    let files = scan_code_files(tmp.path(), "/base");
+    assert_eq!(files.len(), 2);
+    assert!(files.iter().any(|f| f.name == "main.rs" && f.lang == "rust"));
+    assert!(files.iter().any(|f| f.name == "Cargo.toml" && f.lang == "toml"));
+    let main = files.iter().find(|f| f.name == "main.rs").unwrap();
+    assert_eq!(main.raw_url, "/base/code/main.rs");
+  }
+
+  #[test]
+  fn test_scan_code_files_root_when_no_code_dir() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("hello.rs"), "fn main() {}");
+    let files = scan_code_files(tmp.path(), "/base");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].raw_url, "/base/hello.rs");
+  }
+
+  /// 课程读取的 slug 都来自可直接调用的 server fn：含 `..` / `/` 的参数不能让
+  /// `read_course` 看不到付费课程、却让 `read_lesson` 读到它的课时。
+  #[test]
+  fn test_course_readers_reject_path_segments() {
+    let tmp = TempDir::new().unwrap();
+    let _cwd_guard = lock_cwd();
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let res = {
+      let course = tmp.path().join("assets/courses/paid");
+      write(&course.join("course.yaml"), "title: Paid\naccess_tier: paid\nprice: 9900\n");
+      write(&course.join("01-c/01-l/index.md"), "# 付费正文\n");
+
+      assert!(read_lesson("paid", "01-c", "01-l").is_some());
+      for (c, ch, l) in [
+        ("..", "courses/paid/01-c", "01-l"),
+        ("paid/..", "paid/01-c", "01-l"),
+        ("paid", "01-c/..", "01-c/01-l"),
+      ] {
+        assert!(read_lesson(c, ch, l).is_none(), "{c} {ch} {l}");
+      }
+      assert!(read_course("..").is_none());
+      assert!(read_course("paid/.").is_none());
+      assert!(read_chapter("..", "courses/paid/01-c").is_none());
+      Ok::<(), ()>(())
+    };
+    std::env::set_current_dir(cwd).unwrap();
+    res.unwrap();
+  }
+
+  /// 阶段 I：`price_usd` 从 course.yaml 读入，经 `pricing()` 给海外报价；未写时为 None。
+  #[test]
+  fn test_course_reads_price_usd() {
+    use crate::pricing::Region;
+    let tmp = TempDir::new().unwrap();
+    let _cwd_guard = lock_cwd();
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let courses = tmp.path().join("assets/courses");
+    write(
+      &courses.join("usd/course.yaml"),
+      "title: U\naccess_tier: paid\nprice: 9900\nprice_usd: 1499\n",
+    );
+    write(&courses.join("cny/course.yaml"), "title: C\naccess_tier: paid\nprice: 9900\n");
+    let (usd, cny) = (read_course("usd"), read_course("cny"));
+    std::env::set_current_dir(cwd).unwrap();
+    let usd = usd.unwrap().pricing();
+    assert_eq!(usd.price_usd, Some(1499));
+    assert_eq!(usd.list_price(Region::Overseas).label(), "$14.99");
+    assert_eq!(cny.unwrap().pricing().price_usd, None);
+  }
+
+  #[test]
+  fn test_read_lesson_doc_with_assets() {
+    let tmp = TempDir::new().unwrap();
+    let _cwd_guard = lock_cwd();
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let res = {
+      let lesson_dir =
+        tmp.path().join("assets/courses/rust-basics/01-fundamentals/01-what-is-rust");
+      stdfs::create_dir_all(&lesson_dir).unwrap();
+      write(
+        &lesson_dir.join("index.md"),
+        "---\ntitle: What is Rust\nduration: '5:00'\n---\n# heading\n![](./d.png)\n",
+      );
+      touch(&lesson_dir.join("audio.mp3"));
+      write(&lesson_dir.join("attachments/slides.pdf"), "pdfdata");
+      write(&lesson_dir.join("code/hello.rs"), "fn main(){}");
+
+      let lesson = read_lesson("rust-basics", "01-fundamentals", "01-what-is-rust")
+        .expect("lesson should be readable");
+
+      assert_eq!(lesson.kind, LessonKind::Doc);
+      assert_eq!(lesson.title, "What is Rust");
+      assert_eq!(lesson.order, 1);
+      let doc = lesson.doc.expect("doc body");
+      assert!(doc.markdown.contains("/courses/rust-basics/01-fundamentals/01-what-is-rust/d.png"));
+      let audio = lesson.audio.expect("audio");
+      assert_eq!(audio.url, "/courses/rust-basics/01-fundamentals/01-what-is-rust/audio.mp3");
+      assert_eq!(audio.duration.as_deref(), Some("5:00"));
+      assert_eq!(lesson.code.len(), 1);
+      assert_eq!(lesson.downloads.len(), 1);
+      assert_eq!(lesson.downloads[0].size_bytes, "pdfdata".len() as u64);
+      assert!(!doc.markdown.contains("# heading"), "正文开头的 H1 应被拆出");
+
+      // 无 frontmatter 标题：取正文 H1
+      let untitled = tmp.path().join("assets/courses/rust-basics/01-fundamentals/02-untitled");
+      write(&untitled.join("index.md"), "# 来自正文的标题\n\n正文\n");
+      let lesson =
+        read_lesson("rust-basics", "01-fundamentals", "02-untitled").expect("untitled lesson");
+      assert_eq!(lesson.title, "来自正文的标题");
+      assert_eq!(lesson.doc.expect("doc body").markdown.trim(), "正文");
+      Ok::<(), ()>(())
+    };
+    std::env::set_current_dir(cwd).unwrap();
+    res.unwrap();
+  }
+
+  #[test]
+  fn test_scan_courses_full_tree() {
+    let tmp = TempDir::new().unwrap();
+    let _cwd_guard = lock_cwd();
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let res = {
+      let root = tmp.path().join("assets/courses");
+      // course rust-basics with two chapters
+      write(
+        &root.join("rust-basics/course.yaml"),
+        "title: Rust Basics\ndescription: hello\norder: 1\ntags: [rust]\n",
+      );
+      write(&root.join("rust-basics/01-fundamentals/01-intro/index.md"), "# i");
+      touch(&root.join("rust-basics/01-fundamentals/02-install/clip.mp4"));
+      write(&root.join("rust-basics/02-ownership/01-borrow/index.md"), "# b");
+      // course async-rust without yaml
+      write(&root.join("async-rust/01-tokio/01-runtime/index.md"), "# r");
+      // 隐藏目录应被跳过
+      write(&root.join("_drafts/garbage/lesson/index.md"), "x");
+
+      let courses = scan_courses(&root);
+      assert_eq!(courses.len(), 2);
+      let rust_basics = courses.iter().find(|c| c.slug == "rust-basics").unwrap();
+      assert_eq!(rust_basics.title, "Rust Basics");
+      assert_eq!(rust_basics.order, 1);
+      assert_eq!(rust_basics.chapters.len(), 2);
+      let ch1 = &rust_basics.chapters[0];
+      assert_eq!(ch1.lessons.len(), 2);
+      assert_eq!(ch1.lessons[0].kind, LessonKind::Doc);
+      assert_eq!(ch1.lessons[1].kind, LessonKind::Video);
+
+      let async_rust = courses.iter().find(|c| c.slug == "async-rust").unwrap();
+      assert_eq!(async_rust.title, "Async Rust");
+      Ok::<(), ()>(())
+    };
+    std::env::set_current_dir(cwd).unwrap();
+    res.unwrap();
+  }
+
+  #[test]
+  fn test_normalize_visibility_known_values() {
+    assert_eq!(normalize_visibility(Some("public")), "public");
+    assert_eq!(normalize_visibility(Some("course-public")), "course-public");
+    assert_eq!(normalize_visibility(Some("doc-public")), "doc-public");
+    assert_eq!(normalize_visibility(Some("private")), "private");
+  }
+
+  #[test]
+  fn test_normalize_visibility_fallback() {
+    // 未知值 → private
+    assert_eq!(normalize_visibility(Some("")), "private");
+    assert_eq!(normalize_visibility(Some("PUBLIC")), "private");
+    assert_eq!(normalize_visibility(Some("hacker-attempt")), "private");
+    // None → private
+    assert_eq!(normalize_visibility(None), "private");
+  }
+
+  #[test]
+  fn test_can_access_lesson() {
+    // free 全开
+    assert!(can_access_lesson("free", false, false, false, false));
+    // paid：默认锁
+    assert!(!can_access_lesson("paid", false, false, false, false));
+    // paid：试看 / admin / 单课权益放行
+    assert!(can_access_lesson("paid", true, false, false, false));
+    assert!(can_access_lesson("paid", false, true, false, false));
+    assert!(can_access_lesson("paid", false, false, true, false));
+    // paid：Pro 会员**不**解锁单购课程
+    assert!(!can_access_lesson("paid", false, false, false, true));
+    // pro：Pro 会员解锁
+    assert!(can_access_lesson("pro", false, false, false, true));
+    assert!(!can_access_lesson("pro", false, false, false, false));
+    // pro：单课权益（admin 授予）也可解锁
+    assert!(can_access_lesson("pro", false, false, true, false));
+  }
+
+  #[test]
+  fn test_default_annotation_enabled() {
+    assert!(default_annotation_enabled("course"));
+    assert!(default_annotation_enabled("doc"));
+    assert!(!default_annotation_enabled("blog"));
+    assert!(!default_annotation_enabled("unknown"));
+  }
+
+  #[test]
+  fn test_scan_skips_courses_without_lessons() {
+    let tmp = TempDir::new().unwrap();
+    let _cwd_guard = lock_cwd();
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let res = {
+      let root = tmp.path().join("assets/courses");
+      // course 没有任何 lesson
+      stdfs::create_dir_all(root.join("empty/01-ch")).unwrap();
+      // course 有一个 lesson
+      write(&root.join("real/01-ch/01-le/index.md"), "# r");
+
+      let courses = scan_courses(&root);
+      assert_eq!(courses.len(), 1);
+      assert_eq!(courses[0].slug, "real");
+      Ok::<(), ()>(())
+    };
+    std::env::set_current_dir(cwd).unwrap();
+    res.unwrap();
+  }
+
+  #[test]
+  fn parse_course_file_path_classifies_and_rejects() {
+    use CourseFilePath::*;
+    assert_eq!(parse_course_file_path("/c/cover.png"), Some(Course));
+    assert_eq!(parse_course_file_path("/c/images/cover.png"), Some(Course));
+    let lesson = Lesson { course: "c".into(), chapter: "01-ch".into(), lesson: "01-le".into() };
+    assert_eq!(parse_course_file_path("/c/01-ch/01-le/index.md"), Some(lesson));
+    assert!(matches!(parse_course_file_path("/c/ch/le/code/main.rs"), Some(Lesson { .. })));
+    assert!(matches!(
+      parse_course_file_path("/c/ch/le/attachments/%E8%AE%B2%E4%B9%89.pdf"),
+      Some(Lesson { .. })
+    ));
+    for bad in [
+      "/",
+      "/c",
+      "/c/",
+      "/c/ch/le/",
+      "/c/../c2/ch/le/x.mp4",
+      "/c/%2e%2e/c2/x",
+      "/c/ch/.%2Fx",
+      "/c/ch/le/..%5Cx",
+      "/c/%FF/x",
+    ] {
+      assert_eq!(parse_course_file_path(bad), None, "{bad}");
+    }
+  }
+
+  #[test]
+  fn may_serve_course_file_gates_paid_lessons() {
+    let tmp = TempDir::new().unwrap();
+    let _cwd_guard = lock_cwd();
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let root = tmp.path().join("assets/courses");
+    write(&root.join("paid/course.yaml"), "title: P\naccess_tier: paid\nprice: 100\n");
+    touch(&root.join("paid/cover.png"));
+    write(&root.join("paid/01-ch/01-trial/index.md"), "---\npreview: true\n---\nfree\n");
+    write(&root.join("paid/01-ch/02-locked/index.md"), "---\ntitle: L\n---\nsecret\n");
+    touch(&root.join("paid/01-ch/02-locked/audio.mp3"));
+    write(&root.join("paid/01-ch/02-locked/code/main.rs"), "fn main(){}");
+    write(&root.join("free/course.yaml"), "title: F\naccess_tier: free\n");
+    write(&root.join("free/01-ch/01-le/index.md"), "body\n");
+
+    let cases = [
+      ("/paid/cover.png", true),
+      ("/paid/01-ch/01-trial/index.md", true),
+      ("/paid/01-ch/02-locked/index.md", false),
+      ("/paid/01-ch/02-locked/audio.mp3", false),
+      ("/paid/01-ch/02-locked/code/main.rs", false),
+      ("/paid/01-ch/02-LOCKED/audio.mp3", false),
+      ("/paid/01-ch/missing/x.png", false),
+      ("/free/01-ch/01-le/index.md", true),
+      ("/free/../paid/01-ch/02-locked/audio.mp3", false),
+    ];
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let got: Vec<bool> =
+      cases.iter().map(|(path, _)| rt.block_on(may_serve_course_file(path, None))).collect();
+    std::env::set_current_dir(cwd).unwrap();
+    for ((path, want), got) in cases.iter().zip(got) {
+      assert_eq!(got, *want, "{path}");
+    }
+  }
+}

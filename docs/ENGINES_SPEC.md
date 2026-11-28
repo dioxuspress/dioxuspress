@@ -1,0 +1,243 @@
+# Engine Layer Spec
+
+> **现状说明（2026-10-08）**：本文是 Phase 1C 的设计记录，部分内容已过时——`Engine` trait /
+> `EngineRegistry` / `ContentEngine` 在 Phase 8.7 删除；`AuthEngine` 与 `ThemeEngine` 随认证、主题
+> 内置进宿主（R1 / R2）删除，现状分别见 [`AUTH_GUIDE.md`](AUTH_GUIDE.md) 与 [`THEME_SPEC.md`](THEME_SPEC.md)；
+> `PluginEngine`、wasmi 运行时与 SDK 的插件 ABI 在 R5 删除，站点不再加载 WASM 插件。
+> 适用阶段：Phase 1C 完成（v2.1 Todos.md）。
+> 8 大核心引擎在 `crates/core/src/engines/` 中实现，向上为 server fn / 业务模块提供统一接入点。
+## 1. 总体架构
+```text
+┌──────────────────────────────────────────────────────────────────┐
+│                       crates/app (Dioxus + Axum)                 │
+│  server fn / 路由 / RSX                                           │
+└──────────────────────────────────────────────────────────────────┘
+                                 ▲
+                  EngineRegistry │
+                                 │
+┌──────────────────────────────────────────────────────────────────┐
+│                  crates/core/src/engines/                        │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐          │
+│  │ Plugin*  │  │ Module   │  │ Auth*    │  │ Theme*   │          │
+│  │ Engine   │  │ Engine   │  │ Engine   │  │ Engine   │          │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘          │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐          │
+│  │ Layout   │  │ Content  │  │Moderation│  │ Search   │          │
+│  │ Engine   │  │ Engine   │  │ Engine   │  │ Engine   │          │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘          │
+│                                                                  │
+│       共享 Engine trait / EngineRegistry / EngineContext          │
+└──────────────────────────────────────────────────────────────────┘
+```
+`*` 已删除：Auth / Theme 内置（R1 / R2），Plugin 与其下的 WASM 插件层移除（R5）。
+## 2. 共享抽象
+### 2.1 `Engine` trait
+所有引擎的共同骨架，定义在 `crates/core/src/engines/mod.rs:73`。
+```rust
+pub trait Engine: Send + Sync + Any {
+    fn name(&self) -> &'static str;
+    fn init(&mut self, ctx: &EngineContext) -> AppResult<()> { Ok(()) }
+    fn shutdown(&mut self) -> AppResult<()> { Ok(()) }
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+```
+- `name()` 唯一名（注册表 key）。
+- `init()` 注册后 `EngineRegistry::init_all` 触发，可读 `ctx.site_config`。
+- `shutdown()` `EngineRegistry::shutdown_all` 反序触发，释放资源。
+- `as_any` / `as_any_mut` 供按类型 downcast。
+### 2.2 `EngineRegistry`
+按注册顺序保存 `Box<dyn Engine>`：
+- `register::<E>(engine)` — 重复名返回 `AppError::Other`
+- `init_all(&ctx)` / `shutdown_all()` — 顺序 / 逆序触发钩子
+- `get::<E>(name)` / `get_mut::<E>(name)` — 类型不匹配返回 `None`
+- `names() -> Vec<&'static str>` — 已注册引擎名清单
+### 2.3 `EngineContext`
+`init` 阶段注入的共享上下文：
+```rust
+pub struct EngineContext {
+    pub site_config: Arc<SiteConfig>,
+    pub asset_root: PathBuf,
+}
+```
+不直接放 DB 句柄：DB 走 `crate::db::get_or_init_pool()` 全局取出。
+## 3. 8 个引擎详述
+| 引擎 | name | 主文件 | 职责 |
+|---|---|---|---|
+| ~~PluginEngine~~ | — | 已删除（R5） | 不再加载 WASM 插件 |
+| ModuleEngine | `module` | `engines/module.rs` | 业务模块注册中心 + site.json 开关 + 导航/搜索源过滤 |
+| ~~AuthEngine~~ | — | 已删除（R1） | 认证见 `crates/core/src/auth/`（内置 provider） |
+| ~~ThemeEngine~~ | — | 已删除（R2） | `engines/theme.rs` 现为内置主题表 + `resolve_theme` |
+| LayoutEngine | `layout` | `engines/layout.rs` | LayoutPack 注册（Phase 3.3 完整实现） |
+| ContentEngine | `content` | `engines/content.rs` | MDX ComponentRegistry（Phase 2 完整实现） |
+| ModerationEngine | `moderation` | `engines/moderation.rs` | 串行审核流水线 + Verdict（Phase 4 完整实现） |
+| SearchEngine | `search` | `engines/search.rs` | SearchSource 注册中心（Phase 3.4 完整迁移） |
+### 3.1 PluginEngine（已删除，R5）
+原为 wasmi `Module` 缓存 + ABI 校验 + 能力分发。第一方插件全部编译进宿主后无调用方，随运行时一起移除；决策见 [`SECURITY_REMEDIATION.md`](SECURITY_REMEDIATION.md)。
+### 3.2 ModuleEngine
+**完整状态**（Phase 1C.3 ✅）。
+```rust
+pub struct ModuleSpec {
+    pub id: String,
+    pub label: String,
+    pub routes: Vec<String>,
+    pub nav_position: Option<i32>,
+    pub enabled: bool,
+}
+```
+- `register(spec)` — 重复 id 拒绝
+- `apply_site_config(&site)` — 读 `SiteConfig.modules: HashMap<String, ModuleSettings>` 覆盖 `enabled`
+- `is_enabled(id)` / `enabled_modules()` / `enabled_ids()` / `navigation()`（按 `nav_position` 升序，稳定排序）
+`SiteConfig::modules` 可用形式：
+```json
+{
+  "modules": {
+    "forum": { "enabled": false },
+    "podcast": { "enabled": true }
+  }
+}
+```
+### 3.3 AuthEngine（已删除，R1）
+认证不再经由插件：`crates/core/src/auth/provider.rs` 内置 provider，见 [`AUTH_GUIDE.md`](AUTH_GUIDE.md)。
+### 3.4 ThemeEngine（已删除，R2）
+主题不再经由插件：`crates/core/src/engines/theme.rs` 的 `THEMES` 表与 `resolve_theme`，见 [`THEME_SPEC.md`](THEME_SPEC.md)。
+### 3.5 LayoutEngine
+**骨架状态**（Phase 1C.4 ✅，Phase 3.3 完整实现）。
+```rust
+pub trait LayoutPack: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn label(&self) -> &'static str;
+}
+```
+- `register::<L>(pack)` — 重复名拒绝
+- `set_active(name)` / `active() -> Option<&str>`
+- `names() -> Vec<&'static str>` 列出所有已注册
+**Phase 3.3 计划补充**：
+- `LayoutPack` trait 增加 `render_navbar(ctx) -> Element` / `render_footer` / `render_sidebar` 等 slot 方法（依赖 widgets crate 落地）
+- `crates/layouts/{classic,minimal}/` 实现两个 layout 包
+- `SiteConfig.active_layout` 字段 + admin 设置页切换
+### 3.6 ContentEngine
+**骨架状态**（Phase 1C.4 ✅，Phase 2 完整实现）。
+```rust
+pub trait MdxComponent: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn render(&self, attrs: &serde_json::Value) -> String;
+}
+```
+- `ComponentRegistry::register / lookup / list / render`
+- 未知组件降级为 HTML 注释占位（`<!-- unknown MDX component: NAME -->`）避免渲染失败
+**Phase 2 计划补充**：
+- `render(attrs)` 改为返回 Dioxus `Element` 替代 HTML 字符串（依赖 widgets crate）
+- 现有 7 嵌入组件（YouTube/Bilibili/PodcastCard/Annotation/...）作为默认注册项迁移过来
+- `render_mdx_registry()` if-else 链改为 registry 查询
+### 3.7 ModerationEngine
+**骨架状态**（Phase 1C.4 ✅，Phase 4 完整实现）。
+```rust
+pub enum ModerationLabel { Allow, Flag, Block }
+pub struct Verdict { pub score: f32, pub label: ModerationLabel, pub reason: String }
+pub trait ModerationStage: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn evaluate(&self, content: &str) -> Verdict;
+}
+```
+管道行为：
+- 串行调用 stages
+- 任一 `Block` 立即返回（早停）
+- 所有 `Flag` 中取最高 score 的作为最终结果
+- 全部 `Allow` 默认通过
+- `Verdict::block(score, ...)` / `Verdict::flag(score, ...)` 自动 clamp 到 `[0, 1]`
+**Phase 4 计划补充**：
+- `evaluate` 改为 `async`，输入改为 `Submission { text, image_url }`（含视觉审核）
+- 内置 stages: `LLMStage` / `VLMStage`（OpenAI / Anthropic / LlamaGuard）
+- 阈值配置 `block_above` / `flag_above`
+- 审核失败不放行：默认 Flag 送人工复核，可配为 Block（`on_llm_failure`）
+- 数据库表 `moderation_log` / `moderation_decisions` / `moderation_queue`
+### 3.8 SearchEngine
+**骨架状态**（Phase 1C.4 ✅，Phase 3.4 完整迁移）。
+```rust
+pub struct SearchDocument {
+    pub kind: String,
+    pub ref_id: String,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+    pub created_at: String,
+}
+pub trait SearchSource: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn collect(&self) -> Vec<SearchDocument>;
+}
+```
+- `register(source)` — 模块自注册数据源
+- `collect_all()` — 全部源 documents
+- `collect_filtered(&enabled)` — 按 `ModuleEngine::enabled_ids()` 过滤
+**Phase 3.4 计划补充**：
+- 将 `modules/search/src/indexer.rs` 中硬编码的 4 个源（blog / docs / topics / cases）迁移到 `SearchSource` 实现
+- 索引时调 `engine.collect_filtered(&module_engine.enabled_ids())`
+- `MmapDirectory` 替代 `RAMDirectory`，增量索引（Phase 7.3）
+## 4. 生命周期
+```text
+┌────────────────┐
+│ App boot       │
+│ main.rs        │
+└────────┬───────┘
+         ▼
+┌────────────────┐
+│ build registry │
+│ + register all │
+│ engines        │
+└────────┬───────┘
+         ▼
+┌────────────────┐
+│ init_all(&ctx) │      <- 按注册顺序，被依赖者先注册
+└────────┬───────┘         （被依赖者先注册）
+         ▼
+┌────────────────┐
+│ serve traffic  │      <- server fn 通过 registry.get::<E>(name) 取出
+└────────┬───────┘         具体引擎使用
+         ▼
+┌────────────────┐
+│ shutdown_all() │      <- 按注册逆序
+└────────────────┘
+```
+## 5. 依赖关系
+```text
+ModuleEngine ──┐
+               ├─► SearchEngine（按 enabled_ids 过滤源）
+               └─► （未来）LayoutEngine 决定哪些 nav 项显示
+所有引擎 ─► EngineContext.site_config（只读）
+```
+## 6. 测试覆盖
+Phase 1C 完成时：
+- 工作区 `cargo test --features server --workspace` 全绿
+- `engines::*` 单测合计 57 个
+  - mod.rs（注册/init/shutdown）：8
+  - plugin.rs：12（含 3 个真实 wasm 集成测试；R5 随运行时删除）
+  - module.rs：10
+  - theme.rs：4
+  - layout.rs：4
+  - content.rs：5
+  - moderation.rs：6
+  - auth.rs：4
+  - search.rs：4
+- SDK manifest / pack helpers 单测：10
+## 7. 后续阶段
+| Phase | 主要落地 |
+|---|---|
+| 2 | ContentEngine 接入 widgets crate；7 嵌入组件迁移到 ComponentRegistry |
+| 3 | ThemeEngine 多层主题栈；LayoutEngine 接入 classic / minimal 包；ModuleEngine 切换 admin UI |
+| 3.4 | SearchEngine：迁移 indexer.rs 硬编码 4 源到 SearchSource |
+| 4 | ModerationEngine：LLM/VLM stages 落地（R4 起为内置 `LlmModerationStage`） |
+| 5 | ~~PluginEngine：Hot reload + 内存回收验证~~（R5 移除插件运行时） |
+## 附：关键文件路径
+- `crates/core/src/engines/mod.rs:73` — `Engine` trait
+- `crates/core/src/engines/mod.rs:100` — `EngineRegistry`
+- `crates/core/src/engines/module.rs:87` — `ModuleEngine`
+- `crates/core/src/engines/theme.rs` — `THEMES` / `resolve_theme`
+- `crates/core/src/engines/layout.rs:25` — `LayoutEngine`
+- `crates/core/src/engines/content.rs:80` — `ContentEngine`
+- `crates/core/src/engines/moderation.rs:78` — `ModerationEngine`
+- `crates/core/src/engines/search.rs:42` — `SearchEngine`
+- `crates/sdk/src/lib.rs` — `ModerationSubmission` / `ImageRef`（共享类型；`AppModule` 2026-11-05 删除）

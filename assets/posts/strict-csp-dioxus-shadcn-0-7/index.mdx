@@ -1,0 +1,56 @@
+---
+title: "无 unsafe-eval 严格 CSP 实践：Dioxus 0.7 全栈与 dioxus-shadcn 0.7.0 工程复盘"
+authors: [yuxuetr]
+description: "复盘 DioxusPress 升级 dioxus-shadcn 0.7.0（100 个组件）并在全站强制无 unsafe-eval 内容安全策略（CSP）、零闪烁双模主题与安全 UGC 渲染的工程实践。"
+date: "2026-11-25"
+tags: [Rust, Dioxus, Security, CSP, Tailwind, UI]
+---
+
+> 🌐 English version: [Strict CSP Without unsafe-eval: Fullstack Dioxus 0.7 & dioxus-shadcn 0.7.0 in Production](/blog/strict-csp-dioxus-shadcn-0-7-en)
+
+很多现代 Web 框架在接入富交互弹窗、悬浮定位、动态表单或主题切换时，常常不知不觉引入 `eval()` / `new Function()`，迫使服务端放开 `Content-Security-Policy` 中的 `'unsafe-eval'`。但在开放社区与知识平台场景下，关闭 `'unsafe-eval'` 是阻断 XSS 链式利用的关键底线。
+
+在 **DioxusPress v0.2** 中，我们将全站 UI 底座升级到了自研的 [`dioxus-shadcn 0.7.0`](https://ui.dioxuspress.dev)（100 个纯 Rust Dioxus 0.7 组件、无障碍原语与 33 套预设主题），并在全站响应头里持续强制无 `'unsafe-eval'` 的严格 CSP。
+
+## 为什么 `dioxus-shadcn 0.7.0` 天然兼容严格 CSP？
+
+在 Dioxus 0.7 中，最容易踩到 CSP 雷区的做法是调用 `document::eval(...)` 执行临时 JS 片段。`dioxus-shadcn` 与 `DioxusPress` 遵循一条刚性红线：
+
+1. **零 `document::eval`**：焦点管理、弹窗遮罩、`Escape` 关闭、剪贴板读取、暗色模式偏好与滚动锁定全部通过 `web-sys` 类型安全 DOM 绑定或纯 CSS 状态属性完成，不拼装任何运行期 JS 字符串。
+2. **正交语义令牌与 Tailwind v4**：所有组件色板统一收敛到 `--background`、`--foreground`、`--primary`、`--destructive` 等 CSS 变量，亮暗模式与 10 套访客可切换主题只需切换一套语义令牌，零运行时样式注入。
+3. **0.7.0 实用工程 API 升级**：
+   - `Button { loading: true }` 自动附带 `aria-busy`、禁用防连点与内置 Spinner；
+   - `Table { striped: true, sticky_header: true }` 一行开启斑马纹与吸顶表头；
+   - `BadgeStyle::Soft` 与 `TabsVariant::Underline` 消除了大量手写色彩与下划线页签样板代码。
+
+## 零闪烁 SSR 主题注入：绕开首屏「白屏跳色」
+
+单页应用或 WASM 水合站点常见的一个体验瑕疵，是首屏 HTML 按默认色绘制，等客户端 WASM 加载后再拉取用户主题，导致页面闪一下。
+
+DioxusPress 的解法是把主题 CSS 提升到 `use_server_future` 随 SSR HTML 一次性下发：
+
+```rust
+#[component]
+fn ThemeStyle() -> Element {
+  let version = crate::components::theme_picker::use_theme_version();
+  let first =
+    use_server_future(|| async move { get_aggregated_theme_css().await.unwrap_or_default() })?;
+  // 首屏直接使用 SSR 下发的 CSS；仅当访客在客户端主动切换主题时再异步拉取新主题
+  let css = switched().unwrap_or_else(|| first().unwrap_or_default());
+  rsx! {
+    style { id: "wasm-theme-style", dangerous_inner_html: "{css}" }
+  }
+}
+```
+
+配合 `<head>` 中极小的同步暗色引导脚本，无论访客开启浅色还是深色系统偏好，首帧绘制即命中准确主题色，且不触发 Dioxus `document::Style` 的 props 变更告警。
+
+## 纵深防御：从 CSP 到 UGC 白名单清洗
+
+除了无 `'unsafe-eval'` CSP，DioxusPress 在 `crates/app/src/server/security.rs` 与内容渲染管线中建立了一套默认开启的安全基线（详见 [审核与管理后台](/docs/community/moderation-and-admin)）：
+
+- **严格响应头**：默认下发 `X-Content-Type-Options: nosniff`、`Referrer-Policy`、`X-Frame-Options` 与收敛后的 CSP；
+- **用户内容白名单清洗**：论坛帖子、评论与外部 Markdown 全部经 `ammonia` 白名单过滤危险标签与事件属性；
+- **边界防护**：所有文件/slug 路径统一经过 `is_safe_slug` / `safe_join_under` 校验，阻断路径穿越；高风险写接口叠加令牌桶限流与二次确认。
+
+欢迎前往 [`ui.dioxuspress.dev`](https://ui.dioxuspress.dev) 在线交互体验全部 100 个 `dioxus-shadcn 0.7.0` 组件，或阅读 [布局与主题指南](/docs/guide/layouts-and-themes) 定制自己的站点外观。

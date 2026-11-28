@@ -1,0 +1,242 @@
+{
+  "$schema": "https://dioxuspress.dev/schemas/site.schema.json",
+  "site_name": "DioxusPress",
+  "site_description": "基于 Dioxus 0.7 的纯 Rust 全栈文档、博客、课程与社区引擎",
+  "author": "yuxuetr",
+  "default_language": "zh",
+  "theme": "ocean",
+  "active_layout": "docs",
+  "favicon": "/images/favicon.ico",
+  "favicon_16": "/images/favicon-16.png",
+  "favicon_32": "/images/favicon-32.png",
+  "apple_touch_icon": "/images/apple-touch-icon.png",
+  "manifest": "/images/site.webmanifest",
+  "logo": "/images/logo-light.png",
+  "logo_dark": "/images/logo-dark.png",
+  "logo_mobile": "/images/logo-mobile.png",
+  "logo_wordmark": true,
+  "og_image": "/images/og-default.jpg",
+  "twitter_handle": "",
+  "submit_case_url": "https://github.com/dioxuspress/dioxuspress/issues/new",
+  "docs_edit_url_base": "https://github.com/dioxuspress/dioxuspress/edit/main/assets/docs",
+  "announcement": {
+    "id": "dp-v0-2-0",
+    "text": "🎉 DioxusPress v0.2.0 正式发布 —— 升级 dioxus-shadcn 0.7.0（100 组件）、零数据库文档模板、10 套双模主题与交互式 AI WASM 实验室",
+    "text_en": "🎉 DioxusPress v0.2.0 is out — upgraded to dioxus-shadcn 0.7.0 (100 components), zero-DB Docs template, 10 dual-mode themes & interactive AI WASM labs",
+    "href": "/docs/guide/quickstart"
+  },
+  "hero": {
+    "badge": "Dioxus 0.7 · Fullstack Rust Engine",
+    "badge_en": "Dioxus 0.7 · Fullstack Rust Engine",
+    "title": "用纯 Rust 构建极速文档与全栈知识社区",
+    "title_en": "Build Blazing-Fast Docs & Knowledge Communities in Pure Rust",
+    "subtitle": "SSR 首屏直出 + WASM 无刷新水合 + Tantivy 毫秒级全文检索。既能零数据库替代 Docusaurus，也能一键开启登录、论坛、划线标注与付费课程。",
+    "subtitle_en": "SSR first-paint + WASM hydration + embedded Tantivy search. Run as a zero-database Docusaurus alternative or scale to auth, forum, annotations, and courses.",
+    "install_command": "cargo install dioxuspress-cli && dioxuspress init my-docs",
+    "primary_cta_text": "5 分钟快速开始",
+    "primary_cta_text_en": "Quickstart Guide",
+    "primary_cta_href": "/docs/guide/quickstart",
+    "secondary_cta_text": "GitHub 仓库",
+    "secondary_cta_text_en": "View on GitHub",
+    "secondary_cta_href": "https://github.com/dioxuspress/dioxuspress"
+  },
+  "features": [
+    {
+      "icon": "bolt",
+      "title": "全栈 Rust SSR + WASM 水合",
+      "title_en": "Fullstack Rust SSR & Hydration",
+      "description": "基于 Dioxus 0.7 与 Axum，首屏直出完整语义化 HTML 与结构化 SEO 标签，水合后享受 SPA 级秒开跳转。",
+      "description_en": "Powered by Dioxus 0.7 and Axum for instant crawler-friendly HTML first paint and smooth SPA navigation.",
+      "href": "/docs/guide"
+    },
+    {
+      "icon": "layers",
+      "title": "一库四档：零数据库到全栈社区",
+      "title_en": "Zero-DB to Fullstack in 4 Tiers",
+      "description": "basic 档位无需数据库即可运行完整文档与博客站；按需启用 accounts / course / payments 解锁论坛与知识付费。",
+      "description_en": "Deploy with zero database in basic mode, or enable accounts, courses, and payments via Cargo features.",
+      "href": "/docs/guide/feature-tiers"
+    },
+    {
+      "icon": "book",
+      "title": "MDX 富排版与三级文档树",
+      "title_en": "Rich MDX & 3-Level Docs Tree",
+      "description": "原生支持代码切换标签组、服务端 MathML 公式、Mermaid 图表、右侧目录大纲、面包屑与 GitHub 编辑直达。",
+      "description_en": "Built-in code tabs, server-rendered MathML, Mermaid diagrams, sticky TOC, breadcrumbs, and GitHub edit links.",
+      "href": "/docs/content/mdx"
+    },
+    {
+      "icon": "search",
+      "title": "嵌入式 Tantivy 毫秒级搜索",
+      "title_en": "Embedded Tantivy Search (⌘K)",
+      "description": "进程内集成纯 Rust 全文检索引擎，支持中英文分词、标题卷名自动限定与增量 mtime 索引刷新，告别外部依赖。",
+      "description_en": "In-process CJK & English full-text search with incremental mtime indexing and instant ⌘K modal.",
+      "href": "/docs/operations/search-and-seo"
+    },
+    {
+      "icon": "palette",
+      "title": "三套布局与零闪烁明暗主题",
+      "title_en": "3 Layouts & Zero-Flash Themes",
+      "description": "内置 Docs（类 Docusaurus）、Classic（综合门户）与 Minimal 布局，基于 dioxus-shadcn 0.7.0 提供 10 套 WCAG AA 双模配色。",
+      "description_en": "Switch between Docs, Classic portal, and Minimal shells with 10 WCAG-AA dual-mode themes powered by dioxus-shadcn 0.7.0.",
+      "href": "/docs/guide/layouts-and-themes"
+    },
+    {
+      "icon": "shield",
+      "title": "内建安全基线与 LLM 审核",
+      "title_en": "Hardened Security & LLM Moderation",
+      "description": "严格无 unsafe-eval CSP、OAuth2 PKCE、令牌桶限流、UGC 白名单清洗以及可选的大模型内容风控流水线。",
+      "description_en": "Strict CSP without unsafe-eval, OAuth2 PKCE, rate limiting, UGC sanitization, and optional LLM moderation.",
+      "href": "/docs/community/moderation-and-admin"
+    }
+  ],
+  "footer": {
+    "tagline": "基于 Dioxus 0.7 的开源全栈 Rust 文档、内容与社区引擎。",
+    "tagline_en": "Open-source fullstack Rust documentation, content, and community engine built on Dioxus 0.7.",
+    "copyright": "DioxusPress Contributors · MIT License",
+    "icp": "",
+    "icp_url": "https://beian.miit.gov.cn/",
+    "social": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/dioxuspress/dioxuspress"
+      },
+      {
+        "label": "Rust in Everything",
+        "url": "https://rustineverything.app"
+      }
+    ],
+    "columns": [
+      {
+        "title": "文档指南",
+        "title_en": "Documentation",
+        "links": [
+          {
+            "label": "快速上手",
+            "label_en": "Quickstart",
+            "href": "/docs/guide/quickstart"
+          },
+          {
+            "label": "Starter 模板库",
+            "label_en": "Starter Templates",
+            "href": "/templates"
+          },
+          {
+            "label": "四档功能分层",
+            "label_en": "Feature Tiers",
+            "href": "/docs/guide/feature-tiers"
+          },
+          {
+            "label": "site.json 配置",
+            "label_en": "Site Config",
+            "href": "/docs/guide/site-config"
+          },
+          {
+            "label": "MDX 语法演示",
+            "label_en": "MDX & Components",
+            "href": "/docs/content/mdx"
+          }
+        ]
+      },
+      {
+        "title": "进阶与部署",
+        "title_en": "Deploy & Scale",
+        "links": [
+          {
+            "label": "零数据库部署",
+            "label_en": "Zero-DB Deploy",
+            "href": "/docs/operations/zero-db-deploy"
+          },
+          {
+            "label": "生产环境运维",
+            "label_en": "Production Ops",
+            "href": "/docs/operations/production-deploy"
+          },
+          {
+            "label": "搜索与 SEO",
+            "label_en": "Search & SEO",
+            "href": "/docs/operations/search-and-seo"
+          },
+          {
+            "label": "自定义模块开发",
+            "label_en": "Module Dev",
+            "href": "/docs/operations/module-development"
+          }
+        ]
+      },
+      {
+        "title": "生态与社区",
+        "title_en": "Ecosystem",
+        "links": [
+          {
+            "label": "精选案例库",
+            "label_en": "Showcase",
+            "href": "/case"
+          },
+          {
+            "label": "官方博客",
+            "label_en": "Blog",
+            "href": "/blog"
+          },
+          {
+            "label": "Rust in Everything",
+            "label_en": "Rust in Everything",
+            "href": "https://rustineverything.app"
+          },
+          {
+            "label": "dioxus-shadcn 组件库",
+            "label_en": "dioxus-shadcn UI",
+            "href": "https://ui.dioxuspress.dev"
+          },
+          {
+            "label": "GitHub 源码",
+            "label_en": "GitHub",
+            "href": "https://github.com/dioxuspress/dioxuspress"
+          }
+        ]
+      }
+    ]
+  },
+  "auth": {
+    "enabled": true,
+    "providers": [
+      "github",
+      "google",
+      "discord",
+      "twitter"
+    ]
+  },
+  "annotations": {
+    "course": true,
+    "doc": true,
+    "blog": true
+  },
+  "navigation": [
+    {
+      "key": "nav.templates",
+      "route": "/templates"
+    },
+    {
+      "key": "nav.components",
+      "route": "https://ui.dioxuspress.dev/",
+      "new_tab": false
+    }
+  ],
+  "modules": {
+    "docs": {
+      "enabled": true
+    },
+    "blog": {
+      "enabled": true
+    },
+    "cases": {
+      "enabled": true
+    },
+    "about": {
+      "enabled": true
+    },
+    "podcast": {
+      "enabled": false
+    }
+  }
+}

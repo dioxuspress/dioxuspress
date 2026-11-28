@@ -1,0 +1,255 @@
+use dioxus::prelude::*;
+use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
+use std::fs;
+#[allow(unused_imports)]
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BlogPostSummary {
+  pub slug: String,
+  pub title: String,
+  pub description: String,
+  pub date: String,
+  /// frontmatter 的 `updated`（规范化后）；没有则为空。sitemap / feed 用它作更新时间。
+  pub updated: String,
+  pub tags: Vec<String>,
+}
+
+/// 列表页一页的数据：只下发当前页的文章，外加全部标签及篇数（筛选栏用）。
+/// 以前列表页把 164 篇的元数据全放进 hydration 数据（约 100 KB），只为在客户端分页。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct BlogPage {
+  pub posts: Vec<BlogPostSummary>,
+  /// 全部文章数
+  pub total: usize,
+  /// 按标签筛选后的文章数
+  pub matched: usize,
+  /// 实际返回的页（越界时收到最后一页），从 0 开始
+  pub page: usize,
+  /// 筛选后的总页数，至少 1
+  pub pages: usize,
+  /// 全部标签及篇数，按标签名排序
+  pub tags: Vec<(String, usize)>,
+}
+
+pub const BLOG_PAGE_SIZE: usize = 10;
+
+/// 从按日期倒序的全量列表里取一页；`tag` 为空表示不筛选。
+pub fn page_of(posts: &[BlogPostSummary], tag: &str, page: usize) -> BlogPage {
+  let mut tags = std::collections::BTreeMap::<&str, usize>::new();
+  for t in posts.iter().flat_map(|p| p.tags.iter()) {
+    *tags.entry(t.as_str()).or_default() += 1;
+  }
+  let matched: Vec<&BlogPostSummary> =
+    posts.iter().filter(|p| tag.is_empty() || p.tags.iter().any(|t| t == tag)).collect();
+  let pages = matched.len().div_ceil(BLOG_PAGE_SIZE).max(1);
+  let page = page.min(pages - 1);
+  BlogPage {
+    posts: matched
+      .iter()
+      .skip(page * BLOG_PAGE_SIZE)
+      .take(BLOG_PAGE_SIZE)
+      .map(|p| (*p).clone())
+      .collect(),
+    total: posts.len(),
+    matched: matched.len(),
+    page,
+    pages,
+    tags: tags.into_iter().map(|(t, n)| (t.to_string(), n)).collect(),
+  }
+}
+
+/// Phase 8.5：博客列表的 mtime 缓存。fingerprint = 所有
+/// `assets/posts/*/index.{md,mdx}` 的 (path, mtime) 排序。
+/// 内容修改 / 新增 / 删除任意一种都会失配并触发重建。
+#[cfg(feature = "server")]
+static BLOG_LIST_CACHE: app_core::utils::DirListingCache<Vec<BlogPostSummary>> =
+  app_core::utils::DirListingCache::new();
+
+/// E5.3：清空博客列表目录缓存（供 `SIGHUP` 或内容热刷新调用）。
+#[cfg(feature = "server")]
+pub fn invalidate_blog_cache() {
+  BLOG_LIST_CACHE.invalidate();
+}
+
+#[cfg(feature = "server")]
+fn build_blog_list(posts_dir: &std::path::Path) -> Vec<BlogPostSummary> {
+  let Ok(entries) = fs::read_dir(posts_dir) else { return Vec::new() };
+  let mut posts = Vec::new();
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if !path.is_dir() {
+      continue;
+    }
+    let slug = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+    // 文章页只认 `[A-Za-z0-9_-]`（`post_file`）；不合法的目录名进列表只会生成死链（Z4）。
+    if !app_core::utils::is_safe_slug(&slug) {
+      tracing::warn!(dir = %path.display(), "blog: directory name is not a valid slug; skipped");
+      continue;
+    }
+
+    let mdx = path.join("index.mdx");
+    let md = path.join("index.md");
+    let index_file = if mdx.exists() {
+      mdx
+    } else if md.exists() {
+      md
+    } else {
+      continue;
+    };
+
+    let content = fs::read_to_string(&index_file).unwrap_or_default();
+    let (meta, _) = widgets::parse_mdx(&content);
+    if meta.draft {
+      continue;
+    }
+
+    posts.push(BlogPostSummary {
+      slug,
+      title: meta.title,
+      description: meta.description.unwrap_or_default(),
+      date: meta.date.unwrap_or_default(),
+      updated: meta.updated.unwrap_or_default(),
+      tags: meta.tags,
+    });
+  }
+  posts.sort_by(|a, b| b.date.cmp(&a.date));
+  posts
+}
+
+/// 扫描文章目录（`content_dir("posts")`）下所有博客目录，解析 frontmatter 返回列表。
+///
+/// Phase 8.5：用 `BLOG_LIST_CACHE` 按 (index 文件路径, mtime) fingerprint 缓存。
+/// 命中时省掉 N 次 `read_to_string` + `serde_yaml::from_str`。
+#[server]
+pub async fn list_blog_posts() -> Result<Vec<BlogPostSummary>, ServerFnError> {
+  Ok((*cached_posts()).clone())
+}
+
+/// 列表页的一页（见 [`BlogPage`]）。
+#[server]
+pub async fn list_blog_page(tag: String, page: usize) -> Result<BlogPage, ServerFnError> {
+  Ok(page_of(&cached_posts(), &tag, page))
+}
+
+/// 最新 `n` 篇（首页用，最多 20）。
+#[server]
+pub async fn latest_blog_posts(n: usize) -> Result<Vec<BlogPostSummary>, ServerFnError> {
+  Ok(cached_posts().iter().take(n.min(20)).cloned().collect())
+}
+
+/// 供组合根（如领域聚合 Hub）复用的已缓存博客列表，避免重复扫盘。
+#[cfg(feature = "server")]
+pub fn cached_blog_posts() -> std::sync::Arc<Vec<BlogPostSummary>> {
+  cached_posts()
+}
+
+#[cfg(feature = "server")]
+fn cached_posts() -> std::sync::Arc<Vec<BlogPostSummary>> {
+  let posts_dir = app_core::utils::content_dir("posts");
+  if !posts_dir.exists() {
+    return std::sync::Arc::new(Vec::new());
+  }
+  let fp = app_core::utils::fingerprint_for_dir(&posts_dir, |p| {
+    matches!(p.file_name().and_then(|n| n.to_str()), Some("index.md" | "index.mdx"))
+  });
+  BLOG_LIST_CACHE.get_or_rebuild(fp, || build_blog_list(&posts_dir))
+}
+
+/// 文章源文件 `posts/<id>/index.mdx`（优先）或 `index.md`。`id` 必须是单段 slug：
+/// server fn 可被直接调用，`../courses/...` 这类 id 会读到付费课时等站内其他文件。
+#[allow(dead_code)]
+fn post_file(posts_dir: &std::path::Path, id: &str) -> Option<PathBuf> {
+  if !app_core::utils::is_safe_slug(id) {
+    return None;
+  }
+  let dir = posts_dir.join(id);
+  ["index.mdx", "index.md"].into_iter().map(|name| dir.join(name)).find(|p| p.is_file())
+}
+
+/// 文章源文本；`Ok(None)` 表示没有这篇文章（页面据此回 404）。
+#[server]
+pub async fn get_blog_content(id: String) -> Result<Option<String>, ServerFnError> {
+  let Some(filepath) = post_file(&app_core::utils::content_dir("posts"), &id) else {
+    return Ok(None);
+  };
+
+  let raw =
+    fs::read_to_string(&filepath).map_err(|e| ServerFnError::new(format!("读取失败: {}", e)))?;
+  // 草稿不对外（Z3）。
+  if widgets::parse_mdx(&raw).0.draft {
+    return Ok(None);
+  }
+  Ok(Some(raw))
+}
+
+#[cfg(test)]
+mod tests {
+  fn summary(slug: &str, tags: &[&str]) -> super::BlogPostSummary {
+    super::BlogPostSummary {
+      slug: slug.into(),
+      title: slug.into(),
+      description: String::new(),
+      date: String::new(),
+      updated: String::new(),
+      tags: tags.iter().map(|t| t.to_string()).collect(),
+    }
+  }
+
+  #[test]
+  fn page_of_filters_paginates_and_clamps() {
+    let posts: Vec<_> = (0..23)
+      .map(|i| summary(&format!("p{i}"), if i % 2 == 0 { &["Rust"] } else { &["AI", "Rust"] }))
+      .collect();
+    let all = super::page_of(&posts, "", 0);
+    assert_eq!((all.total, all.matched, all.pages, all.posts.len()), (23, 23, 3, 10));
+    assert_eq!(all.tags, vec![("AI".to_string(), 11), ("Rust".to_string(), 23)]);
+    let last = super::page_of(&posts, "", 2);
+    assert_eq!((last.page, last.posts.len(), last.posts[0].slug.as_str()), (2, 3, "p20"));
+    // 越界收到最后一页，而不是空页
+    assert_eq!(super::page_of(&posts, "", 99).page, 2);
+    let ai = super::page_of(&posts, "AI", 1);
+    assert_eq!((ai.matched, ai.pages, ai.page, ai.posts.len()), (11, 2, 1, 1));
+    assert_eq!(super::page_of(&posts, "nope", 0).posts.len(), 0);
+    assert_eq!(super::page_of(&[], "", 0).pages, 1);
+  }
+
+  use super::*;
+
+  #[test]
+  fn post_file_stays_inside_posts() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/posts");
+    assert!(post_file(&root, "welcome").is_some());
+    // 站内确实存在的 index.md，但不在 posts/ 下（含付费课时）
+    for id in ["../docs", "../courses/rust-basics/02-ownership/01-borrow-rules", "..", "welcome/.."]
+    {
+      assert_eq!(post_file(&root, id), None, "{id}");
+    }
+  }
+
+  #[cfg(feature = "server")]
+  fn write_post(dir: &std::path::Path, slug: &str, frontmatter: &str) {
+    let d = dir.join(slug);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("index.md"), format!("---\n{frontmatter}\n---\nbody")).unwrap();
+  }
+
+  /// Z3 / Z4：草稿与非法目录名不进列表；日期规范化后再排序（`2019-3-5` 不能排在 `2019-10-01` 之后）。
+  #[cfg(feature = "server")]
+  #[test]
+  fn blog_list_skips_drafts_and_sorts_normalized_dates() {
+    let dir = std::env::temp_dir().join(format!("blog-list-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    write_post(&dir, "old", "title: Old\ndate: 2019-3-5 10:20:00\ntags: rust");
+    write_post(&dir, "new", "title: New\ndate: 2019-10-01");
+    write_post(&dir, "wip", "title: WIP\ndate: 2030-01-01\ndraft: true");
+    write_post(&dir, "中文 标题.v2", "title: Bad slug\ndate: 2030-01-01");
+    let posts = build_blog_list(&dir);
+    let slugs: Vec<&str> = posts.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, ["new", "old"]);
+    assert_eq!(posts[1].date, "2019-03-05");
+    assert_eq!(posts[1].tags, ["rust"]);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+}

@@ -1,0 +1,55 @@
+//! `widgets`：内容渲染共享组件。
+//!
+//! ## 内容
+//! - [`mdx`]：MDX 渲染管道（GFM / 数学 / Mermaid / 代码 + Copy / 标注 block-id）。
+//! - [`registry`]：MDX 嵌入组件注册表（Phase 2.1 引入 / Phase 2.2 完整接入）。
+//! - [`reading`]：阅读页外壳（侧栏 / 手机抽屉）与路由驱动的导航树。
+//! - [`toc`]：页内目录（标题列表 + 滚动高亮）。
+//! - [`browser`]：浏览器操作的 web-sys 实现与 [`browser::PageTitle`]（替代 `document::eval` / `document::Title`）。
+//!
+//! widgets crate 不依赖任何 `crates/modules/*`，业务模块通过 [`registry::register`]
+//! 在 app 启动时注入自定义 MDX 组件（如 `<PodcastCard id="1" />`）。
+//!
+//! ## 典型用法
+//! ```ignore
+//! // 在 app/src/main.rs 启动期：
+//! module_podcast::register_components();
+//!
+//! // 各内容页：
+//! use widgets::Markdown;
+//! rsx! { Markdown { content: text, blog_id: "welcome".to_string() } }
+//! ```
+
+pub mod browser;
+pub mod components;
+pub mod diagram;
+pub mod feed;
+pub mod mdx;
+pub mod reading;
+pub mod registry;
+pub mod sanitize;
+pub mod seo;
+pub mod status;
+pub mod toc;
+
+// 重导出最常用 API，方便调用方仅依赖 widgets 顶层路径。
+pub use components::register_default_components;
+pub use diagram::ZoomableDiagram;
+pub use feed::{
+  build_atom_feed, build_atom_feed_for_path, build_atom_feed_with_author, build_robots_txt,
+  build_sitemap_xml, ContentEntry,
+};
+pub use mdx::{
+  heading_outline, normalize_date, parse_mdx, split_frontmatter, Markdown, MarkdownProps,
+  PostMetadata, TocEntry,
+};
+pub use reading::{NavTree, ReadingLayout};
+pub use registry::{
+  clear_for_tests, list_registered, register, registered_count, ComponentRegistry, MdxComponent,
+};
+pub use seo::{
+  build_canonical, get_seo_base_url, inject_seo, lang_path, page_title, site_name,
+  update_site_seo_meta, website_schema, PageMeta, PageMetaTags,
+};
+pub use status::{LoadFailed, NotFound};
+pub use toc::OnThisPage;

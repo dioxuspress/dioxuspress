@@ -1,0 +1,200 @@
+# syntax=docker/dockerfile:1.7-labs
+#
+# Phase 7.4.1：多阶段 Debian (glibc) 镜像。
+#
+# 设计：
+# - **builder** 阶段在 `rust:1-trixie` 中完成 Tailwind CSS 编译 +
+#   `dx bundle --platform web --release` 的产物输出。
+# - **runtime** 阶段是 `debian:trixie-slim` + `ca-certificates`，只装 dx bundle
+#   产物。builder 与 runtime 同为 trixie，glibc 版本对齐，避免动态链接的 server
+#   二进制在运行阶段报 "version `GLIBC_x.xx' not found"。
+# - 通过 `CARGO_TARGET_DIR=/tmp/target` 覆盖仓库根 `.cargo/config.toml` 中开
+#   发者本地路径（`/Users/hal/.target`），避免在容器内尝试写不可达路径。
+#
+# 为什么是 Debian 而非 Alpine：`dx bundle` 在 release 模式下会下载 GitHub 上
+# **预编译的 glibc** 二进制（wasm-bindgen-cli / wasm-opt）来生成 wasm 胶水。
+# 这些 glibc ELF 在 musl(Alpine) 上执行时因缺少 `ld-linux` 解释器而以
+# "No such file or directory (os error 2)" 失败（"Failed to generate
+# wasm-bindgen bindings"）。glibc 基础镜像可直接运行这些工具，绕开整类问题。
+# Tailwind v4 需要 Node ≥ 20，trixie 自带 nodejs 20，亦满足。
+#
+# 构建（全栈版 / 零数据库 basic 版）：
+#   docker build -t dioxuspress:latest .
+#   docker build --build-arg APP_FEATURES="--no-default-features" -t dioxuspress-basic:latest .
+#
+# 运行（零数据库 basic 镜像，开箱即跑无需任何密钥或环境变量）：
+#   docker run --rm -p 8080:8080 -v ./my-site:/app/content:ro ghcr.io/dioxuspress/dioxuspress-basic:latest
+#
+# 运行（带登录与数据库的 app 镜像）：
+#   docker run --rm -p 8080:8080 \
+#     -e DATABASE_URL=postgres://user:pass@postgres:5432/app \
+#     -e JWT_SECRET=$(openssl rand -hex 32) \
+#     -e BASE_URL=https://example.com \
+#     ghcr.io/dioxuspress/dioxuspress-app:latest
+#
+# `docker-compose.yml` 会把 postgres + 本 app 串起来。
+
+# ─────────────────────────────────────────────────────────────
+# Stage 1：builder
+# ─────────────────────────────────────────────────────────────
+FROM rust:1-trixie AS builder
+
+# 关闭 .cargo/config.toml 中的开发者本地 target 路径
+ENV CARGO_TARGET_DIR=/tmp/target \
+    CARGO_TERM_COLOR=always \
+    CARGO_NET_RETRY=10 \
+    RUST_BACKTRACE=short \
+    DEBIAN_FRONTEND=noninteractive
+
+# 系统依赖（rust:1-trixie 基于 buildpack-deps，已含 gcc/make/git/perl/bash）：
+# - nodejs/npm：Tailwind CSS v4 编译 (`npm run build`)，trixie nodejs 为 20.x
+# - pkg-config + libssl-dev：dioxus-cli 依赖 openssl-sys；glibc 下动态链接，
+#   只需头文件 + 动态库，无需静态库。仅 builder 阶段用，runtime 不含。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      nodejs \
+      npm \
+      pkg-config \
+      libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# 添加 wasm 目标，用于前端（dx bundle 的 web 客户端）编译
+RUN rustup target add wasm32-unknown-unknown
+
+# 安装 Dioxus CLI（fullstack bundle 工具）。
+# **必须与 Cargo.lock 中 dioxus 库版本精确一致**（当前 0.7.9）：dx CLI 负责生成
+# wasm-bindgen 胶水，版本不匹配会报 "dx and dioxus versions are incompatible!"
+# 并在 bundle 阶段以 "Failed to generate wasm-bindgen bindings" 失败。`^0.7` 会
+# 可能解析到更新的 0.7.x，与锁定的库不兼容；故精确锁定。升级 dioxus 时同步改这里。
+RUN cargo install dioxus-cli --locked --version "=0.7.9" --no-default-features
+
+WORKDIR /workspace
+
+# 第一遍：仅 COPY manifest，预热依赖缓存。
+# （Cargo workspace + 多 crate；逐个 stub 较繁琐，这里只复制 manifest 与
+# lock，把 src 留到下一层，让 Docker 把 deps 缓存与代码层分开。）
+COPY Cargo.toml Cargo.lock ./
+COPY rustfmt.toml ./
+COPY .cargo ./.cargo
+COPY crates/sdk/Cargo.toml crates/sdk/Cargo.toml
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
+COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
+COPY crates/widgets/Cargo.toml crates/widgets/Cargo.toml
+COPY crates/board/Cargo.toml crates/board/Cargo.toml
+COPY crates/app/Cargo.toml crates/app/Cargo.toml
+COPY crates/app/build.rs crates/app/build.rs
+COPY crates/app/Dioxus.toml crates/app/Dioxus.toml
+# 自定义页面模板（G2：<html lang="zh-CN">），dx 按 crate 根目录的 index.html 生成页面骨架
+COPY crates/app/index.html crates/app/index.html
+COPY crates/app/package.json crates/app/package.json
+COPY crates/app/package-lock.json crates/app/package-lock.json
+# 安装 Tailwind 工具链。紧跟 package*.json：之前它在 `COPY crates/modules`（含源码）之后，
+# 任何模块源码改动都让这一层失效、重新下载。只要 lock 不变就命中缓存。
+# 官方源连不上时换镜像：--build-arg NPM_CONFIG_REGISTRY=https://registry.npmmirror.com/
+# lock 里 resolved 的主机会被替换成这里的源，integrity 照常校验
+ARG NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
+RUN cd crates/app && npm ci --no-audit --no-fund
+COPY crates/app/tailwind-input.css crates/app/tailwind-input.css
+# npm run build 先跑它生成 tailwind-sources.css（组件库源码的 @source 行，路径来自 cargo metadata）
+COPY scripts/tw-sources.mjs scripts/tw-sources.mjs
+COPY crates/migration/Cargo.toml crates/migration/Cargo.toml
+COPY crates/dioxuspress-cli/Cargo.toml crates/dioxuspress-cli/Cargo.toml
+COPY crates/modules ./crates/modules
+# build.rs 引用 ../../assets，提供占位避免预热阶段 panic
+RUN mkdir -p assets crates/app/assets
+
+# COPY 剩余源码
+COPY crates/sdk/src crates/sdk/src
+COPY crates/core/src crates/core/src
+COPY crates/llm/src crates/llm/src
+COPY crates/widgets/src crates/widgets/src
+COPY crates/board/src crates/board/src
+COPY crates/migration/src crates/migration/src
+COPY crates/dioxuspress-cli/src crates/dioxuspress-cli/src
+COPY templates ./templates
+COPY crates/app/src crates/app/src
+COPY assets ./assets
+# `build.rs` 期望根 assets 同步到 crates/app/assets
+RUN cp -r assets/* crates/app/assets/ 2>/dev/null || true
+
+# 1. 预拉依赖进 BuildKit cargo 缓存并编译 Tailwind CSS（产物落到 crates/app/assets/tailwind.css）：
+#    共享 rie-cargo-registry 避免 tw-sources.mjs 与后续 dx bundle 重复拉取 crates.io，
+#    并防止缓存被 prune 清理后触发 dx bundle 内置的 200s cargo metadata 超时失败。
+RUN --mount=type=cache,id=rie-cargo-registry,target=/usr/local/cargo/registry \
+    cargo fetch --locked \
+ && cd crates/app && npm run build
+
+# dx bundle 自己去 registry.npmjs.org 下 esbuild（dioxus-cli 0.7.9 的 src/esbuild.rs 写死了地址和 0.27.3），
+# 不走 NPM_CONFIG_REGISTRY。这里先用 npm 按同一个源取下来，放进 dx 的工具缓存目录，dx 看到就不再下载
+ENV DX_HOME=/opt/dx
+RUN arch=$(case "$(uname -m)" in x86_64) echo x64;; aarch64) echo arm64;; esac) \
+ && mkdir -p /opt/dx/tools/esbuild-0.27.3 /tmp/esbuild \
+ && cd /tmp/esbuild && npm pack --silent "@esbuild/linux-${arch}@0.27.3" \
+ && tar xzf "esbuild-linux-${arch}-0.27.3.tgz" package/bin/esbuild \
+ && mv package/bin/esbuild /opt/dx/tools/esbuild-0.27.3/esbuild \
+ && cd / && rm -rf /tmp/esbuild && /opt/dx/tools/esbuild-0.27.3/esbuild --version
+
+# 2. dx bundle：web 全栈 + release 优化，
+#    产物在 /tmp/target/dx/app/release/web/{public,server}
+#    功能分层（docs/FEATURE_TIERS.md）：默认完整站点；其他档位用 build-arg 传 feature 参数，如
+#      --build-arg APP_FEATURES="--no-default-features"                     # basic（无库）
+#      --build-arg APP_FEATURES="--no-default-features --features accounts" # 博客 + 论坛
+#      --build-arg APP_FEATURES="--no-default-features --features course"   # + 课程（无在线支付）
+#    wasm-opt 失败时 dx 只打一行 ERROR、退出码仍是 0，产物是未优化的 wasm。这里查日志让构建失败，
+#    保证上线的就是验证过的 wasm-opt 产物（约 3.4MB；macOS 上 dx 下载的 binaryen 会崩，见 DEVELOPER.md）。
+ARG APP_FEATURES=""
+# target 和 cargo registry 放在 BuildKit 缓存挂载里：不进镜像层（之前每次构建往构建缓存里加约 3.7 GB，
+# 2026-10-31 把 app 服务器的盘写满），下次构建增量编译。用到的 /tmp/target RUN 挂同一个 id。
+# 缓存跨构建保留，先删掉上次的 dx 输出目录，免得旧的带哈希的静态文件混进 /out/public。
+RUN --mount=type=cache,id=rie-target,target=/tmp/target --mount=type=cache,id=rie-cargo-registry,target=/usr/local/cargo/registry \
+    rm -rf /tmp/target/dx/app/release/web \
+ && cd crates/app \
+ && { CARGO_NET_OFFLINE=true dx bundle --platform web --release --package app ${APP_FEATURES} > /tmp/bundle.log 2>&1; status=$?; } \
+ ; cat /tmp/bundle.log \
+ && [ "$status" -eq 0 ] \
+ && if grep -q 'wasm-opt failed' /tmp/bundle.log; then echo 'dx bundle: wasm-opt failed' >&2; exit 1; fi
+
+# 3. 收敛产物到统一目录，方便 runtime 阶段单层 COPY
+RUN --mount=type=cache,id=rie-target,target=/tmp/target \
+    mkdir -p /out \
+ && cp -r /tmp/target/dx/app/release/web/public /out/public \
+ && cp /tmp/target/dx/app/release/web/server /out/server \
+ && cp -r assets /out/assets
+
+
+# ─────────────────────────────────────────────────────────────
+# Stage 2：runtime
+# ─────────────────────────────────────────────────────────────
+FROM debian:trixie-slim AS runtime
+
+# 最小运行时依赖：
+# - ca-certificates：HTTPS（OAuth / 上游 API）
+# - tini：PID 1 信号转发，避免 zombies / Ctrl-C 不响应
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# 创建专用非 root 用户
+RUN groupadd --system app && useradd --system --gid app --no-create-home app
+
+WORKDIR /app
+
+COPY --from=builder --chown=app:app /out/ /app/
+
+# 挂卷点要先在镜像里建好并归 app 所有：docker 初始化空的命名卷时沿用镜像里该目录的属主，
+# 镜像里没有这个目录时卷归 root，app 用户写不进去（上传失败、搜索索引建不起来）。
+RUN mkdir -p /app/assets/uploads /app/data/search-index \
+ && chown app:app /app/assets/uploads /app/data /app/data/search-index
+
+USER app
+
+# Dioxus fullstack 默认监听 0.0.0.0:8080
+ENV PORT=8080 \
+    IP=0.0.0.0 \
+    RUST_LOG=info
+
+EXPOSE 8080
+
+# tini 处理信号；server 自身就是入口可执行文件
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/app/server"]

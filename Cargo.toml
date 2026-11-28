@@ -1,0 +1,71 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/sdk",
+    "crates/widgets",
+    "crates/board",
+    "crates/llm",
+    "crates/modules/blog",
+    "crates/modules/podcast",
+    "crates/modules/course",
+    "crates/modules/forum",
+    "crates/modules/admin",
+    "crates/modules/search",
+    "crates/modules/cases",
+    "crates/modules/docs",
+    "crates/modules/comments",
+    "crates/modules/uploads",
+    "crates/modules/moderation",
+    "crates/modules/payment",
+    "crates/migration",
+    "crates/dioxuspress-cli",
+    "crates/app",
+]
+# Pingora gateway 是独立部署组件（自带 [workspace]），避免 openssl / native
+# deps 拖累主 workspace 构建；显式 exclude 以防误纳入 default-members。
+exclude = ["crates/gateway"]
+resolver = "2"
+
+# S9（风险 R12）：生产代码禁用 unwrap / expect（配合 clippy -D warnings 即拒绝）。
+# 测试代码在各 crate 根用 `#![cfg_attr(test, allow(...))]` 豁免；有意为之的
+# 启动门禁 panic 用局部 `#[allow]` + 理由注释。
+# 接入方式：crate 的 Cargo.toml 加 `[lints] workspace = true`。
+# 当前已接入：app-core / app / migration；其余 crate 渐进接入。
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[workspace.dependencies]
+dioxus = { version = "0.7.1", features = ["router", "fullstack"] }
+# 自研组件库（docs/DIOXUS_UI_MIGRATION.md D1）：这里不开 feature，各 crate 按需开组件。
+dioxus-shadcn = "0.7.0"
+tokio = { version = "1.49.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sea-orm = { version = "1.1.4", features = [ "sqlx-postgres", "runtime-tokio-rustls", "macros" ] }
+chrono = { version = "0.4", features = ["serde"] }
+serde_yaml = "0.9"
+pulldown-latex = "0.7.1"
+rand = "0.9"
+sha2 = "0.10"
+base64 = "0.22"
+# 只用 rustls：默认 feature 会带上 native-tls（Linux 上是 OpenSSL），且普通 Client::builder() 走它
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "charset", "system-proxy"] }
+jsonwebtoken = "9"
+tantivy = "0.27"
+tantivy-jieba = "0.19"
+aes-gcm = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# dx 的 web release 构建会自动用名为 wasm-release 的 profile 编译前端 wasm
+# （服务端仍用 release），所以这里只影响浏览器下载的 wasm。按体积优化：
+# 实测（2026-10-20）原始 7.10MB → 3.78MB，br 传输 1.55MB → 1.19MB，
+# 主线程脚本时间不增反降。opt-level 3 + LTO 反而变大（7.34MB），见 Todos 阶段 W。
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+debug = false
+strip = "debuginfo"

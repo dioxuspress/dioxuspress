@@ -1,0 +1,31 @@
+[package]
+name = "migration"
+version = "0.3.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+# Phase 7.1：数据库 schema 迁移。
+#
+# 取代 `init.sql`，由 SeaORM 的 sea-orm-migration 在应用启动时自动跑：
+#   `crates/app/src/main.rs` → `init_pool` → `Migrator::up(&db, None)`
+#
+# 仅在 server feature 下编译；client/wasm 不需要数据库迁移。
+
+[lib]
+name = "migration"
+
+[dependencies]
+async-trait = { version = "0.1", optional = true }
+sea-orm-migration = { version = "1.1", optional = true, features = [
+    "runtime-tokio-rustls",
+    "sqlx-postgres",
+] }
+
+[features]
+default = ["server"]
+server = ["dep:async-trait", "dep:sea-orm-migration"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

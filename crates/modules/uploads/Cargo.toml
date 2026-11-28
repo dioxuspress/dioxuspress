@@ -1,0 +1,27 @@
+[package]
+name = "module-uploads"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { workspace = true, features = ["fullstack", "router"] }
+chrono = { workspace = true, features = ["serde"] }
+base64 = { workspace = true }
+tokio = { workspace = true, features = ["full"], optional = true }
+rand = { workspace = true, optional = true }
+sdk = { path = "../../sdk" }
+app-core = { path = "../../core" }
+module-moderation = { path = "../moderation", optional = true }
+tracing = { workspace = true }
+
+[features]
+server = [
+    "dioxus/server",
+    "dep:tokio",
+    "dep:rand",
+    "app-core/server",
+    "dep:module-moderation",
+]
+
+[lints]
+workspace = true
