@@ -190,6 +190,7 @@ dependencies = [
  "dioxus",
  "dioxus-shadcn",
  "dotenvy",
+ "http-body",
  "migration",
  "module-admin",
  "module-blog",
@@ -2177,9 +2178,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-shadcn"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39844864858cb555581a4038545a3128582570837ab64d7b201d5dd543cbee65"
+checksum = "04fa1ffd3140bb6e12fd35fb90e2ecba9f8ecfaf9d48d7941c7fa533fb35293b"
 dependencies = [
  "dioxus",
  "dioxus-shadcn-core",
@@ -2191,9 +2192,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-shadcn-core"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd2a6139977a18a3cc255e7834f014858f4d9c877f08e7ac8084d0ace6a40ca"
+checksum = "2bdeb6473db222c12f3c5a1c07cfa6276d7002b3a05ee9ad146bb51edb809a17"
 dependencies = [
  "serde",
  "tracing",
@@ -2201,9 +2202,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-shadcn-primitives"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86a17d8db87a3c132e59af4986e6215e74bb946375ce6cc1b060f3a763441e62"
+checksum = "075a7392129b4f6df2420d3c7624fd09b2c79b4937368ef62f5494375ab2373b"
 dependencies = [
  "dioxus-shadcn-core",
 ]

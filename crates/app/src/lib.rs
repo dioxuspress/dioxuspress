@@ -14,8 +14,6 @@ use crate::i18n::init_i18n;
 use crate::routes::Route;
 use crate::server::get_aggregated_theme_css;
 use app_core::session::SessionUser;
-#[cfg(all(feature = "accounts", not(feature = "server")))]
-use migration as _;
 use module_search::search::{use_search_open_provider, SearchModal};
 
 /// Static assets used by the application.
@@ -268,6 +266,9 @@ pub fn register_core_components_and_sources(extra_compiled_modules: &[&'static s
   });
 }
 
+#[cfg(all(feature = "server", not(feature = "accounts")))]
+use migration as _;
+
 #[cfg(all(feature = "server", feature = "accounts"))]
 pub type ExtraMigrationsFn = fn() -> Vec<Box<dyn migration::MigrationTrait>>;
 
@@ -285,8 +286,12 @@ pub struct ServerExtensions {
   pub seo: crate::server::seo::SeoExtensions,
   /// 额外的零停机热刷新缓存失效回调（`SIGHUP` / `CONTENT_DIR` 变更时触发）。
   pub extra_hot_reload: Option<fn()>,
+  /// 额外需要监听 mtime 变更的 `CONTENT_DIR` 顶级子目录名（如 `models` / `topics`）。
+  pub extra_watched_dirs: Vec<&'static str>,
   /// 额外的匿名路由 ETag 版本戳回调。
   pub extra_etag_stamp: Option<fn(&str) -> Option<u128>>,
+  /// 额外的永久跳转解析器（如旧站迁移 301 规则，可选用 `seo::docusaurus_legacy_blog_redirect`）。
+  pub extra_redirect: Option<fn(&str) -> Option<String>>,
   /// 额外的自定义 Axum 路由挂载（如 `/papers/feed.xml`），自动受全站中间件保护。
   pub extra_router: Option<ExtraRouterFn>,
 }
@@ -315,8 +320,14 @@ pub fn run_server(app: fn() -> Element, ext: ServerExtensions) {
   if let Some(cb) = ext.extra_hot_reload {
     crate::server::hot_reload::register_extra_hot_reload(cb);
   }
+  if !ext.extra_watched_dirs.is_empty() {
+    crate::server::hot_reload::register_watched_content_dirs(&ext.extra_watched_dirs);
+  }
   if let Some(cb) = ext.extra_etag_stamp {
     crate::server::conditional_cache::register_extra_etag_stamp(cb);
+  }
+  if let Some(cb) = ext.extra_redirect {
+    crate::server::seo::register_extra_redirect_resolver(cb);
   }
   #[cfg(feature = "accounts")]
   if let Some(cb) = ext.extra_migrations {

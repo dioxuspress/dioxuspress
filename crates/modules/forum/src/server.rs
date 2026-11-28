@@ -130,7 +130,9 @@ pub fn validate_new_topic(input: &NewTopicInput) -> Result<(), String> {
   // 引用必须 kind 与 path 同时存在或同时不存在
   match (&input.ref_kind, &input.ref_path) {
     (Some(k), Some(p)) => {
-      if !matches!(k.as_str(), "blog" | "doc" | "course" | "lesson" | "case" | "paper") {
+      let known = matches!(k.as_str(), "blog" | "doc" | "course" | "lesson" | "case")
+        || crate::find_extra_ref_kind(k).is_some();
+      if !known {
         return Err(format!("不支持的引用类型: {}", k));
       }
       if p.trim().is_empty() {
@@ -263,8 +265,9 @@ fn resolve_ref_title(kind: &str, path: &str) -> String {
       }
       fallback()
     }
-    "paper" => format!("arXiv:{path}"),
-    _ => fallback(),
+    other => crate::find_extra_ref_kind(other)
+      .and_then(|spec| spec.title_formatter.map(|fmt| fmt(path)))
+      .unwrap_or_else(fallback),
   }
 }
 
@@ -846,10 +849,16 @@ mod tests {
     i.ref_path = Some("hello-rust".to_string());
     assert!(validate_new_topic(&i).is_ok());
 
-    i.ref_kind = Some("paper".to_string());
+    crate::register_extra_ref_kinds(vec![crate::ForumRefKindSpec {
+      kind: "custom_ref".to_string(),
+      badge_label: "CUSTOM".to_string(),
+      url_prefix: "/custom/".to_string(),
+      title_formatter: Some(|p| format!("Custom:{p}")),
+    }]);
+    i.ref_kind = Some("custom_ref".to_string());
     i.ref_path = Some("2611.15789".to_string());
     assert!(validate_new_topic(&i).is_ok());
-    assert_eq!(resolve_ref_title("paper", "2611.15789"), "arXiv:2611.15789");
+    assert_eq!(resolve_ref_title("custom_ref", "2611.15789"), "Custom:2611.15789");
   }
 
   #[test]

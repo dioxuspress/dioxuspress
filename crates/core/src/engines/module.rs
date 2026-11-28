@@ -127,19 +127,29 @@ pub struct ModuleEngine {
 /// 只返回本次编译带进来的模块（见 [`register_compiled_modules`]）。
 /// 若宿主站点通过 [`register_extra_module_specs`] 追加了自定义模块，会一并纳入过滤与排序。
 pub fn default_module_specs() -> Vec<ModuleSpec> {
-  let specs =
-    merge_module_specs(builtin_module_specs(), EXTRA_MODULE_SPECS.get().map(Vec::as_slice));
+  let extra = extra_module_specs_slot().read().ok().map(|g| g.clone());
+  let specs = merge_module_specs(builtin_module_specs(), extra.as_deref());
   only_compiled(specs, COMPILED_MODULES.get().map(Vec::as_slice))
 }
 
-/// 宿主站点追加的自定义模块清单（如垂直领域板块、论文频道等）。
-static EXTRA_MODULE_SPECS: std::sync::OnceLock<Vec<ModuleSpec>> = std::sync::OnceLock::new();
+/// 宿主站点追加的自定义模块清单（支持多模块叠加注册，不再受限于单槽 OnceLock）。
+fn extra_module_specs_slot() -> &'static std::sync::RwLock<Vec<ModuleSpec>> {
+  static EXTRA_MODULE_SPECS: std::sync::OnceLock<std::sync::RwLock<Vec<ModuleSpec>>> =
+    std::sync::OnceLock::new();
+  EXTRA_MODULE_SPECS.get_or_init(|| std::sync::RwLock::new(Vec::new()))
+}
 
 /// 供外部宿主站点在启动期（client 与 server 两侧）追加自定义 [`ModuleSpec`]，
 /// 与框架内置模块共享 `site.json::modules` 开关、`ModuleGate`、sitemap 与搜索过滤。
-/// 只生效一次，应在首次调用 [`default_module_specs`] 之前执行。
+/// 支持多次调用叠加注册（按 `id` 去重）。
 pub fn register_extra_module_specs(specs: Vec<ModuleSpec>) {
-  let _ = EXTRA_MODULE_SPECS.set(specs);
+  if let Ok(mut guard) = extra_module_specs_slot().write() {
+    for spec in specs {
+      if !guard.iter().any(|existing| existing.id == spec.id) {
+        guard.push(spec);
+      }
+    }
+  }
 }
 
 fn merge_module_specs(mut base: Vec<ModuleSpec>, extra: Option<&[ModuleSpec]>) -> Vec<ModuleSpec> {

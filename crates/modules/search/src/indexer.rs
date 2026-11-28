@@ -270,12 +270,12 @@ fn collect_blogs_versioned() -> Vec<VersionedDoc> {
   out
 }
 
-/// Phase 6 内容板块（[`crate::BOARD_KINDS`]）。文章来自 `assets/topics/<board>/`。
-use crate::BOARD_KINDS as BOARD_IDS;
-
+/// 宿主通过 [`crate::register_extra_search_kinds`] 注册且启用 `scan_topics_dir` 的自定义内容板块。
+/// 优先扫描 `$CONTENT_DIR/topics/<board>/`，回退 `assets/topics/<board>/`。
 fn collect_boards_versioned() -> Vec<VersionedDoc> {
   let mut out = Vec::new();
-  for board in BOARD_IDS {
+  for spec in crate::extra_search_kinds().into_iter().filter(|s| s.scan_topics_dir) {
+    let board = spec.kind.as_str();
     let dir = app_core::utils::content_dir("topics").join(board);
     let dir =
       if dir.exists() { dir } else { app_core::utils::get_asset_root().join("topics").join(board) };
@@ -570,7 +570,7 @@ pub fn filter_versioned_by_enabled(
   docs: Vec<VersionedDoc>,
   enabled_module_ids: &[String],
 ) -> Vec<VersionedDoc> {
-  let is_on = |id: &str| enabled_module_ids.iter().any(|s| s == id);
+  let is_on = |id: String| enabled_module_ids.iter().any(|s| s == &id);
   docs.into_iter().filter(|v| crate::module_of_kind(&v.doc.kind).is_none_or(is_on)).collect()
 }
 
@@ -582,7 +582,7 @@ pub fn filter_documents_by_enabled(
   docs: Vec<IndexedDocument>,
   enabled_module_ids: &[String],
 ) -> Vec<IndexedDocument> {
-  let is_on = |id: &str| enabled_module_ids.iter().any(|s| s == id);
+  let is_on = |id: String| enabled_module_ids.iter().any(|s| s == &id);
   docs.into_iter().filter(|d| crate::module_of_kind(&d.kind).is_none_or(is_on)).collect()
 }
 
@@ -739,14 +739,18 @@ mod tests {
 
   #[test]
   fn filter_documents_gates_content_boards_by_module() {
-    // Phase 6 板块：kind 即 module id，关闭即从搜索剔除。
-    let all = vec![doc("embedded", "x"), doc("ai", "y"), doc("web3", "z")];
-    let enabled = vec!["embedded".to_string(), "ai".to_string()];
+    crate::register_extra_search_kinds(vec![
+      crate::SearchKindSpec::new("board_a", "board_a", "A").with_topics_dir(),
+      crate::SearchKindSpec::new("board_b", "board_b", "B").with_topics_dir(),
+      crate::SearchKindSpec::new("board_c", "board_c", "C").with_topics_dir(),
+    ]);
+    let all = vec![doc("board_a", "x"), doc("board_b", "y"), doc("board_c", "z")];
+    let enabled = vec!["board_a".to_string(), "board_b".to_string()];
     let filtered = filter_documents_by_enabled(all, &enabled);
     let kinds: Vec<&str> = filtered.iter().map(|d| d.kind.as_str()).collect();
-    assert!(kinds.contains(&"embedded"));
-    assert!(kinds.contains(&"ai"));
-    assert!(!kinds.contains(&"web3"));
+    assert!(kinds.contains(&"board_a"));
+    assert!(kinds.contains(&"board_b"));
+    assert!(!kinds.contains(&"board_c"));
   }
 
   // ---- Phase 7.3.3：IndexManifest / diff_for_reindex ----
@@ -896,13 +900,22 @@ mod tests {
 
   #[test]
   fn filter_versioned_by_enabled_respects_module_switches() {
-    let docs =
-      vec![versioned("blog", "a", 1), versioned("embedded", "b", 1), versioned("ai", "c", 1)];
-    let enabled = vec!["blog".to_string(), "embedded".to_string()];
+    crate::register_extra_search_kinds(vec![
+      crate::SearchKindSpec::new("custom-enabled", "custom-enabled", "CE"),
+      crate::SearchKindSpec::new("custom-disabled", "custom-disabled", "CD"),
+    ]);
+    let docs = vec![
+      versioned("blog", "a", 1),
+      versioned("case", "b", 1),
+      versioned("custom-enabled", "c", 1),
+      versioned("custom-disabled", "d", 1),
+    ];
+    let enabled = vec!["blog".to_string(), "custom-enabled".to_string()];
     let filtered = filter_versioned_by_enabled(docs, &enabled);
     let kinds: Vec<&str> = filtered.iter().map(|v| v.doc.kind.as_str()).collect();
     assert!(kinds.contains(&"blog"));
-    assert!(kinds.contains(&"embedded"));
-    assert!(!kinds.contains(&"ai"));
+    assert!(kinds.contains(&"custom-enabled"));
+    assert!(!kinds.contains(&"case"));
+    assert!(!kinds.contains(&"custom-disabled"));
   }
 }

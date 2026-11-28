@@ -27,9 +27,12 @@ for tier in "${tiers[@]}"; do
     flags="$base --features $side"
     # full 的默认 feature 已含 web，无需重复传 `--features web`
     [ "$tier" = full ] && [ "$side" = web ] && flags=""
+    # web 端强制真 wasm32 目标检查，防止 std::fs 或服务端 crate 悄悄泄漏进客户端构建
+    target_flag=""
+    [ "$side" = web ] && target_flag="--target wasm32-unknown-unknown"
     printf '%-9s %-7s ' "$tier" "$side"
     # shellcheck disable=SC2086
-    out=$(CARGO_TERM_COLOR=never cargo check -q -p app $flags 2>&1)
+    out=$(CARGO_TERM_COLOR=never cargo check -q -p app $target_flag $flags 2>&1)
     status=$?
     problems=$(printf '%s\n' "$out" | grep -E '^(warning|error)' | grep -v '^warning: .* generated [0-9]+ warning')
     if [ $status -ne 0 ] || [ -n "$problems" ]; then

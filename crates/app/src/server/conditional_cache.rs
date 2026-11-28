@@ -93,20 +93,39 @@ fn matches_seg(path: &str, prefix: &str) -> bool {
       && path.as_bytes().get(prefix.len()) == Some(&b'/'))
 }
 
-static EXTRA_STATIC_PATHS: OnceLock<&'static [&'static str]> = OnceLock::new();
-static EXTRA_PRIVATE_PREFIXES: OnceLock<&'static [&'static str]> = OnceLock::new();
+fn extra_static_paths_slot() -> &'static RwLock<Vec<&'static str>> {
+  static EXTRA_STATIC_PATHS: OnceLock<RwLock<Vec<&'static str>>> = OnceLock::new();
+  EXTRA_STATIC_PATHS.get_or_init(|| RwLock::new(Vec::new()))
+}
 
-/// 注册宿主站点的自定义条件缓存分类规则（如独立的静态订阅源路径与私密动态前缀）。
+fn extra_private_prefixes_slot() -> &'static RwLock<Vec<&'static str>> {
+  static EXTRA_PRIVATE_PREFIXES: OnceLock<RwLock<Vec<&'static str>>> = OnceLock::new();
+  EXTRA_PRIVATE_PREFIXES.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// 注册宿主站点的自定义条件缓存分类规则（支持多模块叠加追加，不再受单槽 OnceLock 限制）。
 pub fn register_extra_route_rules(
   static_paths: &'static [&'static str],
   private_prefixes: &'static [&'static str],
 ) {
-  let _ = EXTRA_STATIC_PATHS.set(static_paths);
-  let _ = EXTRA_PRIVATE_PREFIXES.set(private_prefixes);
+  if let Ok(mut guard) = extra_static_paths_slot().write() {
+    for &p in static_paths {
+      if !guard.contains(&p) {
+        guard.push(p);
+      }
+    }
+  }
+  if let Ok(mut guard) = extra_private_prefixes_slot().write() {
+    for &p in private_prefixes {
+      if !guard.contains(&p) {
+        guard.push(p);
+      }
+    }
+  }
 }
 
 fn classify_path(path: &str) -> RouteClass {
-  if EXTRA_STATIC_PATHS.get().is_some_and(|list| list.contains(&path)) {
+  if extra_static_paths_slot().read().ok().is_some_and(|list| list.contains(&path)) {
     return RouteClass::StaticAsset;
   }
 
@@ -136,8 +155,9 @@ fn classify_path(path: &str) -> RouteClass {
     }
   }
 
-  if EXTRA_PRIVATE_PREFIXES
-    .get()
+  if extra_private_prefixes_slot()
+    .read()
+    .ok()
     .is_some_and(|list| list.iter().any(|prefix| matches_seg(path, prefix)))
   {
     return RouteClass::PrivateDynamic;
@@ -251,18 +271,27 @@ fn max_mtime_in(candidates: impl IntoIterator<Item = std::path::PathBuf>) -> u12
   candidates.into_iter().map(|p| mtime_nanos(&p)).max().unwrap_or(0)
 }
 
-static EXTRA_ETAG_STAMP: std::sync::OnceLock<fn(&str) -> Option<u128>> = std::sync::OnceLock::new();
+pub type EtagStampFn = fn(&str) -> Option<u128>;
 
-/// 注册宿主站点的自定义路由 ETag 版本戳计算函数（如私有图鉴/动态模型目录）。
-pub fn register_extra_etag_stamp(callback: fn(&str) -> Option<u128>) {
-  let _ = EXTRA_ETAG_STAMP.set(callback);
+fn extra_etag_stamps_slot() -> &'static RwLock<Vec<EtagStampFn>> {
+  static EXTRA_ETAG_STAMP: OnceLock<RwLock<Vec<EtagStampFn>>> = OnceLock::new();
+  EXTRA_ETAG_STAMP.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// 注册宿主站点的自定义路由 ETag 版本戳计算函数（支持多模块叠加追加，命中首个 `Some` 即生效）。
+pub fn register_extra_etag_stamp(callback: EtagStampFn) {
+  if let Ok(mut guard) = extra_etag_stamps_slot().write() {
+    guard.push(callback);
+  }
 }
 
 /// 轻量内容源指纹（仅数次 VFS `stat`，微秒级）：确保本地改 Markdown 或 `site.json` 无需等信号即刻换 `ETag`。
 fn probe_source_stamp(path: &str) -> u128 {
   let site_stamp = mtime_nanos(&app_core::utils::site_json_path());
-  if let Some(extra) = EXTRA_ETAG_STAMP.get().and_then(|f| f(path)) {
-    return site_stamp.wrapping_mul(6364136223846793005) ^ extra;
+  if let Ok(guard) = extra_etag_stamps_slot().read() {
+    if let Some(extra) = guard.iter().find_map(|f| f(path)) {
+      return site_stamp.wrapping_mul(6364136223846793005) ^ extra;
+    }
   }
   let docs_root = app_core::utils::content_dir("docs");
   let posts_root = app_core::utils::content_dir("posts");

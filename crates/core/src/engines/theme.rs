@@ -157,16 +157,46 @@ pub const THEMES: &[Theme] = &[
   },
 ];
 
+static EXTRA_THEMES: std::sync::OnceLock<std::sync::RwLock<Vec<&'static Theme>>> =
+  std::sync::OnceLock::new();
+
+fn extra_themes_slot() -> &'static std::sync::RwLock<Vec<&'static Theme>> {
+  EXTRA_THEMES.get_or_init(|| std::sync::RwLock::new(Vec::new()))
+}
+
+/// 供宿主站点在启动期注册自定义双模主题（支持多次追加，自动按 `id` 去重）。
+pub fn register_extra_themes(themes: &'static [Theme]) {
+  if let Ok(mut guard) = extra_themes_slot().write() {
+    for theme in themes {
+      if !THEMES.iter().any(|t| t.id == theme.id) && !guard.iter().any(|t| t.id == theme.id) {
+        guard.push(theme);
+      }
+    }
+  }
+}
+
+/// 返回全部可用主题（内置 [`THEMES`] + 宿主通过 [`register_extra_themes`] 注册的主题）。
+pub fn all_themes() -> Vec<&'static Theme> {
+  let mut list: Vec<&'static Theme> = THEMES.iter().collect();
+  if let Ok(guard) = extra_themes_slot().read() {
+    list.extend(guard.iter().copied());
+  }
+  list
+}
+
 pub fn find_theme(id: &str) -> Option<&'static Theme> {
-  THEMES.iter().find(|t| t.id == id)
+  if let Some(t) = THEMES.iter().find(|t| t.id == id) {
+    return Some(t);
+  }
+  extra_themes_slot().read().ok().and_then(|guard| guard.iter().copied().find(|t| t.id == id))
 }
 
 /// 解析站点在顶栏主题切换器中开放的主题列表：
-/// - `available` 为空时默认开放全部 [`THEMES`]（按内置顺序）；
-/// - `available` 非空时按配置顺序过滤合法内置主题并去重，同时确保站点默认主题始终包含在内（若漏配则置于首位）。
+/// - `available` 为空时默认开放全部主题（内置 + 宿主注册）；
+/// - `available` 非空时按配置顺序过滤合法主题并去重，同时确保站点默认主题始终包含在内（若漏配则置于首位）。
 pub fn resolve_available_themes(site_default: &str, available: &[String]) -> Vec<&'static Theme> {
   if available.is_empty() {
-    return THEMES.iter().collect();
+    return all_themes();
   }
 
   let default_theme = find_theme(site_default.trim()).unwrap_or_else(|| {
@@ -429,5 +459,23 @@ mod tests {
     assert_eq!(value_of(light, "--primary-foreground"), "#ffffff");
     assert_eq!(value_of(dark, "--primary"), CYAN_400);
     assert_eq!(value_of(dark, "--primary-foreground"), ZINC_950);
+  }
+
+  #[test]
+  fn register_extra_themes_extends_theme_lookup() {
+    static CUSTOM: [Theme; 1] = [Theme {
+      id: "custom-ext-test",
+      label: "Custom Ext",
+      description: "测试自定义主题",
+      description_en: "Test custom theme",
+      light_bg: "#ffffff",
+      light_primary: "#000000",
+      dark_bg: "#000000",
+      dark_primary: "#ffffff",
+      css: ":root { --primary: #000; }",
+    }];
+    register_extra_themes(&CUSTOM);
+    assert_eq!(find_theme("custom-ext-test").map(|t| t.label), Some("Custom Ext"));
+    assert!(all_themes().iter().any(|t| t.id == "custom-ext-test"));
   }
 }
