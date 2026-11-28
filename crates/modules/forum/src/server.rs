@@ -393,7 +393,7 @@ pub async fn list_topics_by_ref(
   #[cfg(feature = "server")]
   {
     use app_core::entities::{topic, user as user_entity};
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
     if kind.is_empty() || path.is_empty() {
       return Ok(vec![]);
@@ -405,9 +405,13 @@ pub async fn list_topics_by_ref(
       .filter(topic::Column::PendingReview.eq(false))
       .order_by_desc(topic::Column::LastReplyAt)
       .order_by_desc(topic::Column::CreatedAt)
+      .limit(100)
       .all(&db)
       .await
-      .map_err(|e| ServerFnError::new(e.to_string()))?;
+      .map_err(|e| {
+        tracing::error!(error = %e, kind = %kind, "forum: list_topics_by_ref failed");
+        ServerFnError::new("加载讨论主题失败".to_string())
+      })?;
 
     let mut user_ids: Vec<i32> = rows.iter().map(|r| r.user_id).collect();
     user_ids.sort();
@@ -575,14 +579,14 @@ pub async fn create_topic(input: NewTopicInput) -> Result<TopicSummary, ServerFn
     // S4：写路径用 verified 会话（DB 回查 token_version，支持即时吊销）
     let user = app_core::session::require_session_verified().await?;
 
-    // ── 审核：标题 + 正文一起评估 ──
+    // ── 审核：标题 + 正文一起评估（[M7] 先归一化 tag 再拼 ref_path） ──
+    let normalized_tag = normalize_tag(&input.tag);
     let combined = format!("标题：{}\n\n{}", input.title.trim(), input.content);
-    let ref_path = format!("topic-new:{}", input.tag);
+    let ref_path = format!("topic-new:{}", normalized_tag);
     let outcome = moderate_or_reject(&combined, "topic", &ref_path).await?;
 
     let db = open_db().await?;
     let now = Utc::now().fixed_offset();
-    let normalized_tag = normalize_tag(&input.tag);
     let title = input.title.trim().to_string();
 
     let am = topic::ActiveModel {

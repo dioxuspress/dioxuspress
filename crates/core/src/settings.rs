@@ -568,9 +568,17 @@ impl SiteConfig {
     })
   }
 
-  /// 序列化为紧凑 JSON 字符串（用于 SSR `<meta name="dp-site-config">` 注入；`modules` 使用 `BTreeMap` 保证键序确定性）。
+  /// 序列化为紧凑 JSON 字符串（用于完整配置导出；`modules` 使用 `BTreeMap` 保证键序确定性）。
   pub fn to_json(&self) -> String {
     serde_json::to_string(self).unwrap_or_default()
+  }
+
+  /// [L1] 序列化面向公开浏览器的脱敏站点配置（用于 SSR `<meta name="dp-site-config">` 注入）：
+  /// 剔除服务端审核内部配置（阈值、失败策略、完整 `url_blocklist`），避免向攻击者暴露审核规则。
+  pub fn to_public_json(&self) -> String {
+    let mut public = self.clone();
+    public.moderation = ModerationSettings::default();
+    serde_json::to_string(&public).unwrap_or_default()
   }
 
   /// 从 SSR 注入的紧凑 JSON 字符串反序列化运行期站点配置。
@@ -1258,6 +1266,26 @@ mod tests {
         }"#;
     let cfg: SiteConfig = serde_json::from_str(json).expect("parse");
     assert!(!cfg.moderation.enabled);
+  }
+
+  /// [L1] 公开 HTML 注入配置必须剔除审核阈值与完整黑名单。
+  #[test]
+  fn to_public_json_strips_moderation_blocklist_and_thresholds() {
+    let mut cfg = SiteConfig::default();
+    cfg.site_name = "DemoSite".to_string();
+    cfg.moderation.enabled = true;
+    cfg.moderation.llm_review = true;
+    cfg.moderation.url_blocklist = vec!["secret-spam-domain.example".to_string()];
+    cfg.moderation.thresholds =
+      Some(ModerationThresholdsConfig { block_above: Some(0.88), flag_above: Some(0.42) });
+
+    let public_json = cfg.to_public_json();
+    assert!(public_json.contains("DemoSite"));
+    assert!(!public_json.contains("secret-spam-domain.example"));
+    let parsed = SiteConfig::from_json(&public_json).expect("valid json");
+    assert!(!parsed.moderation.enabled);
+    assert!(parsed.moderation.url_blocklist.is_empty());
+    assert!(parsed.moderation.thresholds.is_none());
   }
 
   /// 插件运行时移除前的 site.json 带 `paths` / `plugins_lock`，仍应能读。

@@ -101,14 +101,26 @@ pub fn mount(router: Router, cookie_is_secure: bool) -> Router {
         },
       ),
     )
-    // 3. 登出：清除 Cookie。只收 POST（SEC-09）：GET 能被用户内容里的
-    //    `<img src>` / 链接预取触发；跨站表单提交按 Sec-Fetch-Site 拒绝
-    //    （不带该头的旧浏览器放行，登出 CSRF 危害有限）。
+    // 3. 登出：清除 Cookie 并递增 `users.token_version`（[M1] 使已泄露的旧 JWT 立即在写路径失效）。
+    //    只收 POST（SEC-09）；跨站表单提交按 Sec-Fetch-Site 拒绝。
     .route(
       "/api/auth/logout",
       post(move |headers: HeaderMap| async move {
         if headers.get("sec-fetch-site").is_some_and(|v| v == "cross-site") {
           return StatusCode::FORBIDDEN.into_response();
+        }
+        // [M1] 若请求携带有效 session JWT，原子递增 DB 内 token_version 以立即吊销该会话
+        let session_user = headers
+          .get_all(axum::http::header::COOKIE)
+          .iter()
+          .filter_map(|v| v.to_str().ok())
+          .find_map(|raw| app_core::session::parse_session_from_cookie_header(Some(raw)));
+        if let Some(user) = session_user {
+          if let Ok(db) = app_core::db::get_or_init_pool().await {
+            if let Err(e) = app_core::session::bump_token_version(&db, user.id).await {
+              tracing::warn!(user_id = user.id, error = %e, "logout: failed to bump token_version");
+            }
+          }
         }
         let secure_flag = if cookie_is_secure { "; Secure" } else { "" };
         let cookie_str =

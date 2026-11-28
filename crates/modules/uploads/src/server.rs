@@ -156,29 +156,44 @@ pub async fn upload_image(name: String, data_base64: String) -> Result<String, S
       )));
     }
 
-    // 8. 写盘
-    let dir_path = app_core::utils::get_asset_root().join("uploads");
+    // 8. 写盘（[H5]）：
+    //    - Allow → 写入公网目录 `assets/uploads/<filename>`；
+    //    - Flag  → 写入隔离目录 `assets/uploads-quarantine/<filename>`，绝不直接公网暴露，
+    //      待管理员在审核队列 approve 后移入公开目录、reject 时物理删除。
+    let is_flagged = verdict.label == ModerationLabel::Flag;
+    let dir_name = if is_flagged { "uploads-quarantine" } else { "uploads" };
+    let dir_path = app_core::utils::get_asset_root().join(dir_name);
     if !dir_path.exists() {
-      fs::create_dir_all(&dir_path).map_err(|e| ServerFnError::new(e.to_string()))?;
+      fs::create_dir_all(&dir_path).map_err(|e| {
+        tracing::error!(error = %e, dir = %dir_path.display(), "uploads: create dir failed");
+        ServerFnError::new("保存图片失败".to_string())
+      })?;
     }
     let path = dir_path.join(&filename);
-    fs::write(&path, &data).map_err(|e| ServerFnError::new(format!("保存失败: {}", e)))?;
+    fs::write(&path, &data).map_err(|e| {
+      tracing::error!(error = %e, path = %path.display(), "uploads: write failed");
+      ServerFnError::new("保存图片失败".to_string())
+    })?;
 
-    // 9. Flag → 入审核队列。ref_id 留 None（upload 无独立业务表）；
-    //    队列里记录保存后的 URL 让 admin 可以直接预览。
-    let db_opt = app_core::db::get_or_init_pool().await.ok();
-    if let Some(db) = db_opt {
-      enqueue_if_flagged(
-        &db,
-        &verdict,
-        "upload",
-        None,
-        &saved_url,
-        session_id,
-        "用户上传的图片",
-        std::slice::from_ref(&saved_url),
-      )
-      .await;
+    // 9. Flag → 入审核队列（ref_path 保存 `/uploads/<filename>` 供审批通过时精准迁移或拒绝时删除）。
+    if is_flagged {
+      let db_opt = app_core::db::get_or_init_pool().await.ok();
+      if let Some(db) = db_opt {
+        enqueue_if_flagged(
+          &db,
+          &verdict,
+          "upload",
+          None,
+          &saved_url,
+          session_id,
+          "用户上传的图片（已隔离待审）",
+          std::slice::from_ref(&saved_url),
+        )
+        .await;
+      }
+      return Err(ServerFnError::new(
+        "图片触发内容审核并已隔离，待管理员审核通过后方可使用".to_string(),
+      ));
     }
 
     Ok(saved_url)

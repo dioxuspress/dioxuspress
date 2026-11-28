@@ -769,6 +769,69 @@ pub async fn admin_approve_moderation(id: i64) -> Result<(), ServerFnError> {
   }
 }
 
+/// [H5] 从审核队列 `upload` 条目的 `ref_path`（`/uploads/<filename>`）提取安全单文件名。
+#[cfg(feature = "server")]
+fn extract_safe_upload_filename(ref_path: &str) -> Option<&str> {
+  let name = ref_path.strip_prefix("/uploads/")?;
+  if name.is_empty()
+    || name.len() > 160
+    || name.contains('/')
+    || name.contains('\\')
+    || name.contains("..")
+    || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+  {
+    return None;
+  }
+  Some(name)
+}
+
+/// [H5] 将隔离目录 `uploads-quarantine/<filename>` 的图片发布至公开目录 `uploads/<filename>`。
+#[cfg(feature = "server")]
+pub(crate) fn promote_quarantined_upload(
+  asset_root: &std::path::Path,
+  ref_path: &str,
+) -> Result<(), String> {
+  let Some(name) = extract_safe_upload_filename(ref_path) else {
+    return Ok(());
+  };
+  let quarantine_dir = asset_root.join("uploads-quarantine");
+  let public_dir = asset_root.join("uploads");
+  let Some(src) = app_core::utils::safe_join_under(&quarantine_dir, name) else {
+    return Ok(());
+  };
+  if !src.is_file() {
+    return Ok(());
+  }
+  std::fs::create_dir_all(&public_dir).map_err(|e| e.to_string())?;
+  let dst = public_dir.join(name);
+  match std::fs::rename(&src, &dst) {
+    Ok(()) => Ok(()),
+    Err(_) => {
+      std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
+      let _ = std::fs::remove_file(&src);
+      Ok(())
+    }
+  }
+}
+
+/// [H5] 管理员拒绝上传图片时，从隔离目录与公开目录彻底物理删除。
+#[cfg(feature = "server")]
+pub(crate) fn delete_upload_artifacts(asset_root: &std::path::Path, ref_path: &str) {
+  let Some(name) = extract_safe_upload_filename(ref_path) else {
+    return;
+  };
+  for sub in ["uploads-quarantine", "uploads"] {
+    let dir = asset_root.join(sub);
+    if let Some(path) = app_core::utils::safe_join_under(&dir, name) {
+      if path.is_file() {
+        if let Err(e) = std::fs::remove_file(&path) {
+          tracing::warn!(error = %e, path = %path.display(), "admin: failed to remove rejected upload");
+        }
+      }
+    }
+  }
+}
+
 /// 通过一条队列记录：公开业务内容（`pending_review` 置回 false）并标记 approved。
 /// 两步在一个事务里，不会出现「队列显示已通过、内容却还藏着」。
 #[cfg(feature = "server")]
@@ -781,25 +844,40 @@ async fn approve_one(
   use app_core::entities::moderation_queue;
   use sea_orm::{ActiveValue::Set, EntityTrait, TransactionTrait};
 
-  let txn = db.begin().await.map_err(|e| ServerFnError::new(e.to_string()))?;
+  if row.kind == "upload" {
+    let root = app_core::utils::get_asset_root();
+    promote_quarantined_upload(&root, &row.ref_path).map_err(|e| {
+      tracing::error!(error = %e, ref_path = %row.ref_path, "approve_one: promote upload failed");
+      ServerFnError::new("发布隔离图片失败".to_string())
+    })?;
+  }
+
+  let txn = db.begin().await.map_err(|e| {
+    tracing::error!(error = %e, "approve_one: begin txn failed");
+    ServerFnError::new("审核通过失败".to_string())
+  })?;
   if let Some(ref_id) = row.ref_id {
-    module_moderation::publish_held(&txn, &row.kind, ref_id)
-      .await
-      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    module_moderation::publish_held(&txn, &row.kind, ref_id).await.map_err(|e| {
+      tracing::error!(error = %e, kind = %row.kind, ref_id, "approve_one: publish_held failed");
+      ServerFnError::new("公开待审内容失败".to_string())
+    })?;
   }
   let mut am: moderation_queue::ActiveModel = row.into();
   am.status = Set("approved".to_string());
   am.reviewer_user_id = Set(Some(admin_id));
   am.reviewed_at = Set(Some(now));
-  moderation_queue::Entity::update(am)
-    .exec(&txn)
-    .await
-    .map_err(|e| ServerFnError::new(e.to_string()))?;
-  txn.commit().await.map_err(|e| ServerFnError::new(e.to_string()))?;
+  moderation_queue::Entity::update(am).exec(&txn).await.map_err(|e| {
+    tracing::error!(error = %e, "approve_one: update queue failed");
+    ServerFnError::new("更新审核记录失败".to_string())
+  })?;
+  txn.commit().await.map_err(|e| {
+    tracing::error!(error = %e, "approve_one: commit failed");
+    ServerFnError::new("提交审核结果失败".to_string())
+  })?;
   Ok(())
 }
 
-/// 拒绝一条队列记录：删除关联业务内容（按 kind + ref_id）并标记 rejected。
+/// 拒绝一条队列记录：删除关联业务内容（按 kind + ref_id / upload 文件）并标记 rejected。
 /// 供单条 [`admin_reject_moderation`] 与批量 [`admin_bulk_reject_moderation`] 复用。
 #[cfg(feature = "server")]
 async fn reject_one(
@@ -811,12 +889,10 @@ async fn reject_one(
   use sea_orm::{ActiveValue::Set, EntityTrait};
 
   let now = chrono::Utc::now().fixed_offset();
-  // Phase 8.8：删除业务内容的错误不再吞掉。之前用 `let _ = ...` 静默掉，
-  // 极端情况下评论真的没被删但队列被标 rejected → admin UI 上看着已处理，
-  // 但前端还能看到原帖。改成 `?` 传播；事实是 DELETE FROM ... WHERE id = ?
-  // 行不存在不会报错（SeaORM 返回 rows_affected = 0），所以「ref 已被其他流程
-  // 提前删」并不会触发错。
-  if let Some(ref_id) = row.ref_id {
+  if row.kind == "upload" {
+    let root = app_core::utils::get_asset_root();
+    delete_upload_artifacts(&root, &row.ref_path);
+  } else if let Some(ref_id) = row.ref_id {
     let kind = row.kind.as_str();
     let res = match kind {
       "comment" => comment::Entity::delete_by_id(ref_id as i32).exec(db).await.map(|_| ()),
@@ -829,9 +905,6 @@ async fn reject_one(
       }
     };
     if let Err(e) = res {
-      // 不阻塞队列更新：内容确实可能已经先被作者 / 其他 admin 流程删掉
-      // （DELETE WHERE id = X 在 SeaORM 下行数 0 不报错；这里能进 Err 说明
-      // 是真实 DB 故障，例如连接断、外键约束等）。记 warn 让运维有迹可循。
       tracing::warn!(error = %e, kind = %kind, ref_id, "reject_one: business content delete failed");
     }
   }
@@ -840,10 +913,10 @@ async fn reject_one(
   am.status = Set("rejected".to_string());
   am.reviewer_user_id = Set(Some(admin_id));
   am.reviewed_at = Set(Some(now));
-  moderation_queue::Entity::update(am)
-    .exec(db)
-    .await
-    .map_err(|e| ServerFnError::new(e.to_string()))?;
+  moderation_queue::Entity::update(am).exec(db).await.map_err(|e| {
+    tracing::error!(error = %e, "reject_one: update queue failed");
+    ServerFnError::new("更新审核记录失败".to_string())
+  })?;
   Ok(())
 }
 
@@ -1299,5 +1372,31 @@ mod tests {
     write_moderation_settings_to_site_json(&path, &ModerationSettings::default()).unwrap();
     // .tmp 文件不应残留
     assert!(!path.with_extension("json.tmp").exists());
+  }
+
+  /// [H5] 被 Flag 隔离的上传图片：通过后移至公开 uploads/，拒绝时彻底物理删除且防路径穿越。
+  #[cfg(feature = "server")]
+  #[test]
+  fn quarantined_upload_promotes_on_approve_and_deletes_on_reject() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("uploads-quarantine")).unwrap();
+    std::fs::write(root.join("uploads-quarantine/123_ok_abc.png"), b"png-bytes").unwrap();
+    std::fs::write(root.join("uploads-quarantine/124_bad_xyz.png"), b"bad-bytes").unwrap();
+
+    // Approve → 从隔离区迁入公开目录
+    promote_quarantined_upload(root, "/uploads/123_ok_abc.png").expect("promote");
+    assert!(!root.join("uploads-quarantine/123_ok_abc.png").exists());
+    assert_eq!(std::fs::read(root.join("uploads/123_ok_abc.png")).unwrap(), b"png-bytes");
+
+    // Reject → 隔离区与公开区均彻底删除
+    delete_upload_artifacts(root, "/uploads/124_bad_xyz.png");
+    assert!(!root.join("uploads-quarantine/124_bad_xyz.png").exists());
+    assert!(!root.join("uploads/124_bad_xyz.png").exists());
+
+    // 路径穿越被静默拒绝，不伤及外部文件
+    std::fs::write(root.join("outside.txt"), b"keep").unwrap();
+    delete_upload_artifacts(root, "/uploads/../outside.txt");
+    assert!(root.join("outside.txt").exists());
   }
 }

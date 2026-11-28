@@ -468,7 +468,7 @@ fn render_stream<'a>(
                     nodes.push(render_code_block(lang, code_text, id));
                 }
             }
-            Event::Start(Tag::Paragraph) if paragraph_has_block(it.as_slice()) => {
+            Event::Start(Tag::Paragraph) if paragraph_has_block(it.as_slice(), untrusted) => {
                 // 图片是 <figure>、`$$` 和注册组件是 <div>，放进 <p> 浏览器会先关掉 <p>
                 let bid = mint_block_id(top, block_idx).unwrap_or_default();
                 let has_bid = !bid.is_empty();
@@ -539,7 +539,9 @@ fn render_stream<'a>(
                     nodes.push(rsx! { br {} });
                     continue;
                 }
-                if h.starts_with('<') {
+                // [M3] 不可信用户内容（评论/论坛）禁止调用 MDX 组件注册表，
+                // 防止注入 `<YouTube />` / `<Bilibili />` / `<AudioPlayer />` / `<ThemeShowcase />`。
+                if !untrusted && h.starts_with('<') {
                     if let Some(component) = render_mdx_registry(h) {
                         nodes.push(component);
                         continue;
@@ -553,11 +555,13 @@ fn render_stream<'a>(
 }
 
 /// 段落（`rest` 从段落内第一个事件开始）里是否有渲染成块级元素的内容。
-fn paragraph_has_block(rest: &[Event<'_>]) -> bool {
+fn paragraph_has_block(rest: &[Event<'_>], untrusted: bool) -> bool {
   rest.iter().take_while(|event| !matches!(event, Event::End(TagEnd::Paragraph))).any(|event| {
     match event {
       Event::Start(Tag::Image { .. }) | Event::DisplayMath(_) => true,
-      Event::Html(html) | Event::InlineHtml(html) => detect_registered_tag(html.trim()).is_some(),
+      Event::Html(html) | Event::InlineHtml(html) => {
+        !untrusted && detect_registered_tag(html.trim()).is_some()
+      }
       _ => false,
     }
   })
@@ -1774,14 +1778,17 @@ mod tests {
     }
   }
 
-  /// 注册组件在用户内容里照常渲染（YouTube 的 iframe 是组件自己的），用户写的
-  /// `on*` 属性不会带进去：组件只读取自己认识的属性。
+  /// 受信文档里的注册组件会忽略未知的 `on*` 属性；不可信内容（评论/论坛）直接禁用注册组件（[M3]）。
   #[test]
-  fn untrusted_component_drops_event_attributes() {
+  fn trusted_component_drops_event_attributes_and_untrusted_blocks_registry() {
     crate::components::register_default_components();
-    let html = render_markdown("<YouTube id=\"x\" onload=\"alert(1)\" />", true);
-    assert!(html.contains("src=\"https://www.youtube.com/embed/x\""), "{html}");
-    assert!(live_tags(&html).iter().all(|tag| !tag.starts_with("on")), "{html}");
+    let trusted_html = render_markdown("<YouTube id=\"x\" onload=\"alert(1)\" />", false);
+    assert!(trusted_html.contains("src=\"https://www.youtube.com/embed/x\""), "{trusted_html}");
+    assert!(live_tags(&trusted_html).iter().all(|tag| !tag.starts_with("on")), "{trusted_html}");
+
+    let untrusted_html = render_markdown("<YouTube id=\"x\" onload=\"alert(1)\" />", true);
+    assert!(!untrusted_html.contains("<iframe"), "{untrusted_html}");
+    assert!(!untrusted_html.contains("youtube.com/embed"), "{untrusted_html}");
   }
 
   /// 用户贴的代码原样显示：`let one=1;` 不会被当成事件属性删掉，代码里的 `<script>` 也在。
@@ -2064,5 +2071,27 @@ mod tests {
     assert!(html.contains(">Burn</button>"), "{html}");
     assert!(html.contains("尾注说明。"), "{html}");
     assert!(html.contains("命令名称必须唯一。"), "{html}");
+  }
+
+  /// [M3] 不可信 Markdown（评论/论坛）严禁触发 MDX 组件注册表，必须退化为转义文本。
+  #[test]
+  fn untrusted_markdown_disables_mdx_component_registry() {
+    crate::register_default_components();
+    let md = "<YouTube id=\"dQw4w9WgXcQ\" />\n\n<Bilibili bvid=\"BV1xx411c7mD\" />";
+    let trusted_html = render_markdown(md, false);
+    assert!(
+      trusted_html.contains("<iframe"),
+      "trusted content must still render embeds: {trusted_html}"
+    );
+
+    let untrusted_html = render_markdown(md, true);
+    assert!(
+      !untrusted_html.contains("<iframe"),
+      "untrusted content must NOT render iframes: {untrusted_html}"
+    );
+    assert!(
+      untrusted_html.contains("&#60;YouTube") || untrusted_html.contains("&lt;YouTube"),
+      "untrusted tag must be HTML-escaped: {untrusted_html}"
+    );
   }
 }

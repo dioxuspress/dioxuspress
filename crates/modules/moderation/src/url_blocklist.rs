@@ -96,21 +96,18 @@ impl AsyncModerationStage for UrlBlocklistStage {
 // URL 扫描：从任意文本中提取 http(s) URL
 // ────────────────────────────────────────────────────────────
 
-/// 扫文本里所有 http(s) URL。返回原字符串切片，按出现顺序、不去重。
+/// 扫文本里所有 http(s) 与协议相对（`//host`）URL。返回原字符串切片，按出现顺序、不去重。
 pub fn extract_urls(text: &str) -> Vec<&str> {
   let mut out = Vec::new();
   let bytes = text.as_bytes();
   let len = bytes.len();
   let mut i = 0;
   while i < len {
-    // 找到 `http://` 或 `https://`
-    let start = match find_scheme(&bytes[i..]) {
-      Some(off) => i + off,
-      None => break,
+    let Some((off, prefix_len)) = find_scheme(&bytes[i..]) else {
+      break;
     };
-    // 从 start 向后扫到首个非 URL 字符
-    let url_start_byte = start;
-    let mut j = start;
+    let url_start_byte = i + off;
+    let mut j = url_start_byte;
     while j < len && is_url_byte(bytes[j]) {
       j += 1;
     }
@@ -120,26 +117,49 @@ pub fn extract_urls(text: &str) -> Vec<&str> {
     {
       j -= 1;
     }
-    if j > url_start_byte + 8 {
-      // 至少要包含 scheme + `://` + 1 个字符
+    if j > url_start_byte + prefix_len {
       // SAFETY: scheme + URL chars 均为 ASCII，切片对齐字符边界
-      out.push(&text[url_start_byte..j]);
+      let candidate = &text[url_start_byte..j];
+      // 协议相对链接 `//host` 要求包含至少一个点（避免把 C++/Rust 注释 `//foo` 误当域名）
+      let keep =
+        if prefix_len == 2 { host_of(candidate).is_some_and(|h| h.contains('.')) } else { true };
+      if keep {
+        out.push(candidate);
+      }
     }
     i = j.max(url_start_byte + 1);
   }
   out
 }
 
-/// 找到 `http://` 或 `https://` 起始的偏移。
-fn find_scheme(bytes: &[u8]) -> Option<usize> {
-  let needles: &[&[u8]] = &[b"http://", b"https://"];
-  let mut best: Option<usize> = None;
-  for n in needles {
-    if let Some(p) = find_subslice(bytes, n) {
-      best = Some(match best {
-        Some(b) => b.min(p),
-        None => p,
-      });
+/// 找到 `http://`、`https://` 或协议相对 `//` 起始的偏移及前缀长度。
+fn find_scheme(bytes: &[u8]) -> Option<(usize, usize)> {
+  let mut best: Option<(usize, usize)> = None;
+  for needle in [b"http://".as_slice(), b"https://".as_slice()] {
+    if let Some(p) = find_subslice(bytes, needle) {
+      best = match best {
+        Some((bp, _)) if bp <= p => best,
+        _ => Some((p, needle.len())),
+      };
+    }
+  }
+  // 协议相对链接 `//example.com`：前一个字节不能是 `:` 或 `/` 或 URL 字母数字
+  if bytes.len() >= 3 {
+    for p in 0..=bytes.len() - 3 {
+      if &bytes[p..p + 2] == b"//"
+        && bytes[p + 2].is_ascii_alphanumeric()
+        && (p == 0
+          || matches!(
+            bytes[p - 1],
+            b' ' | b'\t' | b'\n' | b'\r' | b'(' | b'[' | b'"' | b'\'' | b'='
+          ))
+      {
+        best = match best {
+          Some((bp, _)) if bp <= p => best,
+          _ => Some((p, 2)),
+        };
+        break;
+      }
     }
   }
   best
@@ -171,18 +191,34 @@ fn is_url_byte(b: u8) -> bool {
 // host 提取 + 模式匹配
 // ────────────────────────────────────────────────────────────
 
-/// 从 URL 提取 host（不含 scheme / 用户名密码 / 端口 / 路径）。
-/// 返回 Some 时保证 host 至少 1 个字符。
+/// 从 URL 提取 host（不含 scheme / 用户名密码 / 端口 / 路径 / DNS 末尾点）。
+///
+/// [H4] 必须先截断 authority（到首个 `/`, `?`, `#`, `\`），再在 authority 内部剥离 `@`
+/// 前的 userinfo，防止 `https://blocked.example/path?ref=@ok.example` 绕过黑名单。
 pub fn host_of(url: &str) -> Option<&str> {
-  let after_scheme = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
-  // 跳过 userinfo
-  let after_userinfo = match after_scheme.rfind('@') {
-    Some(i) if i < after_scheme.len() => &after_scheme[i + 1..],
-    _ => after_scheme,
+  let after_scheme = if let Some(i) = url.find("://") {
+    &url[i + 3..]
+  } else if let Some(rest) = url.strip_prefix("//") {
+    rest
+  } else {
+    url
   };
-  // 截到 path / query / fragment / port 之前
-  let end = after_userinfo.find(['/', '?', '#', ':']).unwrap_or(after_userinfo.len());
-  let host = &after_userinfo[..end];
+  // 1. 先切 authority（路径/查询/片段之前的段落）
+  let auth_end = after_scheme.find(['/', '?', '#', '\\']).unwrap_or(after_scheme.len());
+  let authority = &after_scheme[..auth_end];
+  // 2. 仅在 authority 内部跳过 userinfo
+  let host_port = match authority.rsplit_once('@') {
+    Some((_, h)) => h,
+    None => authority,
+  };
+  // 3. 去端口（兼容 IPv6 `[::1]:8080`）与 DNS 根域末尾点
+  let host_raw = if host_port.starts_with('[') {
+    let end = host_port.find(']')?;
+    &host_port[..=end]
+  } else {
+    host_port.split(':').next().unwrap_or("")
+  };
+  let host = host_raw.trim_end_matches('.');
   if host.is_empty() {
     None
   } else {
@@ -195,15 +231,19 @@ pub fn host_of(url: &str) -> Option<&str> {
 /// - `"scam.com"` 精确匹配 host
 /// - `"*.evil.com"` 匹配 host 为 `evil.com` 或以 `.evil.com` 结尾
 ///
-/// 不区分大小写；调用方保证 patterns 已 lowercase。
+/// 不区分大小写且剥离 DNS 末尾 `.`；调用方保证 patterns 已 lowercase。
 pub fn match_blocklist<'a>(host: &str, patterns: &'a [String]) -> Option<&'a str> {
-  let host_lower = host.to_ascii_lowercase();
+  let host_lower = host.trim_end_matches('.').to_ascii_lowercase();
+  if host_lower.is_empty() {
+    return None;
+  }
   for pat in patterns {
-    if let Some(suffix) = pat.strip_prefix("*.") {
+    let pat_norm = pat.trim_end_matches('.');
+    if let Some(suffix) = pat_norm.strip_prefix("*.") {
       if host_lower == suffix || host_lower.ends_with(&format!(".{}", suffix)) {
         return Some(pat);
       }
-    } else if host_lower == *pat {
+    } else if host_lower == pat_norm {
       return Some(pat);
     }
   }
@@ -372,5 +412,26 @@ mod tests {
     let stage = UrlBlocklistStage::new(vec!["", "  ", "evil.com"]);
     assert_eq!(stage.patterns().len(), 1);
     assert_eq!(stage.patterns()[0], "evil.com");
+  }
+
+  /// [H4] 回归测试：query 中的 `@`、域名末尾点、协议相对 `//` 均不得绕过黑名单。
+  #[tokio::test]
+  async fn stage_blocks_at_in_query_trailing_dot_and_protocol_relative_bypass() {
+    assert_eq!(host_of("https://blocked.example/path?ref=@ok.example"), Some("blocked.example"));
+    assert_eq!(host_of("https://blocked.example./path"), Some("blocked.example"));
+    assert_eq!(host_of("//blocked.example/x"), Some("blocked.example"));
+
+    let stage = UrlBlocklistStage::new(vec!["blocked.example"]);
+    for bypass in [
+      "看看 https://blocked.example/path?ref=@ok.example",
+      "看看 https://blocked.example./path",
+      "看看 //blocked.example/promo",
+      "看看 https://user@blocked.example:8443/x?a=@ok.example",
+    ] {
+      let v = stage.evaluate(&ModerationSubmission::new(bypass)).await;
+      assert_eq!(v.label, ModerationLabel::Block, "must block bypass: {bypass}");
+    }
+    // 普通代码注释 `// comment` 不应误识别为 URL
+    assert!(extract_urls("let x = 1; // just a comment").is_empty());
   }
 }

@@ -583,7 +583,7 @@ fn HeadAssets(#[props(default)] tailwind_css: Option<Asset>) -> Element {
   let prism_src = PRISM_JS.to_string();
   let lang_script = lang_boot_script();
   let site_cfg = app_core::settings::SiteConfig::active();
-  let site_cfg_json = site_cfg.to_json();
+  let site_cfg_json = site_cfg.to_public_json();
   let favicon_href = site_cfg.favicon_or_default();
   let favicon_32_href = site_cfg.favicon_32_url();
   let favicon_16_href = site_cfg.favicon_16_url();

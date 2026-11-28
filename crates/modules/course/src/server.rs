@@ -1141,8 +1141,11 @@ pub async fn get_lesson(
   }
 }
 
-/// 当前用户能否看某课节的正文与媒体（[`get_lesson`] 与 `/courses` 静态文件共用）。
-/// admin 直接放行，无需查库。
+/// 当前用户能否看某课节的正文与媒体（[`get_lesson`]、`/courses` 静态文件与 `/api/annotations/*` 共用）。
+///
+/// - 免费课程或试看课节零 DB 短路放行；
+/// - [M1] 管理员身份强制回查 DB（`users.role == "admin"` 且 `token_version` 一致），
+///   防止已被降权或吊销的旧 JWT 绕过付费课拦截。
 #[cfg(feature = "server")]
 async fn lesson_access_allowed(
   course: &Course,
@@ -1150,18 +1153,55 @@ async fn lesson_access_allowed(
   preview: bool,
   user: Option<&app_core::session::SessionUser>,
 ) -> Result<bool, ServerFnError> {
-  if !course.is_paid() {
+  if !course.is_paid() || preview {
     return Ok(true);
   }
   let (is_admin, has_ent, is_pro) = match user {
-    Some(u) if u.is_admin() => (true, false, false),
     Some(u) => {
       let db = open_db().await?;
-      (false, has_entitlement(&db, u.id, course_slug).await, is_pro_member(&db, u.id).await)
+      let verified_admin = if u.is_admin() {
+        use app_core::entities::user as user_entity;
+        use sea_orm::EntityTrait;
+        user_entity::Entity::find_by_id(u.id)
+          .one(&db)
+          .await
+          .ok()
+          .flatten()
+          .is_some_and(|row| row.role == "admin" && row.token_version == u.token_version)
+      } else {
+        false
+      };
+      if verified_admin {
+        (true, false, false)
+      } else {
+        (false, has_entitlement(&db, u.id, course_slug).await, is_pro_member(&db, u.id).await)
+      }
     }
     None => (false, false, false),
   };
   Ok(can_access_lesson(&course.access_tier, preview, is_admin, has_ent, is_pro))
+}
+
+/// [H3] 校验调用方是否有权读取或创建指定课程课节的标注。
+/// `resource_path` 格式为 `<course_slug>/<chapter>/<lesson>`；格式非法或课程不存在时 fail-closed 返回 `false`。
+#[cfg(feature = "server")]
+async fn course_annotation_access_allowed(
+  resource_path: &str,
+  user: Option<&app_core::session::SessionUser>,
+) -> Result<bool, ServerFnError> {
+  let parts: Vec<&str> = resource_path.split('/').collect();
+  if parts.len() != 3 || parts.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+    return Ok(false);
+  }
+  let (course_slug, chapter_slug, lesson_slug) = (parts[0], parts[1], parts[2]);
+  let Some(course) = read_course(course_slug) else {
+    return Ok(false);
+  };
+  if !course.is_paid() {
+    return Ok(true);
+  }
+  let preview = read_lesson(course_slug, chapter_slug, lesson_slug).is_some_and(|l| l.preview);
+  lesson_access_allowed(&course, course_slug, preview, user).await
 }
 
 /// `/courses` 静态目录下一个文件的归属。
@@ -1566,8 +1606,9 @@ pub async fn grant_membership(user_id: i32, days: i64) -> Result<(), ServerFnErr
     use chrono::Utc;
     use sea_orm::{sea_query::OnConflict, ActiveValue::Set, EntityTrait};
     app_core::session::require_admin().await?;
-    if days <= 0 {
-      return Err(ServerFnError::new("天数需为正".to_string()));
+    // [L3] 限制最大授予天数（100 年），避免极端 i64 导致 chrono 时间加法溢出 panic
+    if !(1..=36_500).contains(&days) {
+      return Err(ServerFnError::new("天数需在 1 至 36500 之间".to_string()));
     }
     let db = open_db().await?;
     let now = Utc::now().fixed_offset();
@@ -1575,7 +1616,9 @@ pub async fn grant_membership(user_id: i32, days: i64) -> Result<(), ServerFnErr
       Some(m) if m.expires_at > now => m.expires_at,
       _ => now,
     };
-    let new_expiry = base + chrono::Duration::days(days);
+    let new_expiry = base
+      .checked_add_signed(chrono::Duration::days(days))
+      .ok_or_else(|| ServerFnError::new("会员到期时间超出有效范围".to_string()))?;
     let am = membership::ActiveModel {
       user_id: Set(user_id),
       tier: Set("pro".to_string()),
@@ -2819,8 +2862,18 @@ pub async fn list_annotations(
       return Ok(vec![]);
     }
     use app_core::entities::{annotation, user as user_entity};
-    use sea_orm::{sea_query::Expr, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
+    use sea_orm::{
+      sea_query::Expr, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+    };
     let me = current_session_user();
+
+    // [H3] 付费/Pro 课程课时必须通过 ACL 校验，防止未购课/匿名调用方借公开标注摘录窃取付费正文
+    if resource_kind == "course"
+      && !course_annotation_access_allowed(&resource_path, me.as_ref()).await?
+    {
+      return Ok(vec![]);
+    }
+
     let db = open_db().await?;
 
     // 同资源路径下：本人全部标注 + 他人不为 private 且不在等审核的标注。
@@ -2837,9 +2890,13 @@ pub async fn list_annotations(
       .filter(annotation::Column::ResourcePath.eq(&resource_path))
       .filter(visible_cond)
       .order_by_asc(annotation::Column::CreatedAt)
+      .limit(500)
       .all(&db)
       .await
-      .map_err(|e| ServerFnError::new(e.to_string()))?;
+      .map_err(|e| {
+        tracing::error!(error = %e, "annotations: list query failed");
+        ServerFnError::new("加载标注失败".to_string())
+      })?;
 
     // 收集需要查询 nickname 的 user_id（仅他人标注需要增量查询）
     let mut other_ids: Vec<i32> =
@@ -2853,7 +2910,10 @@ pub async fn list_annotations(
         .filter(user_entity::Column::Id.is_in(other_ids))
         .all(&db)
         .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?;
+        .map_err(|e| {
+          tracing::error!(error = %e, "annotations: author lookup failed");
+          ServerFnError::new("加载标注失败".to_string())
+        })?;
       for u in users {
         nick_map.insert(u.id, u.nickname);
       }
@@ -2879,6 +2939,29 @@ pub async fn list_annotations(
   }
 }
 
+/// [M7] 校验标注字段长度上限，防止超大载荷膨胀数据库或绕过审核。
+#[cfg(feature = "server")]
+pub(crate) fn validate_annotation_payload(payload: &AnnotationCreate) -> Result<(), String> {
+  if payload.resource_path.trim().is_empty() || payload.resource_path.len() > 512 {
+    return Err("标注资源路径无效或过长".to_string());
+  }
+  if payload.block_id.len() > 128 {
+    return Err("标注块标识过长".to_string());
+  }
+  if payload.exact_text.len() > 2000 {
+    return Err("划线摘录长度不能超过 2000 字节".to_string());
+  }
+  if payload.prefix_text.as_deref().is_some_and(|s| s.len() > 500)
+    || payload.suffix_text.as_deref().is_some_and(|s| s.len() > 500)
+  {
+    return Err("上下文锚点长度不能超过 500 字节".to_string());
+  }
+  if payload.note.as_deref().is_some_and(|n| n.len() > 4000) {
+    return Err("标注笔记长度不能超过 4000 字节".to_string());
+  }
+  Ok(())
+}
+
 #[post("/api/annotations/create")]
 pub async fn create_annotation(payload: AnnotationCreate) -> Result<Annotation, ServerFnError> {
   #[cfg(feature = "server")]
@@ -2886,6 +2969,7 @@ pub async fn create_annotation(payload: AnnotationCreate) -> Result<Annotation, 
     if !read_annotations_switch(&payload.resource_kind) {
       return Err(ServerFnError::new("当前资源未启用标注".to_string()));
     }
+    validate_annotation_payload(&payload).map_err(ServerFnError::new)?;
     use app_core::engines::moderation::ModerationLabel;
     use app_core::entities::annotation;
     use chrono::Utc;
@@ -2893,15 +2977,28 @@ pub async fn create_annotation(payload: AnnotationCreate) -> Result<Annotation, 
     use sea_orm::{ActiveValue::Set, EntityTrait};
     let user = require_writer().await?;
 
-    // ── 审核：只对 note 非空时调；exact_text 是被引用的原文，不是用户内容 ──
-    // resource_kind + resource_path 组成 ref_path（便于 admin 复核时跳回原文）
+    // [H3] 付费课程课时同样要求有权访问方可创建标注
+    if payload.resource_kind == "course"
+      && !course_annotation_access_allowed(&payload.resource_path, Some(&user)).await?
+    {
+      return Err(ServerFnError::new("无权对该付费课时创建标注".to_string()));
+    }
+
+    let visibility = normalize_visibility(payload.visibility.as_deref());
+    // [M7] 公开/课程内公开标注须同时审核 note 与 exact_text（客户端可伪造 exact_text 夹带广告/违规词）
     let ref_path = format!("{}:{}", payload.resource_kind, payload.resource_path);
     let note_content = payload.note.clone().unwrap_or_default();
-    let mod_outcome = moderate_note(&note_content, &ref_path, &user.nickname).await?;
+    let moderation_text = if visibility == "private" {
+      note_content.clone()
+    } else if note_content.trim().is_empty() {
+      payload.exact_text.clone()
+    } else {
+      format!("{}\n\n[摘录]\n{}", note_content, payload.exact_text)
+    };
+    let mod_outcome = moderate_note(&moderation_text, &ref_path, &user.nickname).await?;
 
     let db = open_db().await?;
     let now = Utc::now().fixed_offset();
-    let visibility = normalize_visibility(payload.visibility.as_deref());
     let am = annotation::ActiveModel {
       user_id: Set(user.id),
       resource_kind: Set(payload.resource_kind),
@@ -2921,12 +3018,12 @@ pub async fn create_annotation(payload: AnnotationCreate) -> Result<Annotation, 
       pending_review: Set(mod_outcome.as_ref().is_some_and(|v| v.label == ModerationLabel::Flag)),
       ..Default::default()
     };
-    let res = annotation::Entity::insert(am)
-      .exec_with_returning(&db)
-      .await
-      .map_err(|e| ServerFnError::new(e.to_string()))?;
+    let res = annotation::Entity::insert(am).exec_with_returning(&db).await.map_err(|e| {
+      tracing::error!(error = %e, "annotations: insert failed");
+      ServerFnError::new("保存标注失败".to_string())
+    })?;
 
-    // Flag note → 入审核队列（annotation.id 是 i64 BIGSERIAL）
+    // Flag → 入审核队列（annotation.id 是 i64 BIGSERIAL）
     if let Some(verdict) = mod_outcome {
       enqueue_if_flagged(
         &db,
@@ -2935,7 +3032,7 @@ pub async fn create_annotation(payload: AnnotationCreate) -> Result<Annotation, 
         Some(res.id),
         &ref_path,
         Some(user.id),
-        &note_content,
+        &moderation_text,
         &[],
       )
       .await;
