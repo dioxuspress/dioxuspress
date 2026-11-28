@@ -179,8 +179,8 @@ pub fn SearchModal() -> Element {
                               "all" => kind_filter.set(None),
                               _ => kind_filter.set(Some(v)),
                           },
-                          for (value, key) in KINDS.iter().filter(|(v, _)| kind_compiled(v)) {
-                              ToggleGroupItem { value: *value, class: kind_chip_class(kind_filter().as_deref().unwrap_or("all") == *value), "{t(lang, key)}" }
+                          for (value, label) in active_filter_kinds(lang) {
+                              ToggleGroupItem { value: value.clone(), class: kind_chip_class(kind_filter().as_deref().unwrap_or("all") == value), "{label}" }
                           }
                       }
                       span { class: "ml-auto shrink-0 py-0.5 text-muted-foreground", "aria-hidden": "true", "{status}" }
@@ -212,20 +212,37 @@ pub fn SearchModal() -> Element {
   }
 }
 
-/// 过滤栏的类型（值, i18n key）:值 `all` 表示不过滤。板块沿用 `{board}.label`。
-const KINDS: &[(&str, &str)] = &[
+/// 核心内置过滤栏类型（值, i18n key）：`all` 表示不过滤；其余自定义类型由宿主站点通过
+/// [`crate::register_extra_search_kinds`] 动态注册。
+const CORE_KINDS: &[(&str, &str)] = &[
   ("all", "search.kind.all"),
   ("doc", "search.kind.doc"),
   ("blog", "search.kind.blog"),
   ("course", "search.kind.course"),
   ("case", "search.kind.case"),
   ("topic", "search.kind.topic"),
-  ("embedded", "embedded.label"),
-  ("ai", "ai.label"),
-  ("web3", "web3.label"),
-  ("wasm", "wasm.label"),
-  ("cli", "cli.label"),
 ];
+
+/// 返回当前生效的搜索过滤栏选项（核心内置 + 宿主注册且启用过滤栏的扩展类型）。
+fn active_filter_kinds(lang: Language) -> Vec<(String, String)> {
+  let mut out: Vec<(String, String)> = CORE_KINDS
+    .iter()
+    .filter(|(v, _)| kind_compiled(v))
+    .map(|(v, key)| ((*v).to_string(), t(lang, key)))
+    .collect();
+  for spec in crate::extra_search_kinds() {
+    if spec.show_in_filter && kind_compiled(&spec.kind) && !out.iter().any(|(v, _)| v == &spec.kind)
+    {
+      let label = spec
+        .label_i18n_key
+        .as_deref()
+        .map(|k| t(lang, k))
+        .unwrap_or_else(|| spec.badge_label.clone());
+      out.push((spec.kind, label));
+    }
+  }
+  out
+}
 
 /// 只列编译进来的模块（docs/FEATURE_TIERS.md DL2）；`all` 始终在。
 fn kind_compiled(kind: &str) -> bool {
@@ -243,34 +260,40 @@ fn kind_chip_class(active: bool) -> &'static str {
 
 #[component]
 fn HitRow(hit: SearchHit) -> Element {
-  let badge = match hit.kind.as_str() {
-    "blog" => ("BLOG", "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"),
-    "doc" => {
-      ("DOC", "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300")
-    }
-    "topic" => {
-      ("TOPIC", "bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300")
-    }
-    "case" => ("CASE", "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300"),
-    "paper" => {
-      ("PAPER", "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300")
-    }
-    "course" => ("COURSE", "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"),
-    // Phase 6 内容板块：统一靛蓝徽章
-    "embedded" => {
-      ("EMBEDDED", "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300")
-    }
-    "ai" => ("AI", "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"),
-    "web3" => ("WEB3", "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"),
-    "wasm" => ("WASM", "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"),
-    "cli" => ("CLI", "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"),
-    _ => ("?", "bg-slate-100 dark:bg-slate-800 text-slate-500"),
+  let (badge_label, badge_class): (String, String) = match hit.kind.as_str() {
+    "blog" => (
+      "BLOG".to_string(),
+      "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300".to_string(),
+    ),
+    "doc" => (
+      "DOC".to_string(),
+      "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300".to_string(),
+    ),
+    "topic" => (
+      "TOPIC".to_string(),
+      "bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300".to_string(),
+    ),
+    "case" => (
+      "CASE".to_string(),
+      "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300".to_string(),
+    ),
+    "course" => (
+      "COURSE".to_string(),
+      "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300".to_string(),
+    ),
+    other => match crate::find_extra_search_kind(other) {
+      Some(spec) => (spec.badge_label, spec.badge_class),
+      None => (
+        if other.is_empty() { "?".to_string() } else { other.to_ascii_uppercase() },
+        "bg-slate-100 dark:bg-slate-800 text-slate-500".to_string(),
+      ),
+    },
   };
   rsx! {
       div {
           div { class: "flex items-center gap-2 mb-1",
-              span { class: "text-[10px] px-1.5 py-0.5 rounded font-medium uppercase tracking-wide {badge.1}",
-                  "{badge.0}"
+              span { class: "text-[10px] px-1.5 py-0.5 rounded font-medium uppercase tracking-wide {badge_class}",
+                  "{badge_label}"
               }
               span { class: "text-xs text-slate-400 truncate", "{hit.url}" }
               if !hit.created_at.is_empty() {

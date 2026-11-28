@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 /// 自动探测资产根目录。
 ///
@@ -90,12 +90,16 @@ pub fn site_json_path_in(asset_root: &Path, content_root: Option<&Path>) -> Path
 /// 包含哈希。文件添加 / 删除 / 修改任意一种都会让 fingerprint 变。
 ///
 /// 类型参数 `T` 是缓存值；要求 `Send + Sync` 以便跨 tokio worker 共享。
+/// 内部使用 `build_lock` 实现 single-flight，避免冷启动或热刷新瞬间多并发重复扫盘（缓存击穿）。
 pub struct DirListingCache<T: Send + Sync> {
   inner: Mutex<Option<CacheEntry<T>>>,
+  build_lock: Mutex<()>,
 }
 
 struct CacheEntry<T> {
+  root_key: Option<PathBuf>,
   fingerprint: Vec<(PathBuf, SystemTime)>,
+  checked_at: Instant,
   value: Arc<T>,
 }
 
@@ -107,10 +111,10 @@ impl<T: Send + Sync> Default for DirListingCache<T> {
 
 impl<T: Send + Sync> DirListingCache<T> {
   pub const fn new() -> Self {
-    Self { inner: Mutex::new(None) }
+    Self { inner: Mutex::new(None), build_lock: Mutex::new(()) }
   }
 
-  /// 取出缓存值，或在 fingerprint 不一致时调 `builder` 重新构建。
+  /// 取出缓存值，或在 fingerprint 不一致时调 `builder` 重新构建（带 single-flight 防击穿）。
   ///
   /// `fingerprint` 通常通过 [`fingerprint_for_dir`] 之类的工具生成；
   /// 调用方只要保证「同 fingerprint == 同 builder 输出」，缓存就一致。
@@ -125,16 +129,93 @@ impl<T: Send + Sync> DirListingCache<T> {
         }
       }
     }
-    // 锁外 build：避免持锁跑 IO / parse
+    // Single-flight：并发未命中时串行化重建并双检，避免 50 个并发同时全量扫盘。
+    let _build_guard = match self.build_lock.lock() {
+      Ok(g) => g,
+      Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Ok(guard) = self.inner.lock() {
+      if let Some(entry) = guard.as_ref() {
+        if entry.fingerprint == fingerprint {
+          return entry.value.clone();
+        }
+      }
+    }
     let value = Arc::new(builder());
     if let Ok(mut guard) = self.inner.lock() {
-      *guard = Some(CacheEntry { fingerprint, value: value.clone() });
+      *guard = Some(CacheEntry {
+        root_key: None,
+        fingerprint,
+        checked_at: Instant::now(),
+        value: value.clone(),
+      });
+    }
+    value
+  }
+
+  /// 带根目录标识与 TTL 节流的目录缓存读取：同一 `root` 在 `ttl` 窗口内零 `stat()` 直接返回 `Arc<T>`；
+  /// 若 `root` 变更（如切换 `CONTENT_DIR` / 测试临时目录）、超过 `ttl` 或调用 [`Self::invalidate`]
+  /// （如 `SIGHUP` 热刷新）则立即重算指纹并按需重建。
+  pub fn get_or_rebuild_ttl<FP, F>(
+    &self,
+    root: &Path,
+    ttl: Duration,
+    fingerprint_fn: FP,
+    builder: F,
+  ) -> Arc<T>
+  where
+    FP: FnOnce() -> Vec<(PathBuf, SystemTime)>,
+    F: FnOnce() -> T,
+  {
+    let root_key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let now = Instant::now();
+    if let Ok(guard) = self.inner.lock() {
+      if let Some(entry) = guard.as_ref() {
+        if entry.root_key.as_ref() == Some(&root_key) && now.duration_since(entry.checked_at) < ttl
+        {
+          return entry.value.clone();
+        }
+      }
+    }
+
+    let _build_guard = match self.build_lock.lock() {
+      Ok(g) => g,
+      Err(poisoned) => poisoned.into_inner(),
+    };
+    let now = Instant::now();
+    if let Ok(guard) = self.inner.lock() {
+      if let Some(entry) = guard.as_ref() {
+        if entry.root_key.as_ref() == Some(&root_key) && now.duration_since(entry.checked_at) < ttl
+        {
+          return entry.value.clone();
+        }
+      }
+    }
+
+    let fp = fingerprint_fn();
+    if let Ok(mut guard) = self.inner.lock() {
+      if let Some(entry) = guard.as_mut() {
+        if entry.root_key.as_ref() == Some(&root_key) && entry.fingerprint == fp {
+          entry.checked_at = Instant::now();
+          return entry.value.clone();
+        }
+      }
+    }
+
+    let value = Arc::new(builder());
+    if let Ok(mut guard) = self.inner.lock() {
+      *guard = Some(CacheEntry {
+        root_key: Some(root_key),
+        fingerprint: fp,
+        checked_at: Instant::now(),
+        value: value.clone(),
+      });
     }
     value
   }
 
   /// 显式失效。一般不需要（fingerprint 失配自动重建），但 admin 上传 / 删除
-  /// 资产后想强制刷新时可调用。
+  /// 或 `SIGHUP` 热刷新时调用可立即跳过 TTL 强制重建。
   pub fn invalidate(&self) {
     if let Ok(mut guard) = self.inner.lock() {
       *guard = None;
@@ -293,6 +374,63 @@ mod tests {
     cache.invalidate();
     let v = cache.get_or_rebuild(fp, || 2);
     assert_eq!(*v, 2, "invalidate 后应当重建");
+  }
+
+  #[test]
+  fn dir_listing_cache_ttl_skips_fingerprint_and_respects_invalidate() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let cache: DirListingCache<u32> = DirListingCache::new();
+    let root = Path::new("/tmp/dp-cache-root-a");
+    let fp_calls = AtomicUsize::new(0);
+    let build_calls = AtomicUsize::new(0);
+
+    let v1 = cache.get_or_rebuild_ttl(
+      root,
+      Duration::from_secs(60),
+      || {
+        fp_calls.fetch_add(1, Ordering::SeqCst);
+        vec![(PathBuf::from("a"), SystemTime::UNIX_EPOCH)]
+      },
+      || {
+        build_calls.fetch_add(1, Ordering::SeqCst);
+        10
+      },
+    );
+    assert_eq!(*v1, 10);
+    // TTL 内第二次命中：连 fingerprint_fn 都不应被调用（零 stat()）
+    let v2 = cache.get_or_rebuild_ttl(
+      root,
+      Duration::from_secs(60),
+      || {
+        fp_calls.fetch_add(1, Ordering::SeqCst);
+        vec![]
+      },
+      || {
+        build_calls.fetch_add(1, Ordering::SeqCst);
+        99
+      },
+    );
+    assert!(Arc::ptr_eq(&v1, &v2));
+    assert_eq!(fp_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(build_calls.load(Ordering::SeqCst), 1);
+
+    // 显式 invalidate（SIGHUP）立即跳过 TTL 强制重建
+    cache.invalidate();
+    let v3 = cache.get_or_rebuild_ttl(
+      root,
+      Duration::from_secs(60),
+      || {
+        fp_calls.fetch_add(1, Ordering::SeqCst);
+        vec![(PathBuf::from("a"), SystemTime::UNIX_EPOCH)]
+      },
+      || {
+        build_calls.fetch_add(1, Ordering::SeqCst);
+        20
+      },
+    );
+    assert_eq!(*v3, 20);
+    assert_eq!(fp_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(build_calls.load(Ordering::SeqCst), 2);
   }
 
   /// fingerprint_for_dir 静默跳过权限错 / 不存在路径；空目录返回空。

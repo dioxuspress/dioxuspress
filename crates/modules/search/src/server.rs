@@ -36,14 +36,14 @@ pub fn clamp_limit(limit: Option<u32>) -> u32 {
   }
 }
 
-/// 校验/规整 kind 参数:接受 "blog" / "doc" / "topic" / "case" / "course" 与 5 个板块,
-/// 其他返回 None(不过滤)。
+/// 校验/规整 kind 参数：接受核心 5 类（blog / doc / topic / case / course）与宿主注册的扩展 kind，
+/// 其他返回 None（不过滤）。
 pub fn normalize_kind(raw: Option<String>) -> Option<String> {
   let raw = raw?;
   let trimmed = raw.trim();
   match trimmed {
     "blog" | "doc" | "topic" | "case" | "course" => Some(trimmed.to_string()),
-    k if crate::BOARD_KINDS.contains(&k) => Some(k.to_string()),
+    k if crate::find_extra_search_kind(k).is_some() => Some(k.to_string()),
     _ => None,
   }
 }
@@ -178,10 +178,14 @@ mod tests {
     assert_eq!(normalize_kind(Some(" doc ".to_string())).as_deref(), Some("doc"));
     assert_eq!(normalize_kind(Some("topic".to_string())).as_deref(), Some("topic"));
     assert_eq!(normalize_kind(Some("case".to_string())).as_deref(), Some("case"));
-    // O10：5 个板块与课程也能按类型筛选
-    for k in ["embedded", "ai", "web3", "wasm", "cli", "course"] {
-      assert_eq!(normalize_kind(Some(k.to_string())).as_deref(), Some(k), "{k}");
-    }
+    assert_eq!(normalize_kind(Some("course".to_string())).as_deref(), Some("course"));
+    // 宿主注册的自定义 kind 也能动态通过校验
+    crate::register_extra_search_kinds(vec![crate::SearchKindSpec::new(
+      "custom_board",
+      "custom_board",
+      "CUSTOM",
+    )]);
+    assert_eq!(normalize_kind(Some("custom_board".to_string())).as_deref(), Some("custom_board"));
   }
 
   #[test]

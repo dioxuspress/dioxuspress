@@ -33,6 +33,13 @@ fn mount_with_content(router: Router, assets_root: &str, content_root: Option<&P
       .layer(middleware::map_response(cache_control(DAY))),
     None => cached(asset_cases, DAY),
   };
+  let asset_podcasts = ServeDir::new(format!("{}/podcasts", assets_root));
+  let podcasts_router = match content_root {
+    Some(root) => Router::new()
+      .fallback_service(ServeDir::new(root.join("podcasts")).fallback(asset_podcasts))
+      .layer(middleware::map_response(cache_control(DAY))),
+    None => cached(asset_podcasts, DAY),
+  };
 
   // 文件名不带哈希：浏览器缓存一段时间，过期后靠 Last-Modified 复验（304）。
   // 文章图片 / 音频改动很少，一天；上传文件可能被审核撤下，一小时；字体基本不变，30 天。
@@ -49,7 +56,7 @@ fn mount_with_content(router: Router, assets_root: &str, content_root: Option<&P
       cached(ServeDir::new(format!("{}/uploads", assets_root)), "public, max-age=3600"),
     )
     .nest("/audio", cached(ServeDir::new(format!("{}/audio", assets_root)), DAY))
-    .nest("/podcasts", cached(ServeDir::new(format!("{}/podcasts", assets_root)), DAY))
+    .nest("/podcasts", podcasts_router)
     .nest("/cases", cases_router)
     .nest(
       "/assets/font",

@@ -129,6 +129,7 @@ impl From<serde_json::Error> for AppError {
   }
 }
 
+#[cfg(feature = "server")]
 impl From<serde_yaml::Error> for AppError {
   fn from(e: serde_yaml::Error) -> Self {
     AppError::Validation(format!("YAML parse error: {}", e))

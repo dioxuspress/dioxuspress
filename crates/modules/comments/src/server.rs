@@ -35,24 +35,51 @@ pub fn validate_comment(content: &str) -> Result<(), String> {
   Ok(())
 }
 
+/// [M7] 校验博客 slug（防止非法字符或超长字符串污染评论表）。
+pub fn validate_blog_id(blog_id: &str) -> Result<(), String> {
+  if blog_id.is_empty()
+    || blog_id.len() > 160
+    || blog_id.contains("..")
+    || !blog_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+  {
+    return Err("无效的文章标识".to_string());
+  }
+  Ok(())
+}
+
+/// 单次拉取评论上限（[M7] 防无上限全表查询）。
+#[cfg(feature = "server")]
+const MAX_COMMENTS_RETURNED: u64 = 200;
+
 #[post("/api/comments/list")]
 pub async fn get_comments(blog_id: String) -> Result<Vec<Comment>, ServerFnError> {
   #[cfg(feature = "server")]
   {
     use app_core::db::get_or_init_pool;
     use app_core::entities::{comment, user};
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
-    let db = get_or_init_pool().await.map_err(|e| ServerFnError::new(e.to_string()))?;
+    if validate_blog_id(&blog_id).is_err() {
+      return Ok(vec![]);
+    }
+
+    let db = get_or_init_pool().await.map_err(|e| {
+      tracing::error!(error = %e, "comments: db pool failed");
+      ServerFnError::new("加载评论失败".to_string())
+    })?;
 
     let results = comment::Entity::find()
       .filter(comment::Column::BlogId.eq(&blog_id))
       .filter(comment::Column::PendingReview.eq(false))
       .find_also_related(user::Entity)
       .order_by_desc(comment::Column::CreatedAt)
+      .limit(MAX_COMMENTS_RETURNED)
       .all(&db)
       .await
-      .map_err(|e| ServerFnError::new(e.to_string()))?;
+      .map_err(|e| {
+        tracing::error!(error = %e, blog_id = %blog_id, "comments: list query failed");
+        ServerFnError::new("加载评论失败".to_string())
+      })?;
 
     let comments = results
       .into_iter()
@@ -109,6 +136,7 @@ pub async fn post_comment(
 
     // S4：写路径用 verified 会话（DB 回查 token_version，支持即时吊销）
     let session_user = require_session_verified().await?;
+    validate_blog_id(&blog_id).map_err(ServerFnError::new)?;
     validate_comment(&content).map_err(ServerFnError::new)?;
 
     // ── 审核（默认 disabled → pipeline 为空 → 直接 Allow，零开销） ──
@@ -138,7 +166,10 @@ pub async fn post_comment(
       )));
     }
 
-    let db = get_or_init_pool().await.map_err(|e| ServerFnError::new(e.to_string()))?;
+    let db = get_or_init_pool().await.map_err(|e| {
+      tracing::error!(error = %e, "comments: db pool failed on post");
+      ServerFnError::new("提交评论失败".to_string())
+    })?;
 
     // Flag：先存下但不公开，等 admin 在审核队列里通过
     let pending_review = verdict.label == ModerationLabel::Flag;
@@ -151,7 +182,10 @@ pub async fn post_comment(
       ..Default::default()
     };
     // `insert(...)` 返回新行 ActiveModel；用 id 入审核队列
-    let inserted = new_comment.insert(&db).await.map_err(|e| ServerFnError::new(e.to_string()))?;
+    let inserted = new_comment.insert(&db).await.map_err(|e| {
+      tracing::error!(error = %e, "comments: insert failed");
+      ServerFnError::new("提交评论失败".to_string())
+    })?;
 
     // Flag → 入审核队列（Allow / Block 都是 no-op）
     enqueue_if_flagged(
@@ -185,5 +219,14 @@ mod tests {
     assert!(validate_comment("  \n ").is_err());
     assert!(validate_comment(&"a".repeat(MAX_COMMENT_LEN)).is_ok());
     assert!(validate_comment(&"a".repeat(MAX_COMMENT_LEN + 1)).is_err());
+  }
+
+  #[test]
+  fn validate_blog_id_rejects_traversal_and_junk() {
+    assert!(validate_blog_id("hello-world_2026.v1").is_ok());
+    assert!(validate_blog_id("").is_err());
+    assert!(validate_blog_id("../etc/passwd").is_err());
+    assert!(validate_blog_id("a/b").is_err());
+    assert!(validate_blog_id(&"a".repeat(161)).is_err());
   }
 }

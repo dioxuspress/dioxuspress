@@ -127,19 +127,29 @@ pub struct ModuleEngine {
 /// 只返回本次编译带进来的模块（见 [`register_compiled_modules`]）。
 /// 若宿主站点通过 [`register_extra_module_specs`] 追加了自定义模块，会一并纳入过滤与排序。
 pub fn default_module_specs() -> Vec<ModuleSpec> {
-  let specs =
-    merge_module_specs(builtin_module_specs(), EXTRA_MODULE_SPECS.get().map(Vec::as_slice));
+  let extra = extra_module_specs_slot().read().ok().map(|g| g.clone());
+  let specs = merge_module_specs(builtin_module_specs(), extra.as_deref());
   only_compiled(specs, COMPILED_MODULES.get().map(Vec::as_slice))
 }
 
-/// 宿主站点追加的自定义模块清单（如垂直领域板块、论文频道等）。
-static EXTRA_MODULE_SPECS: std::sync::OnceLock<Vec<ModuleSpec>> = std::sync::OnceLock::new();
+/// 宿主站点追加的自定义模块清单（支持多模块叠加注册，不再受限于单槽 OnceLock）。
+fn extra_module_specs_slot() -> &'static std::sync::RwLock<Vec<ModuleSpec>> {
+  static EXTRA_MODULE_SPECS: std::sync::OnceLock<std::sync::RwLock<Vec<ModuleSpec>>> =
+    std::sync::OnceLock::new();
+  EXTRA_MODULE_SPECS.get_or_init(|| std::sync::RwLock::new(Vec::new()))
+}
 
 /// 供外部宿主站点在启动期（client 与 server 两侧）追加自定义 [`ModuleSpec`]，
 /// 与框架内置模块共享 `site.json::modules` 开关、`ModuleGate`、sitemap 与搜索过滤。
-/// 只生效一次，应在首次调用 [`default_module_specs`] 之前执行。
+/// 支持多次调用叠加注册（按 `id` 去重）。
 pub fn register_extra_module_specs(specs: Vec<ModuleSpec>) {
-  let _ = EXTRA_MODULE_SPECS.set(specs);
+  if let Ok(mut guard) = extra_module_specs_slot().write() {
+    for spec in specs {
+      if !guard.iter().any(|existing| existing.id == spec.id) {
+        guard.push(spec);
+      }
+    }
+  }
 }
 
 fn merge_module_specs(mut base: Vec<ModuleSpec>, extra: Option<&[ModuleSpec]>) -> Vec<ModuleSpec> {
@@ -208,6 +218,30 @@ fn builtin_module_specs() -> Vec<ModuleSpec> {
       .with_nav_label_key("nav-about")
       .with_static_path("/about"),
   ]
+}
+
+/// 基于当前已水合/加载的 [`SiteConfig`] 同步判定某模块是否启用（编译进来且未被 `site.json` 关停）。
+/// 供 SSR 与 WASM 客户端的 `ModuleGate` / `SiteNavbar` 零 RPC 同步调用，彻底消除停用模块 SSR 泄漏与首屏冗余 POST。
+pub fn is_module_enabled_in_config(cfg: &SiteConfig, id: &str) -> bool {
+  let Some(spec) = default_module_specs().into_iter().find(|s| s.id == id) else {
+    return false;
+  };
+  match cfg.modules.get(id) {
+    Some(override_cfg) => override_cfg.enabled,
+    None => spec.enabled,
+  }
+}
+
+/// 基于当前 [`SiteConfig`] 同步列出所有已启用模块 id（与服务端 [`ModuleEngine::enabled_ids`] 口径严格一致）。
+pub fn enabled_module_ids_in_config(cfg: &SiteConfig) -> Vec<String> {
+  default_module_specs()
+    .into_iter()
+    .filter(|spec| match cfg.modules.get(&spec.id) {
+      Some(override_cfg) => override_cfg.enabled,
+      None => spec.enabled,
+    })
+    .map(|spec| spec.id)
+    .collect()
 }
 
 /// 全局共享的 default_module_engine 缓存 slot（Phase 8.7）。

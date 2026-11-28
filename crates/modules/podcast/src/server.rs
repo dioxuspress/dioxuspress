@@ -44,14 +44,10 @@ struct EpisodeMeta {
   tags: Vec<String>,
 }
 
-/// 自动探测 podcasts 资产根目录
+/// 自动探测 podcasts 资产根目录（优先 `$CONTENT_DIR/podcasts`，回退 `assets/podcasts`）
 #[cfg(feature = "server")]
 fn get_podcasts_root() -> PathBuf {
-  let mut path = PathBuf::from("assets/podcasts");
-  if !path.exists() {
-    path = PathBuf::from("../../assets/podcasts");
-  }
-  path
+  app_core::utils::content_dir("podcasts")
 }
 
 /// 受支持的音频文件扩展名

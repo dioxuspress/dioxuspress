@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 /// Shared language enum used across crates (app, forum modules, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -28,6 +28,32 @@ const FTL_EN: &str = include_str!("../../../assets/i18n/en.ftl");
 
 static DICT_ZH: OnceLock<HashMap<String, String>> = OnceLock::new();
 static DICT_EN: OnceLock<HashMap<String, String>> = OnceLock::new();
+static EXTRA_ZH: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+static EXTRA_EN: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+
+fn extra_dict(lang: Language) -> &'static RwLock<HashMap<String, String>> {
+  match lang {
+    Language::En => EXTRA_EN.get_or_init(|| RwLock::new(HashMap::new())),
+    Language::Zh => EXTRA_ZH.get_or_init(|| RwLock::new(HashMap::new())),
+  }
+}
+
+/// 供宿主站点或业务模块在启动期追加/覆盖 `key = value` 翻译词条（支持多次调用叠加）。
+/// 查询时优先命中扩展字典，未命中回退框架内置词典，避免下游改动上游 `assets/i18n/*.ftl`。
+pub fn register_extra_translations(zh_ftl: &str, en_ftl: &str) {
+  if !zh_ftl.is_empty() {
+    let parsed = parse_dict(zh_ftl);
+    if let Ok(mut guard) = extra_dict(Language::Zh).write() {
+      guard.extend(parsed);
+    }
+  }
+  if !en_ftl.is_empty() {
+    let parsed = parse_dict(en_ftl);
+    if let Ok(mut guard) = extra_dict(Language::En).write() {
+      guard.extend(parsed);
+    }
+  }
+}
 
 /// 解析简单的 `key = value` 字典：
 /// - 空行与以 `#` 开头的行被忽略；
@@ -60,12 +86,22 @@ fn dict(lang: Language) -> &'static HashMap<String, String> {
   }
 }
 
-/// 按语言翻译 `key`。缺失时回退到中文值，再回退到 `key` 本身（绝不 panic）。
+/// 按语言翻译 `key`。优先查扩展字典 → 内置字典 → 回退中文 → 回退 `key` 本身（绝不 panic）。
 pub fn t(lang: Language, key: &str) -> String {
+  if let Ok(guard) = extra_dict(lang).read() {
+    if let Some(v) = guard.get(key) {
+      return v.clone();
+    }
+  }
   if let Some(v) = dict(lang).get(key) {
     return v.clone();
   }
   if lang != Language::Zh {
+    if let Ok(guard) = extra_dict(Language::Zh).read() {
+      if let Some(v) = guard.get(key) {
+        return v.clone();
+      }
+    }
     if let Some(v) = dict(Language::Zh).get(key) {
       return v.clone();
     }
@@ -109,6 +145,10 @@ mod tests {
     assert_eq!(t(Language::Zh, "nav.blog"), "博客");
     assert_eq!(t(Language::En, "nav.blog"), "Blog");
     assert_eq!(t(Language::En, "does.not.exist"), "does.not.exist");
+
+    register_extra_translations("custom.ext_key = 扩展文案\n", "custom.ext_key = Extended Label\n");
+    assert_eq!(t(Language::Zh, "custom.ext_key"), "扩展文案");
+    assert_eq!(t(Language::En, "custom.ext_key"), "Extended Label");
   }
 
   #[test]

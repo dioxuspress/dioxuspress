@@ -119,18 +119,20 @@ fn ReferenceCard(reference: TopicRef) -> Element {
   }
 }
 
-fn ref_link_for(kind: &str, path: &str) -> (&'static str, String) {
+fn ref_link_for(kind: &str, path: &str) -> (String, String) {
   match kind {
-    "blog" => ("BLOG", format!("/blog/{}", path)),
-    "doc" => ("DOC", format!("/docs/{}", path)),
-    "course" => ("COURSE", format!("/course/{}", path)),
-    "case" => ("CASE", format!("/case/{}", path)),
-    "paper" => ("PAPER", format!("/papers/{}", path)),
+    "blog" => ("BLOG".to_string(), format!("/blog/{}", path)),
+    "doc" => ("DOC".to_string(), format!("/docs/{}", path)),
+    "course" => ("COURSE".to_string(), format!("/course/{}", path)),
+    "case" => ("CASE".to_string(), format!("/case/{}", path)),
     "lesson" => {
       // path = "<slug>/<chapter>/<lesson>"
-      ("LESSON", format!("/course/{}", path))
+      ("LESSON".to_string(), format!("/course/{}", path))
     }
-    _ => ("REF", format!("/{}", path)),
+    other => match crate::find_extra_ref_kind(other) {
+      Some(spec) => (spec.badge_label, format!("{}{}", spec.url_prefix, path)),
+      None => ("REF".to_string(), format!("/{}", path)),
+    },
   }
 }
 

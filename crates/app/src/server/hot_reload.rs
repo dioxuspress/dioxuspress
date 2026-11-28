@@ -9,17 +9,40 @@
 //!    mtime；即便手工 `git pull` / `rsync` 未发信号，也能在数秒内自动热同步。
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use app_core::i18n::Language;
 use app_core::settings::SiteConfig;
 
-static EXTRA_HOT_RELOAD: OnceLock<fn()> = OnceLock::new();
+pub type HotReloadFn = fn();
 
-/// 注册宿主站点的自定义热刷新回调（在 `SIGHUP` 或 `CONTENT_DIR` 变更时自动触发）。
+fn extra_hot_reload_slot() -> &'static RwLock<Vec<HotReloadFn>> {
+  static EXTRA_HOT_RELOAD: OnceLock<RwLock<Vec<HotReloadFn>>> = OnceLock::new();
+  EXTRA_HOT_RELOAD.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+fn extra_watched_dirs_slot() -> &'static RwLock<Vec<&'static str>> {
+  static EXTRA_WATCHED_DIRS: OnceLock<RwLock<Vec<&'static str>>> = OnceLock::new();
+  EXTRA_WATCHED_DIRS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// 注册宿主站点的自定义热刷新回调（在 `SIGHUP` 或 `CONTENT_DIR` 变更时自动触发，支持多次追加注册）。
 pub fn register_extra_hot_reload(callback: fn()) {
-  let _ = EXTRA_HOT_RELOAD.set(callback);
+  if let Ok(mut guard) = extra_hot_reload_slot().write() {
+    guard.push(callback);
+  }
+}
+
+/// 注册宿主站点额外需要监控 mtime 变更的 `CONTENT_DIR` 顶级子目录（如私有站点的 `models` / `topics` 等）。
+pub fn register_watched_content_dirs(dirs: &[&'static str]) {
+  if let Ok(mut guard) = extra_watched_dirs_slot().write() {
+    for &dir in dirs {
+      if !dir.is_empty() && !guard.contains(&dir) {
+        guard.push(dir);
+      }
+    }
+  }
 }
 
 /// 同步清空全部内存配置与目录列表缓存，并推进 `ETag` 纪元。
@@ -34,10 +57,17 @@ pub fn invalidate_all_in_memory_caches() -> u64 {
     cfg.default_language_enum() == Language::En,
   );
   app_core::engines::module::invalidate_default_module_engine();
+  #[cfg(feature = "accounts")]
+  module_admin::server::reload_moderation_pipeline();
   module_docs::server::invalidate_doc_caches();
   module_blog::server::invalidate_blog_cache();
-  if let Some(cb) = EXTRA_HOT_RELOAD.get() {
-    cb();
+  module_cases::server::invalidate_cases_cache();
+  #[cfg(feature = "course")]
+  module_course::server::invalidate_course_cache();
+  if let Ok(guard) = extra_hot_reload_slot().read() {
+    for cb in guard.iter() {
+      cb();
+    }
   }
   board::server::invalidate_board_cache();
   crate::server::conditional_cache::bump_content_epoch()
@@ -103,20 +133,13 @@ pub fn compute_content_root_stamp(root: &Path) -> u128 {
   }
 
   let mut mtimes: u128 = mtime_ns(&root.join("site.json"));
-  for sub in [
-    "docs",
-    "posts",
-    "courses",
-    "cases",
-    "models",
-    "ai-components",
-    "ai-math",
-    "ai-ml",
-    "podcasts",
-    "topics",
-    "images",
-  ] {
+  for sub in ["docs", "posts", "courses", "cases", "podcasts", "pages", "images"] {
     mtimes = mtimes.wrapping_mul(1_000_003) ^ mtime_ns(&root.join(sub));
+  }
+  if let Ok(extra) = extra_watched_dirs_slot().read() {
+    for sub in extra.iter() {
+      mtimes = mtimes.wrapping_mul(1_000_003) ^ mtime_ns(&root.join(sub));
+    }
   }
   (u128::from(git_sig) << 64) ^ mtimes
 }

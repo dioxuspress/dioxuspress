@@ -14,9 +14,9 @@ use crate::components::layouts::{
   ClassicShell, DocsShell, FooterBoardLink, MinimalShell, NavEcosystem,
 };
 use crate::routes::Route;
-use crate::server::get_active_layout;
 
 /// 与具体 `Route` 枚举解耦的通用站点布局壳，供宿主站点（含私有扩展仓）复用。
+/// 直接同步读取已水合的 `SiteConfig::active().active_layout_or_default()`，避免首屏额外发起 POST RPC。
 #[component]
 pub fn SiteNavbar(
   current_path: String,
@@ -25,17 +25,11 @@ pub fn SiteNavbar(
   #[props(default)] footer_boards: Vec<FooterBoardLink>,
   children: Element,
 ) -> Element {
-  let default_layout =
-    app_core::settings::SiteConfig::active().active_layout_or_default().to_string();
-  let fallback = default_layout.clone();
-  let layout_res = use_resource(move || {
-    let fallback = fallback.clone();
-    async move { get_active_layout().await.unwrap_or(fallback) }
-  });
-  let layout: String = layout_res.read().as_ref().cloned().unwrap_or(default_layout);
+  let cfg = app_core::settings::SiteConfig::active();
+  let layout = cfg.active_layout_or_default();
 
   rsx! {
-    match layout.as_str() {
+    match layout {
       "docs" => rsx! { DocsShell { current_path, {children} } },
       "minimal" => rsx! { MinimalShell { {children} } },
       _ => rsx! { ClassicShell { current_path, ecosystems, extra_nav_links, footer_boards, {children} } },

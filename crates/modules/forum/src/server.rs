@@ -130,7 +130,9 @@ pub fn validate_new_topic(input: &NewTopicInput) -> Result<(), String> {
   // 引用必须 kind 与 path 同时存在或同时不存在
   match (&input.ref_kind, &input.ref_path) {
     (Some(k), Some(p)) => {
-      if !matches!(k.as_str(), "blog" | "doc" | "course" | "lesson" | "case" | "paper") {
+      let known = matches!(k.as_str(), "blog" | "doc" | "course" | "lesson" | "case")
+        || crate::find_extra_ref_kind(k).is_some();
+      if !known {
         return Err(format!("不支持的引用类型: {}", k));
       }
       if p.trim().is_empty() {
@@ -263,8 +265,9 @@ fn resolve_ref_title(kind: &str, path: &str) -> String {
       }
       fallback()
     }
-    "paper" => format!("arXiv:{path}"),
-    _ => fallback(),
+    other => crate::find_extra_ref_kind(other)
+      .and_then(|spec| spec.title_formatter.map(|fmt| fmt(path)))
+      .unwrap_or_else(fallback),
   }
 }
 
@@ -393,7 +396,7 @@ pub async fn list_topics_by_ref(
   #[cfg(feature = "server")]
   {
     use app_core::entities::{topic, user as user_entity};
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
     if kind.is_empty() || path.is_empty() {
       return Ok(vec![]);
@@ -405,9 +408,13 @@ pub async fn list_topics_by_ref(
       .filter(topic::Column::PendingReview.eq(false))
       .order_by_desc(topic::Column::LastReplyAt)
       .order_by_desc(topic::Column::CreatedAt)
+      .limit(100)
       .all(&db)
       .await
-      .map_err(|e| ServerFnError::new(e.to_string()))?;
+      .map_err(|e| {
+        tracing::error!(error = %e, kind = %kind, "forum: list_topics_by_ref failed");
+        ServerFnError::new("加载讨论主题失败".to_string())
+      })?;
 
     let mut user_ids: Vec<i32> = rows.iter().map(|r| r.user_id).collect();
     user_ids.sort();
@@ -575,14 +582,14 @@ pub async fn create_topic(input: NewTopicInput) -> Result<TopicSummary, ServerFn
     // S4：写路径用 verified 会话（DB 回查 token_version，支持即时吊销）
     let user = app_core::session::require_session_verified().await?;
 
-    // ── 审核：标题 + 正文一起评估 ──
+    // ── 审核：标题 + 正文一起评估（[M7] 先归一化 tag 再拼 ref_path） ──
+    let normalized_tag = normalize_tag(&input.tag);
     let combined = format!("标题：{}\n\n{}", input.title.trim(), input.content);
-    let ref_path = format!("topic-new:{}", input.tag);
+    let ref_path = format!("topic-new:{}", normalized_tag);
     let outcome = moderate_or_reject(&combined, "topic", &ref_path).await?;
 
     let db = open_db().await?;
     let now = Utc::now().fixed_offset();
-    let normalized_tag = normalize_tag(&input.tag);
     let title = input.title.trim().to_string();
 
     let am = topic::ActiveModel {
@@ -842,10 +849,16 @@ mod tests {
     i.ref_path = Some("hello-rust".to_string());
     assert!(validate_new_topic(&i).is_ok());
 
-    i.ref_kind = Some("paper".to_string());
+    crate::register_extra_ref_kinds(vec![crate::ForumRefKindSpec {
+      kind: "custom_ref".to_string(),
+      badge_label: "CUSTOM".to_string(),
+      url_prefix: "/custom/".to_string(),
+      title_formatter: Some(|p| format!("Custom:{p}")),
+    }]);
+    i.ref_kind = Some("custom_ref".to_string());
     i.ref_path = Some("2611.15789".to_string());
     assert!(validate_new_topic(&i).is_ok());
-    assert_eq!(resolve_ref_title("paper", "2611.15789"), "arXiv:2611.15789");
+    assert_eq!(resolve_ref_title("custom_ref", "2611.15789"), "Custom:2611.15789");
   }
 
   #[test]

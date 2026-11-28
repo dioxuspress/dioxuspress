@@ -276,10 +276,24 @@ fn slash_redirect_target(path: &str, query: Option<&str>) -> Option<String> {
   })
 }
 
-/// 旧博客（Docusaurus）地址对应的新地址（M5）。文章 `/blog/YYYY/MM/DD/<slug>` 到
-/// `/blog/<slug>`（旧 slug 里的 `.` 在迁移时换成了 `-`）；标签、分页、归档、作者页
-/// 到 `/blog`。旧站曾短暂启用 `/en` 前缀，同样处理。尾斜杠、查询串一并丢掉。
-fn legacy_blog_target(path: &str) -> Option<String> {
+pub type RedirectResolverFn = fn(&str) -> Option<String>;
+
+fn extra_redirect_resolvers_slot() -> &'static std::sync::RwLock<Vec<RedirectResolverFn>> {
+  static RESOLVERS: std::sync::OnceLock<std::sync::RwLock<Vec<RedirectResolverFn>>> =
+    std::sync::OnceLock::new();
+  RESOLVERS.get_or_init(|| std::sync::RwLock::new(Vec::new()))
+}
+
+/// 注册宿主站点自定义永久跳转规则（如从旧静态博客迁移的 301 重定向，参见 [`docusaurus_legacy_blog_redirect`]）。
+pub fn register_extra_redirect_resolver(resolver: RedirectResolverFn) {
+  if let Ok(mut guard) = extra_redirect_resolvers_slot().write() {
+    guard.push(resolver);
+  }
+}
+
+/// 可选内置工具：Docusaurus 旧博客地址到 DioxusPress 的 301 映射规则。
+/// 公开框架不再无条件硬编码执行，需从 Docusaurus 迁移的宿主站点可在 `ServerExtensions::extra_redirect` 中按需挂载。
+pub fn docusaurus_legacy_blog_redirect(path: &str) -> Option<String> {
   let trimmed = path.trim_end_matches('/');
   let english = trimmed.strip_prefix("/en").filter(|p| p.starts_with("/blog"));
   let rest = match english.unwrap_or(trimmed).strip_prefix("/blog") {
@@ -303,6 +317,10 @@ fn legacy_blog_target(path: &str) -> Option<String> {
     ["tags", ..] | ["page", ..] | ["archive"] | ["authors", ..] => Some("/blog".to_string()),
     _ => None,
   }
+}
+
+fn extra_redirect_target(path: &str) -> Option<String> {
+  extra_redirect_resolvers_slot().read().ok()?.iter().find_map(|f| f(path))
 }
 
 fn matches_seg(path: &str, prefix: &str) -> bool {
@@ -330,7 +348,7 @@ pub async fn trailing_slash_mw(
   let path = req.uri().path();
   if matches!(*req.method(), Method::GET | Method::HEAD) {
     let target =
-      legacy_blog_target(path).or_else(|| slash_redirect_target(path, req.uri().query()));
+      extra_redirect_target(path).or_else(|| slash_redirect_target(path, req.uri().query()));
     if let Some(to) = target {
       return Redirect::permanent(&to).into_response();
     }
@@ -381,7 +399,7 @@ mod tests {
   /// M5：旧博客地址跳到新地址；新站自己的地址不跳。
   #[test]
   fn legacy_blog_redirect_targets() {
-    let t = |p: &str| legacy_blog_target(p);
+    let t = |p: &str| docusaurus_legacy_blog_redirect(p);
     assert_eq!(t("/blog/2024/01/09/rust-ownership").as_deref(), Some("/blog/rust-ownership"));
     assert_eq!(t("/blog/2024/10/17/rust-1.82/").as_deref(), Some("/blog/rust-1-82"));
     assert_eq!(t("/en/blog/2024/01/09/rust-ownership").as_deref(), Some("/blog/rust-ownership"));

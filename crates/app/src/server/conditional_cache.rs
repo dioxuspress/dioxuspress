@@ -16,13 +16,15 @@
 //!      完全跳过 Markdown 解析与 Dioxus VirtualDOM SSR；
 //!    - 响应追加 `Vary: Cookie`，确保语言（`site_lang`）与主题（`site_theme`）切换互不串扰。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
+use std::task::{Context, Poll};
 use std::time::UNIX_EPOCH;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::Request;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
@@ -91,20 +93,39 @@ fn matches_seg(path: &str, prefix: &str) -> bool {
       && path.as_bytes().get(prefix.len()) == Some(&b'/'))
 }
 
-static EXTRA_STATIC_PATHS: OnceLock<&'static [&'static str]> = OnceLock::new();
-static EXTRA_PRIVATE_PREFIXES: OnceLock<&'static [&'static str]> = OnceLock::new();
+fn extra_static_paths_slot() -> &'static RwLock<Vec<&'static str>> {
+  static EXTRA_STATIC_PATHS: OnceLock<RwLock<Vec<&'static str>>> = OnceLock::new();
+  EXTRA_STATIC_PATHS.get_or_init(|| RwLock::new(Vec::new()))
+}
 
-/// 注册宿主站点的自定义条件缓存分类规则（如独立的静态订阅源路径与私密动态前缀）。
+fn extra_private_prefixes_slot() -> &'static RwLock<Vec<&'static str>> {
+  static EXTRA_PRIVATE_PREFIXES: OnceLock<RwLock<Vec<&'static str>>> = OnceLock::new();
+  EXTRA_PRIVATE_PREFIXES.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// 注册宿主站点的自定义条件缓存分类规则（支持多模块叠加追加，不再受单槽 OnceLock 限制）。
 pub fn register_extra_route_rules(
   static_paths: &'static [&'static str],
   private_prefixes: &'static [&'static str],
 ) {
-  let _ = EXTRA_STATIC_PATHS.set(static_paths);
-  let _ = EXTRA_PRIVATE_PREFIXES.set(private_prefixes);
+  if let Ok(mut guard) = extra_static_paths_slot().write() {
+    for &p in static_paths {
+      if !guard.contains(&p) {
+        guard.push(p);
+      }
+    }
+  }
+  if let Ok(mut guard) = extra_private_prefixes_slot().write() {
+    for &p in private_prefixes {
+      if !guard.contains(&p) {
+        guard.push(p);
+      }
+    }
+  }
 }
 
 fn classify_path(path: &str) -> RouteClass {
-  if EXTRA_STATIC_PATHS.get().is_some_and(|list| list.contains(&path)) {
+  if extra_static_paths_slot().read().ok().is_some_and(|list| list.contains(&path)) {
     return RouteClass::StaticAsset;
   }
 
@@ -134,8 +155,9 @@ fn classify_path(path: &str) -> RouteClass {
     }
   }
 
-  if EXTRA_PRIVATE_PREFIXES
-    .get()
+  if extra_private_prefixes_slot()
+    .read()
+    .ok()
     .is_some_and(|list| list.iter().any(|prefix| matches_seg(path, prefix)))
   {
     return RouteClass::PrivateDynamic;
@@ -249,24 +271,35 @@ fn max_mtime_in(candidates: impl IntoIterator<Item = std::path::PathBuf>) -> u12
   candidates.into_iter().map(|p| mtime_nanos(&p)).max().unwrap_or(0)
 }
 
-static EXTRA_ETAG_STAMP: std::sync::OnceLock<fn(&str) -> Option<u128>> = std::sync::OnceLock::new();
+pub type EtagStampFn = fn(&str) -> Option<u128>;
 
-/// 注册宿主站点的自定义路由 ETag 版本戳计算函数（如私有图鉴/动态模型目录）。
-pub fn register_extra_etag_stamp(callback: fn(&str) -> Option<u128>) {
-  let _ = EXTRA_ETAG_STAMP.set(callback);
+fn extra_etag_stamps_slot() -> &'static RwLock<Vec<EtagStampFn>> {
+  static EXTRA_ETAG_STAMP: OnceLock<RwLock<Vec<EtagStampFn>>> = OnceLock::new();
+  EXTRA_ETAG_STAMP.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// 注册宿主站点的自定义路由 ETag 版本戳计算函数（支持多模块叠加追加，命中首个 `Some` 即生效）。
+pub fn register_extra_etag_stamp(callback: EtagStampFn) {
+  if let Ok(mut guard) = extra_etag_stamps_slot().write() {
+    guard.push(callback);
+  }
 }
 
 /// 轻量内容源指纹（仅数次 VFS `stat`，微秒级）：确保本地改 Markdown 或 `site.json` 无需等信号即刻换 `ETag`。
 fn probe_source_stamp(path: &str) -> u128 {
   let site_stamp = mtime_nanos(&app_core::utils::site_json_path());
-  if let Some(extra) = EXTRA_ETAG_STAMP.get().and_then(|f| f(path)) {
-    return site_stamp.wrapping_mul(6364136223846793005) ^ extra;
+  if let Ok(guard) = extra_etag_stamps_slot().read() {
+    if let Some(extra) = guard.iter().find_map(|f| f(path)) {
+      return site_stamp.wrapping_mul(6364136223846793005) ^ extra;
+    }
   }
   let docs_root = app_core::utils::content_dir("docs");
   let posts_root = app_core::utils::content_dir("posts");
+  let cases_root = app_core::utils::content_dir("cases");
+  let podcasts_root = app_core::utils::content_dir("podcasts");
 
   let route_stamp = if path == "/docs" || path.starts_with("/docs/") {
-    let dir_stamp = mtime_nanos(&docs_root);
+    let dir_stamp = mtime_nanos(&docs_root) ^ mtime_nanos(&docs_root.join("_meta.json"));
     let rel = path.strip_prefix("/docs/").unwrap_or("");
     if rel.contains("..") {
       dir_stamp
@@ -277,6 +310,8 @@ fn probe_source_stamp(path: &str) -> u128 {
         node_dir.join("index.mdx"),
         node_dir.join("index.en.md"),
         node_dir.join("index.en.mdx"),
+        node_dir.join("_meta.json"),
+        node_dir.join("_meta.en.json"),
       ]);
       dir_stamp.wrapping_mul(1_000_003) ^ leaf_stamp
     }
@@ -293,6 +328,19 @@ fn probe_source_stamp(path: &str) -> u128 {
     } else {
       dir_stamp
     }
+  } else if path == "/case" || path.starts_with("/case/") {
+    let dir_stamp = mtime_nanos(&cases_root);
+    if let Some(slug) = path.strip_prefix("/case/").filter(|s| app_core::utils::is_safe_slug(s)) {
+      let leaf_stamp = max_mtime_in([
+        cases_root.join(slug).join("case.yaml"),
+        cases_root.join(slug).join("README.md"),
+      ]);
+      dir_stamp.wrapping_mul(1_000_003) ^ leaf_stamp
+    } else {
+      dir_stamp
+    }
+  } else if path == "/podcast" || path.starts_with("/podcast/") {
+    mtime_nanos(&podcasts_root)
   } else if path == "/about" {
     let pages_dir = crate::server::active_about_pages_dir();
     let dir_stamp = mtime_nanos(&pages_dir);
@@ -304,7 +352,10 @@ fn probe_source_stamp(path: &str) -> u128 {
     ]);
     dir_stamp.wrapping_mul(1_000_003) ^ leaf_stamp
   } else {
-    mtime_nanos(&docs_root).wrapping_mul(1_000_003) ^ mtime_nanos(&posts_root)
+    mtime_nanos(&docs_root).wrapping_mul(1_000_003)
+      ^ mtime_nanos(&posts_root).wrapping_mul(1_000_033)
+      ^ mtime_nanos(&cases_root).wrapping_mul(1_000_037)
+      ^ mtime_nanos(&podcasts_root)
   };
 
   site_stamp.wrapping_mul(6364136223846793005) ^ route_stamp
@@ -367,6 +418,85 @@ fn not_modified_response(etag: HeaderValue, cache_control: HeaderValue) -> Respo
   resp
 }
 
+/// 响应头显式要求禁止共享缓存，或携带 `Set-Cookie` 时绝不生成公共 ETag。
+fn response_forbids_public_cache(headers: &HeaderMap) -> bool {
+  if headers.contains_key(header::SET_COOKIE) {
+    return true;
+  }
+  headers.get_all(header::CACHE_CONTROL).iter().filter_map(|v| v.to_str().ok()).any(|v| {
+    let lc = v.to_ascii_lowercase();
+    lc.contains("no-store") || lc.contains("private")
+  })
+}
+
+/// 当流式响应超过 `MAX_CACHEABLE_BODY_BYTES` 时，把已读帧与剩余未读流无损拼接透传，
+/// 彻底杜绝超过 4 MiB 被静默截断为空 200 OK 的数据损坏。
+struct ReplayBody {
+  buffered: VecDeque<Bytes>,
+  rest: Body,
+}
+
+impl HttpBody for ReplayBody {
+  type Data = Bytes;
+  type Error = axum::Error;
+
+  fn poll_frame(
+    self: Pin<&mut Self>,
+    cx: &mut Context<'_>,
+  ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+    let this = self.get_mut();
+    if let Some(chunk) = this.buffered.pop_front() {
+      return Poll::Ready(Some(Ok(http_body::Frame::data(chunk))));
+    }
+    Pin::new(&mut this.rest).poll_frame(cx)
+  }
+}
+
+enum CollectResult {
+  Complete(Bytes),
+  Overflow(Body),
+}
+
+async fn collect_up_to_limit(mut body: Body, limit: usize) -> CollectResult {
+  if body.size_hint().lower() > limit as u64 {
+    return CollectResult::Overflow(body);
+  }
+  let mut chunks: VecDeque<Bytes> = VecDeque::new();
+  let mut total = 0usize;
+  loop {
+    let next = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+    match next {
+      Some(Ok(frame)) => {
+        if let Ok(data) = frame.into_data() {
+          if data.is_empty() {
+            continue;
+          }
+          total = total.saturating_add(data.len());
+          chunks.push_back(data);
+          if total > limit {
+            return CollectResult::Overflow(Body::new(ReplayBody { buffered: chunks, rest: body }));
+          }
+        }
+      }
+      Some(Err(_)) => {
+        return CollectResult::Overflow(Body::new(ReplayBody { buffered: chunks, rest: body }));
+      }
+      None => {
+        if chunks.len() == 1 {
+          if let Some(only) = chunks.pop_front() {
+            return CollectResult::Complete(only);
+          }
+        }
+        let mut out = Vec::with_capacity(total);
+        for c in chunks {
+          out.extend_from_slice(&c);
+        }
+        return CollectResult::Complete(Bytes::from(out));
+      }
+    }
+  }
+}
+
 /// Axum 条件缓存中间件：挂在 `CompressionLayer` 内侧，使 `304` 短路在 SSR 与压缩之前完成。
 pub async fn conditional_cache_mw(req: Request, next: Next) -> Response {
   let path = req.uri().path();
@@ -419,10 +549,29 @@ pub async fn conditional_cache_mw(req: Request, next: Next) -> Response {
   if resp.status() != StatusCode::OK {
     return resp;
   }
+  if response_forbids_public_cache(resp.headers()) {
+    return enforce_private_no_store(resp);
+  }
+  let declared_oversize = resp
+    .headers()
+    .get(header::CONTENT_LENGTH)
+    .and_then(|v| v.to_str().ok())
+    .and_then(|v| v.parse::<usize>().ok())
+    .is_some_and(|n| n > MAX_CACHEABLE_BODY_BYTES);
+  if declared_oversize {
+    let mut resp = resp;
+    ensure_vary_cookie(resp.headers_mut());
+    return resp;
+  }
 
   let (mut parts, body) = resp.into_parts();
-  let Ok(bytes) = axum::body::to_bytes(body, MAX_CACHEABLE_BODY_BYTES).await else {
-    return Response::from_parts(parts, Body::empty());
+  let bytes = match collect_up_to_limit(body, MAX_CACHEABLE_BODY_BYTES).await {
+    CollectResult::Complete(b) => b,
+    CollectResult::Overflow(passthrough) => {
+      ensure_vary_cookie(&mut parts.headers);
+      let out = if method == Method::HEAD { Body::empty() } else { passthrough };
+      return Response::from_parts(parts, out);
+    }
   };
 
   let cache_control = parts
@@ -675,5 +824,36 @@ mod tests {
       );
       assert!(r.headers().get(header::ETAG).is_none(), "{dyn_path} must not emit ETag");
     }
+  }
+
+  #[tokio::test]
+  async fn oversized_body_streams_intact_and_set_cookie_skips_public_cache() {
+    bump_content_epoch();
+    let payload_len = MAX_CACHEABLE_BODY_BYTES + 1024;
+    let app = Router::new()
+      .route("/sitemap.xml", get(move || async move { vec![b'x'; payload_len] }))
+      .route(
+        "/set-cookie-page",
+        get(|| async {
+          ([(header::SET_COOKIE, HeaderValue::from_static("site_theme=ocean; Path=/"))], "hello")
+        }),
+      )
+      .layer(axum::middleware::from_fn(conditional_cache_mw));
+
+    // >4 MiB 响应不得退化为空 200 OK，必须完整透传正文
+    let large = send(&app, "/sitemap.xml", None, None).await;
+    assert_eq!(large.status(), StatusCode::OK);
+    assert!(large.headers().get(header::ETAG).is_none());
+    let body = axum::body::to_bytes(large.into_body(), payload_len + 64).await.expect("full body");
+    assert_eq!(body.len(), payload_len);
+
+    // 含 Set-Cookie 的响应必须跳过公共 ETag 并标记 private, no-store
+    let cookie_resp = send(&app, "/set-cookie-page", None, None).await;
+    assert_eq!(cookie_resp.status(), StatusCode::OK);
+    assert!(cookie_resp.headers().get(header::ETAG).is_none());
+    assert_eq!(
+      cookie_resp.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+      Some("private, no-store")
+    );
   }
 }

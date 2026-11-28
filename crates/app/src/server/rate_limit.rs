@@ -9,29 +9,32 @@
 //! - **分级**：`/api/auth/*`、`/api/pay/*` 与下单（`/api/orders/create`、
 //!   `/api/orders/tip`）用更严的 sensitive 桶（防爆破 / 防回调滥用 / 防刷单）；
 //!   其余 `/api/*` 用宽松的默认桶。
-//! - **键**：`x-forwarded-for` 首个 IP（gateway / 反代注入）→ `x-real-ip` →
-//!   兜底共享桶 `"global"`。无反代直连时退化为全局限流，仍能防单源打满。
+//! - **键**：默认从受信任反代头取真实客户端 IP（优先单跳覆写的 `x-real-ip`，其次
+//!   `x-forwarded-for` 最右非受信跳，防客户端伪造最左 XFF）；设置
+//!   `TRUST_PROXY_HEADERS=0` 可彻底禁用代理头（回退 `ConnectInfo<SocketAddr>` / `"global"`）。
 //!
 //! ## 运维开关（env）
 //! - `RATE_LIMIT_DISABLED=1`：整体禁用。
+//! - `TRUST_PROXY_HEADERS`：`0`/`false` 禁用代理头解析；默认 `1`（配合单跳反代/网关）。
+//! - `TRUST_PROXY_HOPS`：外层可信反代跳数（默认 `1`，取 XFF 倒数第 N 个 IP）。
 //! - `RATE_LIMIT_API_RPS` / `RATE_LIMIT_API_BURST`：默认桶（默认 20 rps / 60）。
 //! - `RATE_LIMIT_SENSITIVE_RPS` / `RATE_LIMIT_SENSITIVE_BURST`：敏感桶
 //!   （默认 5 rps / 15）。
 //!
-//! 实现为手写 token bucket（无新增依赖）；桶表有容量上限 + 过期剪枝，
-//! 防止恶意伪造海量 XFF 值撑爆内存。
+//! 实现为手写 token bucket（无新增依赖）；桶表有容量上限 + 过期剪枝 + 最老桶淘汰，
+//! 防止恶意伪造海量 IP 撑爆内存或折叠正常用户到单一 `__overflow__` 桶。
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use axum::extract::Request;
+use axum::extract::{ConnectInfo, Request};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-/// 桶表条目数上限：超过即触发过期剪枝，剪完仍超限则拒绝新键（fail-closed
-/// 到共享 global 桶），防御伪造海量 IP 的内存放大。
+/// 桶表条目数上限：超过即触发过期剪枝，仍满时淘汰最老 10% 条目（避免全局 `__overflow__` DoS）。
 const MAX_TRACKED_KEYS: usize = 50_000;
 /// 剪枝阈值：超过该时长无活动的桶视为过期。
 const STALE_AFTER: Duration = Duration::from_secs(600);
@@ -46,13 +49,23 @@ struct Bucket {
 pub struct TokenBucketMap {
   rps: f64,
   burst: f64,
+  max_keys: usize,
   inner: Mutex<HashMap<String, Bucket>>,
 }
 
 impl TokenBucketMap {
   pub fn new(rps: f64, burst: f64) -> Self {
+    Self::with_max_keys(rps, burst, MAX_TRACKED_KEYS)
+  }
+
+  fn with_max_keys(rps: f64, burst: f64, max_keys: usize) -> Self {
     // 防御非法配置：rps/burst 至少为 1，避免除零或永远拒绝。
-    Self { rps: rps.max(0.01), burst: burst.max(1.0), inner: Mutex::new(HashMap::new()) }
+    Self {
+      rps: rps.max(0.01),
+      burst: burst.max(1.0),
+      max_keys: max_keys.max(16),
+      inner: Mutex::new(HashMap::new()),
+    }
   }
 
   /// 尝试取 1 个 token。`true` = 放行。
@@ -68,12 +81,17 @@ impl TokenBucketMap {
       Err(poisoned) => poisoned.into_inner(),
     };
 
-    // 容量防御：先剪过期，再判断是否还能接纳新键。
-    if !map.contains_key(key) && map.len() >= MAX_TRACKED_KEYS {
+    // 容量防御：先剪过期，仍满时淘汰最久未活跃的 10% 桶，保障新正常访客拥有独立桶。
+    if !map.contains_key(key) && map.len() >= self.max_keys {
       map.retain(|_, b| now.duration_since(b.last) < STALE_AFTER);
-      if map.len() >= MAX_TRACKED_KEYS {
-        // 表仍然满：把该请求折叠进共享桶，避免无限增长。
-        return self.acquire_in(&mut map, "__overflow__", now);
+      if map.len() >= self.max_keys {
+        let evict_count = (self.max_keys / 10).max(1);
+        let mut ages: Vec<(Instant, String)> =
+          map.iter().map(|(k, b)| (b.last, k.clone())).collect();
+        ages.sort_by_key(|(last, _)| *last);
+        for (_, old_key) in ages.into_iter().take(evict_count) {
+          map.remove(&old_key);
+        }
       }
     }
 
@@ -137,24 +155,60 @@ pub fn classify_path(path: &str) -> Option<bool> {
   Some(SENSITIVE.iter().any(|p| path.starts_with(p)))
 }
 
-/// 从请求头解析限流键。信任反代注入的 `x-forwarded-for` 首个 IP；
-/// 无反代头时退化为共享桶 `"global"`。
-pub fn client_key(req: &Request) -> String {
-  if let Some(xff) = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-    if let Some(first) = xff.split(',').next() {
-      let ip = first.trim();
+/// 代理头信任策略（[H2]）：
+/// - `TRUST_PROXY_HEADERS=0|false|none`：彻底忽略代理头，只读 `ConnectInfo<SocketAddr>` 或 `"global"`；
+/// - 默认（`TRUST_PROXY_HEADERS=1`）：优先读单跳反代覆写的 `X-Real-IP`，其次取
+///   `X-Forwarded-For` 右侧倒数第 `TRUST_PROXY_HOPS`（默认 `1`）个 IP，避免客户端伪造最左 XFF。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProxyTrustConfig {
+  pub trust_headers: bool,
+  pub trusted_hops: usize,
+}
+
+impl ProxyTrustConfig {
+  pub fn from_env() -> Self {
+    let trust_headers = match std::env::var("TRUST_PROXY_HEADERS") {
+      Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "none" | "off"),
+      Err(_) => true,
+    };
+    let trusted_hops = std::env::var("TRUST_PROXY_HOPS")
+      .ok()
+      .and_then(|v| v.trim().parse::<usize>().ok())
+      .filter(|&n| n > 0)
+      .unwrap_or(1);
+    Self { trust_headers, trusted_hops }
+  }
+}
+
+/// 从请求头 / 连接信息解析限流键（可注入策略，便于单测）。
+pub fn client_key_with_config(req: &Request, cfg: ProxyTrustConfig) -> String {
+  if cfg.trust_headers {
+    if let Some(real) = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok()) {
+      let ip = real.trim();
       if !ip.is_empty() {
         return ip.to_string();
       }
     }
-  }
-  if let Some(real) = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok()) {
-    let ip = real.trim();
-    if !ip.is_empty() {
-      return ip.to_string();
+    if let Some(xff) = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+      let hops: Vec<&str> = xff.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+      if !hops.is_empty() {
+        // 标准反代（Nginx / Cloudflare / ALB）把真实客户端 IP 追加到 XFF 右侧；
+        // 取倒数第 `trusted_hops` 跳（单跳反代即最右一项），防止客户端伪造最左项绕过。
+        let idx = hops.len().saturating_sub(cfg.trusted_hops.max(1));
+        return hops[idx].to_string();
+      }
     }
   }
+  if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
+    return addr.ip().to_string();
+  }
   "global".to_string()
+}
+
+/// 从请求解析限流键（读取全局环境配置）。
+pub fn client_key(req: &Request) -> String {
+  static PROXY_CFG: std::sync::OnceLock<ProxyTrustConfig> = std::sync::OnceLock::new();
+  client_key_with_config(req, *PROXY_CFG.get_or_init(ProxyTrustConfig::from_env))
 }
 
 /// 中间件本体。超限返回 `429 Too Many Requests` + `Retry-After: 1`。
@@ -243,28 +297,61 @@ mod tests {
   }
 
   #[test]
-  fn client_key_prefers_xff_first_hop() {
-    let req = Request::builder()
+  fn client_key_prefers_real_ip_and_rightmost_xff_to_prevent_spoofing() {
+    let cfg = ProxyTrustConfig { trust_headers: true, trusted_hops: 1 };
+    let req_with_real = Request::builder()
       .uri("/api/x")
-      .header("x-forwarded-for", "203.0.113.7, 10.0.0.1")
+      .header("x-forwarded-for", "1.2.3.4, 203.0.113.7")
       .header("x-real-ip", "198.51.100.2")
       .body(axum::body::Body::empty())
       .expect("test request");
-    assert_eq!(client_key(&req), "203.0.113.7");
+    assert_eq!(client_key_with_config(&req_with_real, cfg), "198.51.100.2");
+
+    // 仅 XFF 时：客户端伪造最左 1.2.3.4，反代在右侧追加真实 IP 203.0.113.7
+    let req_xff_only = Request::builder()
+      .uri("/api/x")
+      .header("x-forwarded-for", "1.2.3.4, 203.0.113.7")
+      .body(axum::body::Body::empty())
+      .expect("test request");
+    assert_eq!(client_key_with_config(&req_xff_only, cfg), "203.0.113.7");
+
+    // 禁用代理头时忽略 XFF/X-Real-IP
+    let no_proxy = ProxyTrustConfig { trust_headers: false, trusted_hops: 1 };
+    assert_eq!(client_key_with_config(&req_with_real, no_proxy), "global");
   }
 
   #[test]
-  fn client_key_falls_back_to_real_ip_then_global() {
-    let req = Request::builder()
+  fn client_key_falls_back_to_connect_info_then_global() {
+    let no_proxy = ProxyTrustConfig { trust_headers: false, trusted_hops: 1 };
+    let mut req = Request::builder()
       .uri("/api/x")
-      .header("x-real-ip", "198.51.100.2")
+      .header("x-forwarded-for", "1.2.3.4")
       .body(axum::body::Body::empty())
       .expect("test request");
-    assert_eq!(client_key(&req), "198.51.100.2");
+    req.extensions_mut().insert(ConnectInfo("203.0.113.9:43210".parse::<SocketAddr>().unwrap()));
+    assert_eq!(client_key_with_config(&req, no_proxy), "203.0.113.9");
 
     let bare =
       Request::builder().uri("/api/x").body(axum::body::Body::empty()).expect("test request");
-    assert_eq!(client_key(&bare), "global");
+    assert_eq!(client_key_with_config(&bare, no_proxy), "global");
+  }
+
+  #[test]
+  fn full_table_evicts_oldest_instead_of_collapsing_into_global_overflow_bucket() {
+    let map = TokenBucketMap::with_max_keys(1.0, 1.0, 20);
+    let t0 = Instant::now();
+    // 攻击者用 20 个不同伪造 IP 填满桶表
+    for i in 0..20 {
+      assert!(map.try_acquire_at(&format!("attacker-{i}"), t0 + Duration::from_millis(i)));
+    }
+    // 随后到来的多个正常访客不应被折叠到同一个 __overflow__ 桶导致连坐 429
+    let t1 = t0 + Duration::from_secs(1);
+    assert!(map.try_acquire_at("legit-a", t1));
+    assert!(map.try_acquire_at("legit-b", t1));
+    assert!(map.try_acquire_at("legit-c", t1));
+    // 桶表规模依然严格受控
+    let guard = map.inner.lock().unwrap();
+    assert!(guard.len() <= 20);
   }
 
   #[test]

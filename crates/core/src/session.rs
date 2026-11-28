@@ -214,18 +214,40 @@ pub async fn require_session_verified() -> Result<SessionUser, dioxus::fullstack
   use sea_orm::EntityTrait;
 
   let session = require_session()?;
-  let db = get_or_init_pool()
-    .await
-    .map_err(|e| ServerFnError::new(format!("会话校验失败（DB 不可达）: {}", e)))?;
+  let db = get_or_init_pool().await.map_err(|e| {
+    tracing::error!(error = %e, "session: db pool failed");
+    ServerFnError::new("会话校验暂不可用，请稍后重试".to_string())
+  })?;
   let db_user = user::Entity::find_by_id(session.id)
     .one(&db)
     .await
-    .map_err(|e| ServerFnError::new(format!("会话校验失败: {}", e)))?
+    .map_err(|e| {
+      tracing::error!(error = %e, user_id = session.id, "session: db lookup failed");
+      ServerFnError::new("会话校验失败".to_string())
+    })?
     .ok_or_else(|| ServerFnError::new("用户已不存在或已被删除".to_string()))?;
   if db_user.token_version != session.token_version {
     return Err(ServerFnError::new("会话已失效，请重新登录".to_string()));
   }
   Ok(session)
+}
+
+/// [M1] 原子递增指定用户的 `token_version`，立即吊销其所有历史 JWT 会话（登出 / 改权 / 封禁共用）。
+#[cfg(feature = "server")]
+pub async fn bump_token_version(
+  db: &sea_orm::DatabaseConnection,
+  user_id: i32,
+) -> Result<(), sea_orm::DbErr> {
+  use crate::entities::user;
+  use sea_orm::sea_query::Expr;
+  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+  user::Entity::update_many()
+    .col_expr(user::Column::TokenVersion, Expr::col(user::Column::TokenVersion).add(1))
+    .filter(user::Column::Id.eq(user_id))
+    .exec(db)
+    .await?;
+  Ok(())
 }
 
 /// 要求当前请求带有 admin 角色；非 admin 返回 403 风格错误。

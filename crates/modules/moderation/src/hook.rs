@@ -43,10 +43,38 @@ use crate::pipeline::ModerationPipeline;
 /// 读多写极少（仅 admin reload 时写一次），`RwLock` 读锁开销可忽略。
 static SHARED: OnceLock<RwLock<Arc<ModerationPipeline>>> = OnceLock::new();
 
-/// 从 `site.json` + env 重新构造一条 pipeline。
+/// 可写的运行时审核覆盖文件路径（当 `CONTENT_DIR/site.json` 为 `:ro` 只读挂载时生效）。
+pub fn moderation_override_path() -> std::path::PathBuf {
+  if let Ok(p) = std::env::var("MODERATION_OVERRIDE_PATH") {
+    if !p.trim().is_empty() {
+      return std::path::PathBuf::from(p.trim());
+    }
+  }
+  app_core::utils::get_asset_root().join("moderation.override.json")
+}
+
+/// 读取当前生效的 [`app_core::settings::ModerationSettings`]：
+/// 若存在运行期覆盖文件（`moderation.override.json`）优先读取，否则回退 `site.json`。
+pub fn load_effective_moderation_settings() -> app_core::settings::ModerationSettings {
+  let override_path = moderation_override_path();
+  if override_path.is_file() {
+    if let Ok(raw) = std::fs::read_to_string(&override_path) {
+      if let Ok(parsed) = serde_json::from_str::<app_core::settings::ModerationSettings>(&raw) {
+        return parsed;
+      }
+    }
+  }
+  SiteConfig::from_file(app_core::utils::site_json_path().to_str().unwrap_or_default())
+    .map(|s| s.moderation)
+    .unwrap_or_default()
+}
+
+/// 从 `site.json`（含只读挂载覆盖文件）+ env 重新构造一条 pipeline。
 fn build_pipeline() -> ModerationPipeline {
-  let site = SiteConfig::from_file(app_core::utils::site_json_path().to_str().unwrap_or_default())
-    .unwrap_or_default();
+  let mut site =
+    SiteConfig::from_file(app_core::utils::site_json_path().to_str().unwrap_or_default())
+      .unwrap_or_default();
+  site.moderation = load_effective_moderation_settings();
 
   let llm: Option<Arc<dyn LlmClient>> = default_client_from_env().map(Arc::from);
 
@@ -308,6 +336,58 @@ fn is_acceptable_image_url(url: &str) -> bool {
     || url.starts_with("/images/")
 }
 
+/// [M4] 校验传给视觉 LLM 的图片 URL，防止自托管 vLLM / Ollama 场景下经外链触发间接 SSRF。
+///
+/// 放行：
+/// - `data:image/...` 内联上传载荷；
+/// - 指向公网主机的 `https://` URL（拒绝明文 `http://`、回环/私有/链路本地 IP、`localhost`/`*.local`/`*.internal`）。
+pub fn is_safe_vision_image_url(url: &str) -> bool {
+  let u = url.trim();
+  if u.is_empty() {
+    return false;
+  }
+  if u.starts_with("data:image/") {
+    return true;
+  }
+  if !u.starts_with("https://") {
+    return false;
+  }
+  let Some(host) = crate::url_blocklist::host_of(u) else {
+    return false;
+  };
+  let host_lc = host.to_ascii_lowercase();
+  if host_lc == "localhost"
+    || host_lc.ends_with(".localhost")
+    || host_lc.ends_with(".local")
+    || host_lc.ends_with(".internal")
+    || host_lc.ends_with(".home.arpa")
+  {
+    return false;
+  }
+  let ip_candidate = host_lc.trim_start_matches('[').trim_end_matches(']');
+  if let Ok(ip) = ip_candidate.parse::<std::net::IpAddr>() {
+    return match ip {
+      std::net::IpAddr::V4(v4) => {
+        !(v4.is_private()
+          || v4.is_loopback()
+          || v4.is_link_local()
+          || v4.is_broadcast()
+          || v4.is_unspecified()
+          || v4.is_multicast()
+          || (v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 64))
+      }
+      std::net::IpAddr::V6(v6) => {
+        !(v6.is_loopback()
+          || v6.is_unspecified()
+          || v6.is_multicast()
+          || (v6.segments()[0] & 0xfe00) == 0xfc00
+          || (v6.segments()[0] & 0xffc0) == 0xfe80)
+      }
+    };
+  }
+  host_lc.contains('.')
+}
+
 /// 一条提交最多带多少张图。外站图每张都要一次 vision 调用，不设上限就能用一条评论刷掉审核预算。
 pub const MAX_IMAGES_PER_SUBMISSION: usize = 10;
 
@@ -424,5 +504,26 @@ mod tests {
     // 重复的同一张图只算一次
     let same = "![](/uploads/x.png)".repeat(MAX_IMAGES_PER_SUBMISSION + 5);
     assert!(external_image_urls(&same, "").is_ok());
+  }
+
+  /// [M4] 视觉模型图片 URL 校验：放行公网 https 与 data:image，拦截明文 http 与内网/云元数据 IP。
+  #[test]
+  fn vision_image_url_blocks_ssrf_targets() {
+    assert!(is_safe_vision_image_url("https://cdn.example.com/pic.png"));
+    assert!(is_safe_vision_image_url("data:image/png;base64,QUJD"));
+    for bad in [
+      "",
+      "http://cdn.example.com/pic.png",
+      "https://localhost/a.png",
+      "https://127.0.0.1/a.png",
+      "https://169.254.169.254/latest/meta-data",
+      "https://10.0.0.1/internal.png",
+      "https://192.168.1.10/a.png",
+      "https://172.16.0.5/a.png",
+      "https://[::1]/a.png",
+      "https://metadata.google.internal/computeMetadata",
+    ] {
+      assert!(!is_safe_vision_image_url(bad), "must reject SSRF image url: {bad}");
+    }
   }
 }

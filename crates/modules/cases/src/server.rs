@@ -332,8 +332,37 @@ pub fn scan_cases_from_root(root: &Path) -> Vec<Case> {
 }
 
 #[cfg(feature = "server")]
+static CASES_CACHE: app_core::utils::DirListingCache<Vec<Case>> =
+  app_core::utils::DirListingCache::new();
+
+/// 清空案例目录扫描缓存（供 `SIGHUP` 内容热刷新调用）。
+#[cfg(feature = "server")]
+pub fn invalidate_cases_cache() {
+  CASES_CACHE.invalidate();
+}
+
+/// 缓存读取全部案例（3 秒 TTL 节流 + `SIGHUP` 即时失效），避免单次列表页触发 3 次全量磁盘扫描。
+#[cfg(feature = "server")]
+pub fn cached_cases() -> std::sync::Arc<Vec<Case>> {
+  let root = get_cases_root();
+  CASES_CACHE.get_or_rebuild_ttl(
+    &root,
+    std::time::Duration::from_secs(3),
+    || {
+      app_core::utils::fingerprint_for_dir(&root, |p| {
+        matches!(
+          p.file_name().and_then(|n| n.to_str()),
+          Some("case.yaml" | "README.md" | "cover.webp" | "cover.png" | "cover.jpg" | "cover.jpeg")
+        )
+      })
+    },
+    || scan_cases_from_root(&root),
+  )
+}
+
+#[cfg(feature = "server")]
 pub fn scan_cases() -> Vec<Case> {
-  scan_cases_from_root(&get_cases_root())
+  (*cached_cases()).clone()
 }
 
 #[cfg(feature = "server")]
