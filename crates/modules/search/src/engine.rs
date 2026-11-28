@@ -461,7 +461,11 @@ pub async fn get_or_build() -> Result<Arc<SearchEngine>, String> {
 /// - 目录为空 / 首次启动 → 全量扫描 + 写 [`IndexManifest`]，为后续增量索引备好基线。
 /// - schema 不匹配 → 自动清空重建（[`SearchEngine::open_or_create`]）后填充。
 pub async fn init_or_load(dir: &Path) -> Result<Arc<SearchEngine>, String> {
-  let (engine, was_freshly_created) = SearchEngine::open_or_create(dir)?;
+  let dir_owned = dir.to_path_buf();
+  let (engine, was_freshly_created) =
+    tokio::task::spawn_blocking(move || SearchEngine::open_or_create(&dir_owned))
+      .await
+      .map_err(|e| format!("search: blocking open task failed: {}", e))??;
   let engine = Arc::new(engine);
 
   if was_freshly_created {
@@ -557,18 +561,24 @@ pub async fn reindex_incremental() -> Result<IncrementalReport, String> {
 
 /// 全量填充 + 同步写 manifest。`init_or_load` 和 `rebuild` 共用，保证
 /// 每次全量后 manifest 与索引状态一致，后续 `reindex_incremental` 才能正确 diff。
-async fn full_populate_with_manifest(engine: &SearchEngine) -> Result<usize, String> {
-  let file_docs = collect_file_documents();
+/// 同步磁盘扫描与 Tantivy 段合并在 `spawn_blocking` 线程池中执行，不阻塞 Tokio Worker。
+async fn full_populate_with_manifest(engine: &Arc<SearchEngine>) -> Result<usize, String> {
   let dyn_docs = collect_dyn_documents().await;
   let enabled = app_core::engines::module::default_module_engine().enabled_ids();
-  let file_docs = filter_versioned_by_enabled(file_docs, &enabled);
-  let dyn_docs = crate::indexer::filter_documents_by_enabled(dyn_docs, &enabled);
+  let engine_for_block = engine.clone();
+  tokio::task::spawn_blocking(move || -> Result<usize, String> {
+    let file_docs = collect_file_documents();
+    let file_docs = filter_versioned_by_enabled(file_docs, &enabled);
+    let dyn_docs = crate::indexer::filter_documents_by_enabled(dyn_docs, &enabled);
 
-  // 复用纯函数算出新 manifest（prev=空 → 所有 uid 进 next）
-  let diff = diff_for_reindex(&IndexManifest::default(), file_docs, dyn_docs);
-  let count = engine.replace_all(diff.upserts)?;
-  diff.next.save(&engine.dir)?;
-  Ok(count)
+    // 复用纯函数算出新 manifest（prev=空 → 所有 uid 进 next）
+    let diff = diff_for_reindex(&IndexManifest::default(), file_docs, dyn_docs);
+    let count = engine_for_block.replace_all(diff.upserts)?;
+    diff.next.save(&engine_for_block.dir)?;
+    Ok(count)
+  })
+  .await
+  .map_err(|e| format!("search: blocking full populate task failed: {}", e))?
 }
 
 #[cfg(test)]

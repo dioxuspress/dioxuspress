@@ -842,10 +842,15 @@ pub fn lesson_neighbors(
 /// 扫描一个 chapter 目录，返回带 LessonSummary 的 Chapter
 #[cfg(feature = "server")]
 pub fn read_chapter(course_slug: &str, chapter_slug: &str) -> Option<Chapter> {
+  read_chapter_in(&get_courses_root(), course_slug, chapter_slug)
+}
+
+/// 在指定 `root` 下读取单个章节（不再硬编码 CWD，供 `read_course_in` 与单测直接调用）。
+#[cfg(feature = "server")]
+fn read_chapter_in(root: &Path, course_slug: &str, chapter_slug: &str) -> Option<Chapter> {
   if ![course_slug, chapter_slug].into_iter().all(app_core::utils::is_safe_slug) {
     return None;
   }
-  let root = get_courses_root();
   let dir = root.join(course_slug).join(chapter_slug);
   if !dir.is_dir() {
     return None;
@@ -950,15 +955,14 @@ fn parse_course_meta(course_slug: &str, text: &str) -> Option<CourseMeta> {
   }
 }
 
-/// 读取单个课程（含全部章节与 lesson summary）
+/// 在指定 `root` 下读取单个课程（含全部章节与 lesson summary）。
 #[cfg(feature = "server")]
-pub fn read_course(course_slug: &str) -> Option<Course> {
+pub fn read_course_in(root: &Path, course_slug: &str) -> Option<Course> {
   // slug 来自可直接调用的 server fn；付费判断（read_course）与取正文（read_lesson）
   // 必须解析到同一目录，所以三个读取函数都只接受单段 slug。
   if !app_core::utils::is_safe_slug(course_slug) {
     return None;
   }
-  let root = get_courses_root();
   let dir = root.join(course_slug);
   if !dir.is_dir() {
     return None;
@@ -1016,7 +1020,7 @@ pub fn read_course(course_slug: &str) -> Option<Course> {
       if skip_entry(&name) {
         continue;
       }
-      if let Some(ch) = read_chapter(course_slug, &name) {
+      if let Some(ch) = read_chapter_in(root, course_slug, &name) {
         if !ch.lessons.is_empty() {
           chapters.push(ch);
         }
@@ -1041,7 +1045,57 @@ pub fn read_course(course_slug: &str) -> Option<Course> {
   })
 }
 
-/// 扫描整个 courses 根目录
+/// 课程目录进程内缓存（3 秒 TTL 节流 + `SIGHUP` 即时失效），
+/// 消除每次访问课程静态图片/视频时全量重扫磁盘的 IO 瓶颈。
+#[cfg(feature = "server")]
+static COURSES_CACHE: app_core::utils::DirListingCache<Vec<Course>> =
+  app_core::utils::DirListingCache::new();
+
+/// 清空课程目录扫描缓存（供 `SIGHUP` 内容热刷新调用）。
+#[cfg(feature = "server")]
+pub fn invalidate_course_cache() {
+  COURSES_CACHE.invalidate();
+}
+
+/// 缓存读取当前站点 `get_courses_root()` 下的全部课程。
+#[cfg(feature = "server")]
+pub fn cached_courses() -> std::sync::Arc<Vec<Course>> {
+  let root = get_courses_root();
+  COURSES_CACHE.get_or_rebuild_ttl(
+    &root,
+    std::time::Duration::from_secs(3),
+    || {
+      app_core::utils::fingerprint_for_dir(&root, |p| {
+        matches!(
+          p.file_name().and_then(|n| n.to_str()),
+          Some(
+            "course.yaml"
+              | "course.yml"
+              | "_chapter.yaml"
+              | "_chapter.yml"
+              | "index.md"
+              | "index.mdx"
+          )
+        )
+      })
+    },
+    || scan_courses(&root),
+  )
+}
+
+/// 读取单个课程（优先命中进程内缓存；无章节草稿课或未命中时按需单点读盘）。
+#[cfg(feature = "server")]
+pub fn read_course(course_slug: &str) -> Option<Course> {
+  if !app_core::utils::is_safe_slug(course_slug) {
+    return None;
+  }
+  if let Some(found) = cached_courses().iter().find(|c| c.slug == course_slug) {
+    return Some(found.clone());
+  }
+  read_course_in(&get_courses_root(), course_slug)
+}
+
+/// 扫描整个指定 `root` 下的课程目录（严格使用传入 `root`，不再误读 CWD）。
 #[cfg(feature = "server")]
 pub fn scan_courses(root: &Path) -> Vec<Course> {
   if !root.exists() {
@@ -1061,7 +1115,7 @@ pub fn scan_courses(root: &Path) -> Vec<Course> {
       if skip_entry(&name) {
         continue;
       }
-      if let Some(c) = read_course(&name) {
+      if let Some(c) = read_course_in(root, &name) {
         if !c.chapters.is_empty() {
           out.push(c);
         }
@@ -1080,8 +1134,7 @@ pub fn scan_courses(root: &Path) -> Vec<Course> {
 pub async fn list_courses() -> Result<Vec<CourseSummary>, ServerFnError> {
   #[cfg(feature = "server")]
   {
-    let root = get_courses_root();
-    let courses = scan_courses(&root);
+    let courses = cached_courses();
     Ok(courses.iter().map(CourseSummary::from).collect())
   }
   #[cfg(not(feature = "server"))]
@@ -1243,17 +1296,22 @@ fn parse_course_file_path(path: &str) -> Option<CourseFilePath> {
 /// 查库失败一律拒绝，免得课程配置出错时付费内容变成公开。
 #[cfg(feature = "server")]
 pub async fn may_serve_course_file(path: &str, cookie_header: Option<&str>) -> bool {
-  let (course_slug, preview) = match parse_course_file_path(path) {
+  let (course_slug, chapter_slug, lesson_slug) = match parse_course_file_path(path) {
     None => return false,
     Some(CourseFilePath::Course) => return true,
-    Some(CourseFilePath::Lesson { course, chapter, lesson }) => {
-      match read_lesson(&course, &chapter, &lesson) {
-        Some(l) => (course, l.preview),
-        None => return false,
-      }
-    }
+    Some(CourseFilePath::Lesson { course, chapter, lesson }) => (course, chapter, lesson),
   };
   let Some(course) = read_course(&course_slug) else {
+    return false;
+  };
+  // 从缓存课程目录直接查课节 preview 标记，避免每次静态图片/音频请求同步重读整个课时目录
+  let Some(preview) = course
+    .chapters
+    .iter()
+    .find(|c| c.slug == chapter_slug)
+    .and_then(|c| c.lessons.iter().find(|l| l.slug == lesson_slug))
+    .map(|l| l.preview)
+  else {
     return false;
   };
   let user = app_core::session::parse_session_from_cookie_header(cookie_header);
@@ -1434,8 +1492,8 @@ pub async fn list_entitlements() -> Result<Vec<EntitlementInfo>, ServerFnError> 
 /// server-only：写入/刷新权益（幂等）。供 admin 授予与支付回调发货共用，不做鉴权。
 /// 管理员授予覆盖已有来源；购买（`purchase`）已有权益时不动。
 #[cfg(feature = "server")]
-async fn grant_entitlement_internal(
-  db: &sea_orm::DatabaseConnection,
+async fn grant_entitlement_internal<C: sea_orm::ConnectionTrait>(
+  db: &C,
   user_id: i32,
   course_slug: String,
   source: &str,
@@ -1740,8 +1798,8 @@ fn known_kind(o: &app_core::entities::order::Model) -> Option<crate::product::Pr
 /// server-only：付款成功后的发货（三个回调与对账共用，须幂等）。课程写权益，
 /// 打赏不发货；不认识的种类返回错误，网关会重试并留下 pay_audit 记录。
 #[cfg(all(feature = "server", feature = "payments"))]
-async fn deliver(
-  db: &sea_orm::DatabaseConnection,
+async fn deliver<C: sea_orm::ConnectionTrait>(
+  db: &C,
   order: module_payment::pipeline::OrderSnapshot,
 ) -> Result<(), String> {
   let kind = crate::product::ProductKind::parse(&order.product_kind)
@@ -1752,6 +1810,36 @@ async fn deliver(
   grant_entitlement_internal(db, order.user_id, order.product_ref, "purchase")
     .await
     .map_err(|e| e.to_string())
+}
+
+/// [M6] 在单个数据库事务内原子完成 `claim_paid` 与业务发货：
+/// 任一步失败或 `deliver` 返回 Err 时整个事务自动回滚，确保网关重试时可重新认领并发货。
+#[cfg(all(feature = "server", feature = "payments"))]
+async fn process_payment_atomically(
+  db: &sea_orm::DatabaseConnection,
+  event: &module_payment::PaymentEvent,
+) -> module_payment::pipeline::NotifyOutcome {
+  use module_payment::pipeline;
+  use sea_orm::TransactionTrait;
+
+  let txn = match db.begin().await {
+    Ok(t) => t,
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, "payment: begin txn failed");
+      return pipeline::NotifyOutcome::Failed("db");
+    }
+  };
+  let outcome = pipeline::process_event(&txn, event, |order| deliver(&txn, order)).await;
+  if !outcome.is_ok() {
+    return outcome;
+  }
+  match txn.commit().await {
+    Ok(()) => pipeline::NotifyOutcome::Ok,
+    Err(e) => {
+      tracing::error!(target: "pay_audit", error = %e, "payment: commit txn failed");
+      pipeline::NotifyOutcome::Failed("commit failed")
+    }
+  }
 }
 
 /// server-only：钱已退回买家后的落库（管理员退款与 Stripe 退款 / 拒付回调共用）：
@@ -2085,7 +2173,7 @@ pub async fn list_my_orders() -> Result<Vec<OrderInfo>, ServerFnError> {
 pub async fn handle_alipay_notify(
   params: std::collections::HashMap<String, String>,
 ) -> &'static str {
-  use module_payment::{pipeline, NotifyPayload, PaymentProvider};
+  use module_payment::{NotifyPayload, PaymentProvider};
 
   // 审计留痕：验签前先记录关键字段（不含买家敏感信息），便于对账与攻击排查。
   tracing::info!(
@@ -2135,7 +2223,7 @@ pub async fn handle_alipay_notify(
       return "failure";
     }
   };
-  let outcome = pipeline::process_event(&db, &event, |order| deliver(&db, order)).await;
+  let outcome = process_payment_atomically(&db, &event).await;
   if outcome.is_ok() {
     "success"
   } else {
@@ -2219,18 +2307,14 @@ pub async fn handle_wechat_notify(
       return fail("bad plaintext");
     }
   };
-  // 2.5) S6：appid / mchid 交叉校验（字段存在时强制一致），防跨商户/应用串单。
-  if let Some(appid) = tx["appid"].as_str() {
-    if appid != cfg.appid {
-      tracing::warn!(target: "pay_audit", "wechat notify: appid mismatch");
-      return fail("appid mismatch");
-    }
+  // 2.5) [M6] appid / mchid 强制非空且严格匹配，不允许缺失字段绕过。
+  if tx["appid"].as_str() != Some(cfg.appid.as_str()) {
+    tracing::warn!(target: "pay_audit", "wechat notify: appid missing or mismatch");
+    return fail("appid mismatch");
   }
-  if let Some(mchid) = tx["mchid"].as_str() {
-    if mchid != cfg.mchid {
-      tracing::warn!(target: "pay_audit", "wechat notify: mchid mismatch");
-      return fail("mchid mismatch");
-    }
+  if tx["mchid"].as_str() != Some(cfg.mchid.as_str()) {
+    tracing::warn!(target: "pay_audit", "wechat notify: mchid missing or mismatch");
+    return fail("mchid mismatch");
   }
   // 审计留痕：解密成功后记录关键字段。
   tracing::info!(
@@ -2260,7 +2344,7 @@ pub async fn handle_wechat_notify(
       return fail("db");
     }
   };
-  let outcome = pipeline::process_event(&db, &event, |order| deliver(&db, order)).await;
+  let outcome = process_payment_atomically(&db, &event).await;
   match outcome {
     pipeline::NotifyOutcome::Ok => ok(),
     pipeline::NotifyOutcome::Failed(m) => fail(m),
@@ -2275,7 +2359,7 @@ pub async fn handle_wechat_notify(
 /// 处理失败 500（Stripe 会重试）。
 #[cfg(all(feature = "server", feature = "payments"))]
 pub async fn handle_stripe_notify(signature: String, body: String) -> u16 {
-  use module_payment::{pipeline, NotifyPayload, PaymentProvider};
+  use module_payment::{NotifyPayload, PaymentProvider};
 
   let provider = match module_payment::stripe::StripeProvider::from_env() {
     Ok(p) => p,
@@ -2327,7 +2411,7 @@ pub async fn handle_stripe_notify(signature: String, body: String) -> u16 {
       return 500;
     }
   };
-  let outcome = pipeline::process_event(&db, &event, |order| deliver(&db, order)).await;
+  let outcome = process_payment_atomically(&db, &event).await;
   if outcome.is_ok() {
     200
   } else {

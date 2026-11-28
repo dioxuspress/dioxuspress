@@ -21,10 +21,14 @@ use std::future::Future;
 
 use crate::PaymentEvent;
 
-/// 订单快照（金额核验 / 幂等判定 / 发货入参；从 orders 行提取）。
+/// 订单快照（金额/渠道核验 / 幂等判定 / 发货入参；从 orders 行提取）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrderSnapshot {
   pub user_id: i32,
+  /// 下单时记录的支付渠道（`alipay` | `wechat` | `stripe`），回调核验必须一致。
+  pub provider: String,
+  /// 下单时记录的币种（`CNY` | `USD`）。
+  pub currency: String,
   /// `course` | `tip`（发货回调据此分派；本 crate 不解释）。
   pub product_kind: String,
   pub product_ref: String,
@@ -73,83 +77,133 @@ pub trait OrderStore {
   fn close_order(&self, out_trade_no: &str) -> impl Future<Output = Result<u64, String>> + Send;
 }
 
+async fn find_order_on<C: sea_orm::ConnectionTrait>(
+  conn: &C,
+  out_trade_no: &str,
+) -> Result<Option<OrderSnapshot>, String> {
+  use app_core::entities::order;
+  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+  order::Entity::find()
+    .filter(order::Column::OutTradeNo.eq(out_trade_no))
+    .one(conn)
+    .await
+    .map(|row| {
+      row.map(|m| OrderSnapshot {
+        user_id: m.user_id,
+        provider: m.provider,
+        currency: m.currency,
+        product_kind: m.product_kind,
+        product_ref: m.product_ref,
+        amount_cents: m.amount,
+        status: m.status,
+      })
+    })
+    .map_err(|e| e.to_string())
+}
+
+async fn claim_paid_on<C: sea_orm::ConnectionTrait>(
+  conn: &C,
+  out_trade_no: &str,
+  txn_id: Option<String>,
+) -> Result<u64, String> {
+  use app_core::entities::order;
+  use sea_orm::sea_query::Expr;
+  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+  order::Entity::update_many()
+    .col_expr(order::Column::Status, Expr::value("paid"))
+    .col_expr(order::Column::ProviderTxn, Expr::value(txn_id))
+    .col_expr(order::Column::PaidAt, Expr::value(Some(chrono::Utc::now().fixed_offset())))
+    .filter(order::Column::OutTradeNo.eq(out_trade_no))
+    // closed 也可认领：对账 2h 关单，而 Stripe 付款页 24h 内仍可付。
+    // 不含 refunded（H1），查单与认领之间被退款时也不会改回 paid。
+    .filter(order::Column::Status.is_in(["pending", "closed"]))
+    .exec(conn)
+    .await
+    .map(|res| res.rows_affected)
+    .map_err(|e| e.to_string())
+}
+
+async fn list_stale_pending_on<C: sea_orm::ConnectionTrait>(
+  conn: &C,
+  cutoff: chrono::DateTime<chrono::FixedOffset>,
+  limit: u64,
+) -> Result<Vec<StaleOrder>, String> {
+  use app_core::entities::order;
+  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+  order::Entity::find()
+    .filter(order::Column::Status.eq("pending"))
+    .filter(order::Column::CreatedAt.lt(cutoff))
+    .order_by_asc(order::Column::CreatedAt)
+    .limit(limit)
+    .all(conn)
+    .await
+    .map(|rows| {
+      rows
+        .into_iter()
+        .map(|m| StaleOrder {
+          out_trade_no: m.out_trade_no,
+          provider: m.provider,
+          created_at: m.created_at,
+        })
+        .collect()
+    })
+    .map_err(|e| e.to_string())
+}
+
+async fn close_order_on<C: sea_orm::ConnectionTrait>(
+  conn: &C,
+  out_trade_no: &str,
+) -> Result<u64, String> {
+  use app_core::entities::order;
+  use sea_orm::sea_query::Expr;
+  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+  order::Entity::update_many()
+    .col_expr(order::Column::Status, Expr::value("closed"))
+    .filter(order::Column::OutTradeNo.eq(out_trade_no))
+    .filter(order::Column::Status.eq("pending"))
+    .exec(conn)
+    .await
+    .map(|res| res.rows_affected)
+    .map_err(|e| e.to_string())
+}
+
 impl OrderStore for sea_orm::DatabaseConnection {
   async fn find_order(&self, out_trade_no: &str) -> Result<Option<OrderSnapshot>, String> {
-    use app_core::entities::order;
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    order::Entity::find()
-      .filter(order::Column::OutTradeNo.eq(out_trade_no))
-      .one(self)
-      .await
-      .map(|row| {
-        row.map(|m| OrderSnapshot {
-          user_id: m.user_id,
-          product_kind: m.product_kind,
-          product_ref: m.product_ref,
-          amount_cents: m.amount,
-          status: m.status,
-        })
-      })
-      .map_err(|e| e.to_string())
+    find_order_on(self, out_trade_no).await
   }
-
   async fn claim_paid(&self, out_trade_no: &str, txn_id: Option<String>) -> Result<u64, String> {
-    use app_core::entities::order;
-    use sea_orm::sea_query::Expr;
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    order::Entity::update_many()
-      .col_expr(order::Column::Status, Expr::value("paid"))
-      .col_expr(order::Column::ProviderTxn, Expr::value(txn_id))
-      .col_expr(order::Column::PaidAt, Expr::value(Some(chrono::Utc::now().fixed_offset())))
-      .filter(order::Column::OutTradeNo.eq(out_trade_no))
-      // closed 也可认领：对账 2h 关单，而 Stripe 付款页 24h 内仍可付。
-      // 不含 refunded（H1），查单与认领之间被退款时也不会改回 paid。
-      .filter(order::Column::Status.is_in(["pending", "closed"]))
-      .exec(self)
-      .await
-      .map(|res| res.rows_affected)
-      .map_err(|e| e.to_string())
+    claim_paid_on(self, out_trade_no, txn_id).await
   }
-
   async fn list_stale_pending(
     &self,
     cutoff: chrono::DateTime<chrono::FixedOffset>,
     limit: u64,
   ) -> Result<Vec<StaleOrder>, String> {
-    use app_core::entities::order;
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
-    order::Entity::find()
-      .filter(order::Column::Status.eq("pending"))
-      .filter(order::Column::CreatedAt.lt(cutoff))
-      .order_by_asc(order::Column::CreatedAt)
-      .limit(limit)
-      .all(self)
-      .await
-      .map(|rows| {
-        rows
-          .into_iter()
-          .map(|m| StaleOrder {
-            out_trade_no: m.out_trade_no,
-            provider: m.provider,
-            created_at: m.created_at,
-          })
-          .collect()
-      })
-      .map_err(|e| e.to_string())
+    list_stale_pending_on(self, cutoff, limit).await
   }
-
   async fn close_order(&self, out_trade_no: &str) -> Result<u64, String> {
-    use app_core::entities::order;
-    use sea_orm::sea_query::Expr;
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    order::Entity::update_many()
-      .col_expr(order::Column::Status, Expr::value("closed"))
-      .filter(order::Column::OutTradeNo.eq(out_trade_no))
-      .filter(order::Column::Status.eq("pending"))
-      .exec(self)
-      .await
-      .map(|res| res.rows_affected)
-      .map_err(|e| e.to_string())
+    close_order_on(self, out_trade_no).await
+  }
+}
+
+/// [M6] 支持在同一个 `DatabaseTransaction` 内原子执行 `claim_paid` 与业务发货，
+/// 发货瞬态失败时整个事务回滚，网关重试可干净重新认领并发货，不再出现「已付款无权益」。
+impl OrderStore for sea_orm::DatabaseTransaction {
+  async fn find_order(&self, out_trade_no: &str) -> Result<Option<OrderSnapshot>, String> {
+    find_order_on(self, out_trade_no).await
+  }
+  async fn claim_paid(&self, out_trade_no: &str, txn_id: Option<String>) -> Result<u64, String> {
+    claim_paid_on(self, out_trade_no, txn_id).await
+  }
+  async fn list_stale_pending(
+    &self,
+    cutoff: chrono::DateTime<chrono::FixedOffset>,
+    limit: u64,
+  ) -> Result<Vec<StaleOrder>, String> {
+    list_stale_pending_on(self, cutoff, limit).await
+  }
+  async fn close_order(&self, out_trade_no: &str) -> Result<u64, String> {
+    close_order_on(self, out_trade_no).await
   }
 }
 
@@ -158,6 +212,8 @@ impl OrderStore for sea_orm::DatabaseConnection {
 pub enum NotifyDecision {
   /// 非成功状态：确认收到但不发货。
   AckNotSuccess,
+  /// [M6] 回调渠道与订单记录的支付渠道不一致：拒绝（防跨渠道/跨币种串单）。
+  RejectProviderMismatch,
   /// 网关回报金额与订单快照不符：拒绝（触发网关重试 + 人工排查）。
   RejectAmountMismatch,
   /// 订单已 paid：幂等快路径，直接确认。
@@ -172,6 +228,9 @@ pub enum NotifyDecision {
 pub fn decide(event: &PaymentEvent, snapshot: &OrderSnapshot) -> NotifyDecision {
   if !event.is_success() {
     return NotifyDecision::AckNotSuccess;
+  }
+  if !snapshot.provider.is_empty() && event.provider != snapshot.provider {
+    return NotifyDecision::RejectProviderMismatch;
   }
   if event.amount_cents != snapshot.amount_cents {
     return NotifyDecision::RejectAmountMismatch;
@@ -231,6 +290,16 @@ where
       );
       return NotifyOutcome::Ok;
     }
+    NotifyDecision::RejectProviderMismatch => {
+      tracing::warn!(
+        target: "pay_audit",
+        event_provider = %provider,
+        order_provider = %snapshot.provider,
+        out_trade_no = %event.out_trade_no,
+        "notify: provider mismatch"
+      );
+      return NotifyOutcome::Failed("provider mismatch");
+    }
     NotifyDecision::RejectAmountMismatch => {
       // 3) 金额核验失败：留痕 + 拒绝。
       tracing::warn!(
@@ -284,6 +353,8 @@ mod tests {
   fn snapshot(amount: i64, status: &str) -> OrderSnapshot {
     OrderSnapshot {
       user_id: 7,
+      provider: "alipay".into(),
+      currency: "CNY".into(),
       product_kind: "course".into(),
       product_ref: "rust-basics".into(),
       amount_cents: amount,
@@ -454,5 +525,17 @@ mod tests {
     let (outcome, delivered) = run(&store, event(9900, EVENT_STATUS_SUCCESS), false).await;
     assert_eq!(outcome, NotifyOutcome::Failed("grant failed"));
     assert_eq!(delivered, 1);
+  }
+
+  /// [M6] 跨渠道回调（例如微信订单收到支付宝事件）必须拒绝。
+  #[tokio::test]
+  async fn provider_mismatch_rejected() {
+    let mut snap = snapshot(9900, "pending");
+    snap.provider = "wechat".into();
+    let store = MockStore::new(Some(snap), Ok(1));
+    let (outcome, delivered) = run(&store, event(9900, EVENT_STATUS_SUCCESS), true).await;
+    assert_eq!(outcome, NotifyOutcome::Failed("provider mismatch"));
+    assert_eq!(delivered, 0);
+    assert_eq!(store.claims.load(Ordering::SeqCst), 0);
   }
 }

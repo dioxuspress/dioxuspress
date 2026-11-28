@@ -460,19 +460,32 @@ fn cached_tree_for_lang(lang: app_core::i18n::Language) -> std::sync::Arc<Vec<Do
   if !docs_dir.exists() {
     return std::sync::Arc::new(Vec::new());
   }
-  let fp = app_core::utils::fingerprint_for_dir(&docs_dir, |p| {
-    matches!(
-      p.file_name().and_then(|n| n.to_str()),
-      Some(
-        "index.md" | "index.mdx" | "index.en.md" | "index.en.mdx" | "_meta.json" | "_meta.en.json"
-      )
-    )
-  });
   let cache = match lang {
     app_core::i18n::Language::En => &TREE_CACHE_EN,
     app_core::i18n::Language::Zh => &TREE_CACHE_ZH,
   };
-  cache.get_or_rebuild(fp, || scan_doc_dir_for_lang(&docs_dir, "", 1, lang))
+  // 3 秒 TTL 内零 stat() 直出 Arc，避免每次请求在 Tokio Worker 同步 stat ~2000 个文档文件；
+  // 生产热更新经 SIGHUP 调用 invalidate_doc_caches() 立即生效。
+  cache.get_or_rebuild_ttl(
+    &docs_dir,
+    std::time::Duration::from_secs(3),
+    || {
+      app_core::utils::fingerprint_for_dir(&docs_dir, |p| {
+        matches!(
+          p.file_name().and_then(|n| n.to_str()),
+          Some(
+            "index.md"
+              | "index.mdx"
+              | "index.en.md"
+              | "index.en.mdx"
+              | "_meta.json"
+              | "_meta.en.json"
+          )
+        )
+      })
+    },
+    || scan_doc_dir_for_lang(&docs_dir, "", 1, lang),
+  )
 }
 
 /// 文档路径 `path`（相对 docs 根目录，来自公开接口的请求体）对应的源文件解析结果：

@@ -38,6 +38,7 @@ mod m20260628_000007_memberships;
 mod m20260721_000008_users_token_version;
 mod m20261020_000009_order_product;
 mod m20261029_000010_pending_review;
+mod m20261128_000011_perf_indexes;
 
 pub struct Migrator;
 
@@ -55,6 +56,7 @@ impl MigratorTrait for Migrator {
       Box::new(m20260721_000008_users_token_version::Migration),
       Box::new(m20261020_000009_order_product::Migration),
       Box::new(m20261029_000010_pending_review::Migration),
+      Box::new(m20261128_000011_perf_indexes::Migration),
     ]
   }
 }
@@ -79,6 +81,7 @@ mod tests {
         "m20260721_000008_users_token_version".to_string(),
         "m20261020_000009_order_product".to_string(),
         "m20261029_000010_pending_review".to_string(),
+        "m20261128_000011_perf_indexes".to_string(),
       ]
     );
   }

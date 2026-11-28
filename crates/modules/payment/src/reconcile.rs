@@ -182,6 +182,8 @@ mod tests {
   fn snapshot(status: &str) -> OrderSnapshot {
     OrderSnapshot {
       user_id: 7,
+      provider: "alipay".into(),
+      currency: "CNY".into(),
       product_kind: "course".into(),
       product_ref: "rust-basics".into(),
       amount_cents: 9900,
