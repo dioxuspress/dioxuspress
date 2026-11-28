@@ -641,8 +641,24 @@ fn HeadAssets(#[props(default)] tailwind_css: Option<Asset>) -> Element {
       " }
 
       document::Style { "
-        math {{ font-size: 1.1em; }}
-        .math-display math {{ font-size: 1.4em; }}
+        math {{ font-size: 1.05em; }}
+        .math-display {{
+          display: flex;
+          overflow-x: auto;
+          overflow-y: hidden;
+          max-width: 100%;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: thin;
+        }}
+        .math-display-inner {{
+          margin-inline: auto;
+          width: max-content;
+          flex-shrink: 0;
+        }}
+        .math-display math {{
+          font-size: clamp(1rem, 0.94rem + 0.3vw, 1.18rem);
+          line-height: 1.6;
+        }}
         .prose code::before, .prose code::after {{ content: none !important; }}
         .prose :where(h2, h3)[id] {{ scroll-margin-top: 5rem; }}
       " }

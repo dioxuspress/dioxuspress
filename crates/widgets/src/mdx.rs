@@ -517,8 +517,8 @@ fn render_stream<'a>(
             Event::DisplayMath(math) => {
                 let mathml = latex_to_mathml_string(&math, true);
                 nodes.push(rsx! {
-                    div { class: "math-display flex justify-center my-10 overflow-x-auto py-8 bg-slate-50/50 dark:bg-slate-900/30 rounded-2xl border border-slate-100 dark:border-slate-800",
-                        div { class: "px-6", dangerous_inner_html: "{mathml}" }
+                    div { class: "math-display flex my-6 overflow-x-auto py-4 bg-slate-50/60 dark:bg-slate-900/40 rounded-xl border border-slate-200/70 dark:border-slate-800/80",
+                        div { class: "math-display-inner mx-auto w-fit shrink-0 px-5", dangerous_inner_html: "{mathml}" }
                     }
                 });
             }
@@ -2092,6 +2092,21 @@ mod tests {
     assert!(
       untrusted_html.contains("&#60;YouTube") || untrusted_html.contains("&lt;YouTube"),
       "untrusted tag must be HTML-escaped: {untrusted_html}"
+    );
+  }
+
+  /// 块级数学公式容器严禁使用 `justify-center` + `overflow-x-auto` 组合（宽公式左侧会被 Flexbox 永久裁切），
+  /// 必须改由内层 `.math-display-inner`（`mx-auto w-fit shrink-0`）实现短公式居中、宽公式从左端完整横滚。
+  #[test]
+  fn display_math_uses_safe_overflow_centering_without_justify_center() {
+    let md = "$$\na = b + c + d + e + f + g\n$$\n";
+    let html = render_markdown(md, false);
+    assert!(html.contains("math-display"), "{html}");
+    assert!(html.contains("math-display-inner"), "{html}");
+    assert!(html.contains("mx-auto w-fit shrink-0"), "{html}");
+    assert!(
+      !html.contains("math-display flex justify-center"),
+      "justify-center on overflow-x-auto clips wide display math on the left: {html}"
     );
   }
 }
