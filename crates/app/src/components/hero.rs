@@ -2,7 +2,6 @@ use dioxus::prelude::*;
 use dioxus::router::Link;
 
 use crate::i18n::{t, use_i18n};
-use crate::routes::Route;
 
 /// Homepage hero section. `enabled`：已启用模块，关掉的模块不出按钮。
 #[component]
@@ -25,21 +24,21 @@ pub fn Hero(enabled: Vec<String>) -> Element {
                       // 案例（差异化核心）作主 CTA，课程（变现核心）次之，文档兜底。
                       if on("cases") {
                           Link {
-                              to: Route::Cases {},
+                              to: "/case",
                               class: "inline-flex justify-center rounded-md bg-white px-5 py-3 text-sm font-semibold text-slate-900 hover:bg-slate-100",
                               "{t(lang(), \"hero.btn.cases\")}"
                           }
                       }
                       if on("course") {
                           Link {
-                              to: Route::Courses {},
+                              to: "/course",
                               class: "inline-flex justify-center rounded-md border border-white/20 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10",
                               "{t(lang(), \"hero.btn.courses\")}"
                           }
                       }
                       if on("docs") {
                           Link {
-                              to: Route::Docs {},
+                              to: "/docs",
                               class: "inline-flex justify-center rounded-md border border-white/20 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10",
                               "{t(lang(), \"hero.btn.docs\")}"
                           }

@@ -5,9 +5,27 @@
 //! 「sitemap 有、feed 无」的不一致。现统一为 [`collect_content_entries`]，
 //! 两个端点共用同一收集函数。
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use axum::routing::get;
 use axum::Router;
 use widgets::ContentEntry;
+
+pub type ExtraStaticPathsFn = fn(&[String]) -> Vec<String>;
+pub type ExtraDetailPathsFn =
+  fn(Vec<String>) -> Pin<Box<dyn Future<Output = Vec<(String, Option<String>)>> + Send>>;
+pub type ExtraContentEntriesFn =
+  fn(Vec<String>) -> Pin<Box<dyn Future<Output = Vec<ContentEntry>> + Send>>;
+
+/// 宿主站点的 SEO 扩展回调（供私有站点壳向 `/sitemap.xml` 与 `/feed.xml` 追加专属条目）。
+#[derive(Clone, Copy, Default)]
+pub struct SeoExtensions {
+  pub extra_static_paths: Option<ExtraStaticPathsFn>,
+  pub extra_detail_paths: Option<ExtraDetailPathsFn>,
+  pub extra_content_entries: Option<ExtraContentEntriesFn>,
+}
 
 /// 收集全部启用模块的内容条目（blog + 5 个内容板块）。
 ///
@@ -137,7 +155,7 @@ fn xml_response(content_type: &str, cache_control: &str, body: String) -> axum::
     .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
 }
 
-async fn sitemap_handler(base: String) -> axum::response::Response {
+async fn sitemap_handler(base: String, ext: Arc<SeoExtensions>) -> axum::response::Response {
   use widgets::build_sitemap_xml;
 
   // Phase 3.4：按模块开关过滤静态路径与内容条目。
@@ -145,7 +163,10 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
   let enabled = module_engine.enabled_ids();
   let is_on = |id: &str| enabled.iter().any(|s| s == id);
 
-  let entries = collect_content_entries(is_on).await;
+  let mut entries = collect_content_entries(is_on).await;
+  if let Some(extra_fn) = ext.extra_content_entries {
+    entries.extend(extra_fn(enabled.clone()).await);
+  }
 
   // 静态路径：首页恒收录；其它模块从 ModuleSpec.static_path 自动获取。
   // Phase 8.7：加新模块只动 ModuleSpec.static_path 即可在 sitemap 出现。
@@ -186,8 +207,18 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
       static_paths.push(r.to_string());
     }
   }
-  let mut entries = entries;
-  for (path, lastmod) in collect_detail_paths(is_on).await {
+  if let Some(extra_static) = ext.extra_static_paths {
+    for p in extra_static(&enabled) {
+      if !static_paths.iter().any(|s| s == &p) {
+        static_paths.push(p);
+      }
+    }
+  }
+  let mut detail_paths = collect_detail_paths(is_on).await;
+  if let Some(extra_details) = ext.extra_detail_paths {
+    detail_paths.extend(extra_details(enabled.clone()).await);
+  }
+  for (path, lastmod) in detail_paths {
     match lastmod {
       Some(date) => entries.push(ContentEntry {
         url_path: path,
@@ -207,7 +238,7 @@ async fn sitemap_handler(base: String) -> axum::response::Response {
   xml_response("application/xml; charset=utf-8", "public, max-age=3600", xml)
 }
 
-async fn feed_handler(base: String) -> axum::response::Response {
+async fn feed_handler(base: String, ext: Arc<SeoExtensions>) -> axum::response::Response {
   use widgets::build_atom_feed_with_author;
 
   // Phase 3.4：blog 关闭时输出空 feed，但保留站点元信息。
@@ -216,6 +247,9 @@ async fn feed_handler(base: String) -> axum::response::Response {
   let is_on = |id: &str| enabled.iter().any(|s| s == id);
 
   let mut entries = collect_content_entries(is_on).await;
+  if let Some(extra_fn) = ext.extra_content_entries {
+    entries.extend(extra_fn(enabled.clone()).await);
+  }
 
   // 全站按日期降序，取最近 50 篇。
   entries.sort_by(|a, b| b.date.cmp(&a.date));
@@ -279,8 +313,16 @@ async fn robots_handler(base: String) -> axum::response::Response {
 
 /// 挂载 SEO 路由。`base_url` 为站点对外 URL（无尾斜杠）。
 pub fn mount(router: Router, base_url: &str) -> Router {
+  mount_with_extensions(router, base_url, SeoExtensions::default())
+}
+
+/// 挂载 SEO 路由并附带宿主站点扩展回调。
+pub fn mount_with_extensions(router: Router, base_url: &str, ext: SeoExtensions) -> Router {
+  let ext = Arc::new(ext);
   let sitemap_base = base_url.to_string();
+  let sitemap_ext = ext.clone();
   let feed_base = base_url.to_string();
+  let feed_ext = ext;
   let papers_feed_base = base_url.to_string();
   let robots_base = base_url.to_string();
   router
@@ -288,14 +330,16 @@ pub fn mount(router: Router, base_url: &str) -> Router {
       "/sitemap.xml",
       get(move || {
         let base = sitemap_base.clone();
-        async move { sitemap_handler(base).await }
+        let ext = sitemap_ext.clone();
+        async move { sitemap_handler(base, ext).await }
       }),
     )
     .route(
       "/feed.xml",
       get(move || {
         let base = feed_base.clone();
-        async move { feed_handler(base).await }
+        let ext = feed_ext.clone();
+        async move { feed_handler(base, ext).await }
       }),
     )
     .route(

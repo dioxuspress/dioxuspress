@@ -7,19 +7,19 @@
 //! - 底部多列结构化页脚（支持 `site.json::footer.columns` 自定义分组）
 
 use dioxus::prelude::*;
-use dioxus::router::{Link, Outlet};
+use dioxus::router::Link;
 use dioxus_shadcn::{
   Button, ButtonSize, ButtonVariant, Sheet, SheetClose, SheetContent, SheetOverlay, SheetSide,
   SheetTitle,
 };
 
 use crate::components::lang_picker::LangPicker;
+use crate::components::layouts::path_within;
 use crate::components::module_gate::use_enabled_modules;
 use crate::components::theme_picker::ThemePicker;
 use crate::components::user_menu::UserMenu;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n};
-use crate::routes::Route;
 use module_search::search::SearchButton;
 
 fn is_external_or_raw_href(href: &str) -> bool {
@@ -95,11 +95,11 @@ fn AnnouncementBar() -> Element {
   }
 }
 
-/// 类 Docusaurus 文档站外壳：公告条 + 左对齐导航顶栏 + `Outlet::<Route>` + 多列页脚。
+/// 类 Docusaurus 文档站外壳：公告条 + 左对齐导航顶栏 + `children` + 多列页脚。
 #[component]
-pub fn DocsShell() -> Element {
-  let route = use_route::<Route>();
-  let current_route_path = route.to_string();
+pub fn DocsShell(current_path: String, children: Element) -> Element {
+  let current_route_path =
+    current_path.split(['?', '#']).next().unwrap_or(&current_path).to_string();
   let lang = use_i18n();
   let site_cfg = app_core::settings::SiteConfig::active();
   let mut is_dark = use_signal(|| false);
@@ -116,18 +116,8 @@ pub fn DocsShell() -> Element {
   let on_forum = on("forum");
   let on_about = on("about");
 
-  let nav_item_class = move |target: Route| {
-    let is_active = match (&route, &target) {
-      (Route::DocPage { .. }, Route::Docs {}) => true,
-      (Route::Blog { .. }, Route::BlogIndex {}) => true,
-      (Route::CaseDetail { .. }, Route::Cases {}) => true,
-      (Route::CourseDetail { .. }, Route::Courses {}) => true,
-      (Route::Lesson { .. }, Route::Courses {}) => true,
-      (Route::TopicsByTag { .. }, Route::TopicsIndex {}) => true,
-      (Route::TopicDetail { .. }, Route::TopicsIndex {}) => true,
-      (Route::TopicsNew {}, Route::TopicsIndex {}) => true,
-      (cur, tgt) => cur == tgt,
-    };
+  let nav_item_class = move |section: &str| {
+    let is_active = path_within(&current_path, section);
     if is_active {
       "px-2.5 text-sm font-semibold text-[var(--color-primary)] h-14 inline-flex items-center border-b-2 border-[var(--color-primary)]"
     } else {
@@ -169,17 +159,17 @@ pub fn DocsShell() -> Element {
             }
 
             Link {
-              to: Route::Home {},
+              to: "/",
               class: "font-extrabold tracking-tight text-flow text-lg inline-flex items-center gap-2 shrink-0",
               super::BrandMark {}
             }
 
             nav { class: "hidden md:flex items-center gap-1",
               if on_docs {
-                Link { to: Route::Docs {}, class: nav_item_class(Route::Docs {}), "{t(lang(), \"nav.docs\")}" }
+                Link { to: "/docs", class: nav_item_class("/docs"), "{t(lang(), \"nav.docs\")}" }
               }
               if on_blog {
-                Link { to: Route::BlogIndex {}, class: nav_item_class(Route::BlogIndex {}), "{t(lang(), \"nav.blog\")}" }
+                Link { to: "/blog", class: nav_item_class("/blog"), "{t(lang(), \"nav.blog\")}" }
               }
               for (nav_idx, item) in site_cfg.navigation.iter().enumerate() {
                 if !item.route.trim().is_empty() && !item.key.trim().is_empty() {
@@ -210,16 +200,16 @@ pub fn DocsShell() -> Element {
                 }
               }
               if on_cases {
-                Link { to: Route::Cases {}, class: nav_item_class(Route::Cases {}), "{t(lang(), \"nav.cases\")}" }
+                Link { to: "/case", class: nav_item_class("/case"), "{t(lang(), \"nav.cases\")}" }
               }
               if on_course {
-                Link { to: Route::Courses {}, class: nav_item_class(Route::Courses {}), "{t(lang(), \"nav.course\")}" }
+                Link { to: "/course", class: nav_item_class("/course"), "{t(lang(), \"nav.course\")}" }
               }
               if on_forum {
-                Link { to: Route::TopicsIndex {}, class: nav_item_class(Route::TopicsIndex {}), "{t(lang(), \"nav.forum\")}" }
+                Link { to: "/topics", class: nav_item_class("/topics"), "{t(lang(), \"nav.forum\")}" }
               }
               if on_about {
-                Link { to: Route::About {}, class: nav_item_class(Route::About {}), "{t(lang(), \"footer.about\")}" }
+                Link { to: "/about", class: nav_item_class("/about"), "{t(lang(), \"footer.about\")}" }
               }
             }
           }
@@ -300,10 +290,10 @@ pub fn DocsShell() -> Element {
           }
           nav { class: "pt-3 flex flex-col gap-1 text-sm font-medium",
             if on_docs {
-              Link { to: Route::Docs {}, class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.docs\")}" }
+              Link { to: "/docs", class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.docs\")}" }
             }
             if on_blog {
-              Link { to: Route::BlogIndex {}, class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.blog\")}" }
+              Link { to: "/blog", class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.blog\")}" }
             }
             for (nav_idx, item) in site_cfg.navigation.iter().enumerate() {
               if !item.route.trim().is_empty() && !item.key.trim().is_empty() {
@@ -332,16 +322,16 @@ pub fn DocsShell() -> Element {
               }
             }
             if on_cases {
-              Link { to: Route::Cases {}, class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.cases\")}" }
+              Link { to: "/case", class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.cases\")}" }
             }
             if on_course {
-              Link { to: Route::Courses {}, class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.course\")}" }
+              Link { to: "/course", class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.course\")}" }
             }
             if on_forum {
-              Link { to: Route::TopicsIndex {}, class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.forum\")}" }
+              Link { to: "/topics", class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.forum\")}" }
             }
             if on_about {
-              Link { to: Route::About {}, class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"footer.about\")}" }
+              Link { to: "/about", class: "px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"footer.about\")}" }
             }
             div { class: "sm:hidden mt-3 pt-3 border-t border-slate-200/70 dark:border-slate-800 flex items-center gap-2",
               ThemePicker {}
@@ -352,7 +342,7 @@ pub fn DocsShell() -> Element {
       }
 
       main { class: "flex-1",
-        Outlet::<Route> {}
+        {children}
       }
 
       footer { class: "border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950 shrink-0",
@@ -360,7 +350,7 @@ pub fn DocsShell() -> Element {
           div { class: "py-12 grid grid-cols-2 md:grid-cols-5 gap-8 text-sm",
             div { class: "col-span-2 md:col-span-2",
               Link {
-                to: Route::Home {},
+                to: "/",
                 class: "font-extrabold text-flow text-base inline-flex items-center gap-2",
                 super::BrandMark {}
               }
@@ -405,13 +395,13 @@ pub fn DocsShell() -> Element {
                 }
                 div { class: "flex flex-col gap-2 text-slate-600 dark:text-slate-400",
                   if on_docs {
-                    Link { to: Route::Docs {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.docs\")}" }
+                    Link { to: "/docs", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.docs\")}" }
                   }
                   if on_blog {
-                    Link { to: Route::BlogIndex {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.blog\")}" }
+                    Link { to: "/blog", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.blog\")}" }
                   }
                   if on_cases {
-                    Link { to: Route::Cases {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.cases\")}" }
+                    Link { to: "/case", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.cases\")}" }
                   }
                 }
               }
@@ -422,7 +412,7 @@ pub fn DocsShell() -> Element {
                 div { class: "flex flex-col gap-2 text-slate-600 dark:text-slate-400",
                   a { href: "/feed.xml", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"footer.rss\")}" }
                   if on_about {
-                    Link { to: Route::About {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"footer.about\")}" }
+                    Link { to: "/about", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"footer.about\")}" }
                   }
                   for item in site_cfg.footer.social.iter().filter(|s| !s.label.trim().is_empty() && !s.url.trim().is_empty()) {
                     a {

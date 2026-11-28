@@ -9,7 +9,6 @@ use dioxus_shadcn::{
 };
 
 use crate::i18n::{t, use_i18n};
-use crate::routes::Route;
 
 #[component]
 pub fn UserMenu(user: SessionUser, compact: bool, show_my_topics: bool) -> Element {
@@ -46,19 +45,19 @@ pub fn UserMenu(user: SessionUser, compact: bool, show_my_topics: bool) -> Eleme
               DropdownLabel { class: "text-xs font-normal", "{user.nickname}" }
               DropdownSeparator {}
               if show_my_topics {
-                  DropdownItem { onclick: move |_| { nav.push(Route::MyTopics {}); }, "{t(lang(), \"user.my_topics\")}" }
+                  DropdownItem { onclick: move |_| { nav.push("/me/topics"); }, "{t(lang(), \"user.my_topics\")}" }
               }
               // 标注属于 course 层（FEATURE_TIERS DL3）。
               if cfg!(feature = "course") {
-                  DropdownItem { onclick: move |_| { nav.push(Route::MyAnnotations {}); }, "{t(lang(), \"user.my_annotations\")}" }
+                  DropdownItem { onclick: move |_| { nav.push("/me/annotations"); }, "{t(lang(), \"user.my_annotations\")}" }
               }
               // PM4：在线支付关闭时隐藏「我的订单」入口（路由保留）。
               if cfg!(feature = "payments") {
-                  DropdownItem { onclick: move |_| { nav.push(Route::MyOrders {}); }, "{t(lang(), \"user.my_orders\")}" }
+                  DropdownItem { onclick: move |_| { nav.push("/me/orders"); }, "{t(lang(), \"user.my_orders\")}" }
               }
               if user.is_admin() {
                   DropdownSeparator {}
-                  DropdownItem { class: "font-semibold text-primary", onclick: move |_| { nav.push(Route::AdminDashboard {}); },
+                  DropdownItem { class: "font-semibold text-primary", onclick: move |_| { nav.push("/admin"); },
                       "{t(lang(), \"nav.admin\")}"
                   }
               }

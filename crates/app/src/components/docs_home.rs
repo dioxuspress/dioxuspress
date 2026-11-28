@@ -13,7 +13,6 @@ use module_docs::server::{list_doc_volumes, DocVolume, CARD_CHAPTERS};
 use crate::components::home_sections::CommunityFeed;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n};
-use crate::routes::Route;
 
 fn is_external_href(href: &str) -> bool {
   href.starts_with("http://") || href.starts_with("https://") || href.starts_with("mailto:")
@@ -90,7 +89,7 @@ fn DocsVolumePreview() -> Element {
             }
           }
           Link {
-            to: Route::Docs {},
+            to: "/docs",
             class: "text-sm font-semibold text-[var(--color-primary)] hover:underline shrink-0",
             "{t(lang(), \"home.docs_volumes.all\")} →"
           }

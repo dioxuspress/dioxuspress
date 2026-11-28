@@ -9,11 +9,11 @@ use dioxus::prelude::*;
 use dioxus::router::Link;
 use dioxus_shadcn::{Spinner, SpinnerSize};
 
+use crate::components::layouts::NavEcosystem;
 use crate::components::module_gate::use_enabled_modules;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n};
-use crate::routes::Route;
-use crate::taxonomy::{ecosystem_by_id, ecosystem_of_case_category, ecosystems};
+use crate::taxonomy::{ecosystem_by_id, ecosystem_of_case_category};
 use module_blog::server::{latest_blog_posts, BlogPostSummary};
 use module_cases::server::{list_cases, CaseSummary};
 #[cfg(feature = "course")]
@@ -21,18 +21,26 @@ use module_course::server::{list_courses, CourseSummary};
 #[cfg(feature = "accounts")]
 use module_forum::server::{list_topics, TopicSummary};
 
-/// 两大生态 pillars：Rust 生态 | AI 生态，各列子领域 chips（链接到领域路由）。
+/// 生态支柱卡片：各列子领域 chips（链接到领域路由）。
 /// `enabled` 用于隐藏被关闭模块对应的领域，与导航保持一致。
 #[component]
-pub fn EcosystemPillars(enabled: Vec<String>) -> Element {
+pub fn EcosystemPillars(
+  enabled: Vec<String>,
+  #[props(default)] ecosystems: Option<Vec<NavEcosystem>>,
+) -> Element {
   let lang = use_i18n();
+  let items = ecosystems.unwrap_or_else(crate::taxonomy::nav_ecosystems);
+  if items.is_empty() {
+    return rsx! {};
+  }
   rsx! {
       section { class: "py-16 sm:py-20 bg-slate-50/60 dark:bg-slate-900/40 border-y border-slate-200/70 dark:border-slate-800",
           Container {
               div { class: "grid grid-cols-1 md:grid-cols-2 gap-6",
-                  for eco in ecosystems() {
+                  for eco in items.into_iter() {
                       {
                           let domains: Vec<_> = eco.domains.iter().filter(|d| enabled.iter().any(|e| e == d.module_id)).cloned().collect();
+                          let eco_href = format!("/ecosystem/{}", eco.id);
                           rsx! {
                               div { key: "{eco.id}", class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-7 flex flex-col",
                                   h3 { class: "text-2xl font-extrabold tracking-tight text-flow", "{t(lang(), eco.label_key)}" }
@@ -41,14 +49,14 @@ pub fn EcosystemPillars(enabled: Vec<String>) -> Element {
                                       for d in domains.iter() {
                                           Link {
                                               key: "{d.id}",
-                                              to: d.route.clone(),
+                                              to: d.path,
                                               class: "inline-flex items-center rounded-full border border-slate-200 dark:border-slate-700 px-3 py-1 text-sm text-slate-700 dark:text-slate-200 hover:border-[var(--color-primary)] hover:text-[var(--color-primary)] transition-colors",
                                               "{t(lang(), d.label_key)}"
                                           }
                                       }
                                   }
                                   Link {
-                                      to: Route::EcosystemPage { id: eco.id.to_string() },
+                                      to: eco_href,
                                       class: "mt-6 inline-flex items-center gap-1 text-sm font-semibold text-[var(--color-primary)] hover:underline",
                                       "{t(lang(), \"eco.enter\")}"
                                       svg { class: "w-4 h-4", fill: "none", stroke: "currentColor", view_box: "0 0 24 24", stroke_width: "2",
@@ -67,7 +75,7 @@ pub fn EcosystemPillars(enabled: Vec<String>) -> Element {
 
 /// 分区头部：左标题/副标题 + 右「查看全部」链接（复用于精选案例 / 课程）。
 #[component]
-fn SectionHeader(title: String, subtitle: String, all_label: String, to: Route) -> Element {
+pub fn SectionHeader(title: String, subtitle: String, all_label: String, to: String) -> Element {
   rsx! {
       div { class: "flex items-end justify-between gap-4 mb-10",
           div {
@@ -108,7 +116,7 @@ pub fn FeaturedCases() -> Element {
                   title: t(lang(), "home.featured.title"),
                   subtitle: t(lang(), "home.featured.subtitle"),
                   all_label: t(lang(), "home.featured.all"),
-                  to: Route::Cases {},
+                  to: "/case".to_string(),
               }
               SuspenseBoundary {
                   fallback: |_| loading_spinner(),
@@ -146,10 +154,11 @@ fn FeaturedCasesInner() -> Element {
 }
 
 #[component]
-fn CaseCard(case: CaseSummary) -> Element {
+pub fn CaseCard(case: CaseSummary) -> Element {
+  let href = format!("/case/{}", case.slug);
   rsx! {
       Link {
-          to: Route::CaseDetail { slug: case.slug.clone() },
+          to: href,
           class: "group flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden hover:shadow-lg transition-all",
           if let Some(cover) = case.cover_url.clone() {
               img { src: "{cover}", class: "h-36 w-full object-cover", alt: "{case.name}", loading: "lazy" }
@@ -182,7 +191,7 @@ pub fn CourseShowcase() -> Element {
                   title: t(lang(), "home.courses.title"),
                   subtitle: t(lang(), "home.courses.subtitle"),
                   all_label: t(lang(), "home.courses.all"),
-                  to: Route::Courses {},
+                  to: "/course".to_string(),
               }
               SuspenseBoundary {
                   fallback: |_| loading_spinner(),
@@ -229,9 +238,10 @@ fn CourseCard(course: CourseSummary) -> Element {
   } else {
     None
   };
+  let href = format!("/course/{}", course.slug);
   rsx! {
       Link {
-          to: Route::CourseDetail { slug: course.slug.clone() },
+          to: href,
           class: "group flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden hover:shadow-lg transition-all",
           if let Some(cover) = course.cover.clone() {
               img { src: "{cover}", class: "h-36 w-full object-cover", alt: "{course.title}", loading: "lazy" }
@@ -278,7 +288,7 @@ pub fn CommunityFeed(blog: bool, forum: bool) -> Element {
                       div { class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 p-5",
                           div { class: "flex items-center justify-between mb-3",
                               h3 { class: "text-sm font-semibold text-slate-700 dark:text-slate-200", "{t(lang(), \"home.community.blog\")}" }
-                              Link { to: Route::BlogIndex {}, class: "text-xs text-[var(--color-primary)] hover:underline", "{t(lang(), \"home.community.blog_all\")}" }
+                              Link { to: "/blog", class: "text-xs text-[var(--color-primary)] hover:underline", "{t(lang(), \"home.community.blog_all\")}" }
                           }
                           SuspenseBoundary { fallback: |_| loading_spinner(), BlogColumn {} }
                       }
@@ -287,7 +297,7 @@ pub fn CommunityFeed(blog: bool, forum: bool) -> Element {
                       div { class: "rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 p-5",
                           div { class: "flex items-center justify-between mb-3",
                               h3 { class: "text-sm font-semibold text-slate-700 dark:text-slate-200", "{t(lang(), \"home.community.forum\")}" }
-                              Link { to: Route::TopicsIndex {}, class: "text-xs text-[var(--color-primary)] hover:underline", "{t(lang(), \"home.community.forum_all\")}" }
+                              Link { to: "/topics", class: "text-xs text-[var(--color-primary)] hover:underline", "{t(lang(), \"home.community.forum_all\")}" }
                           }
                           {forum_column()}
                       }
@@ -311,7 +321,7 @@ fn BlogColumn() -> Element {
               for p in posts.into_iter() {
                   Link {
                       key: "{p.slug}",
-                      to: Route::Blog { id: p.slug.clone() },
+                      to: format!("/blog/{}", p.slug),
                       class: "group block py-3",
                       div { class: "flex items-baseline justify-between gap-3",
                           span { class: "font-medium text-slate-800 dark:text-slate-100 group-hover:text-[var(--color-primary)] transition-colors line-clamp-1", "{p.title}" }
@@ -361,7 +371,7 @@ fn ForumColumn() -> Element {
               for tpc in topics.into_iter() {
                   Link {
                       key: "{tpc.id}",
-                      to: Route::TopicDetail { id: tpc.id },
+                      to: format!("/topics/{}", tpc.id),
                       class: "group block py-3",
                       div { class: "flex items-baseline justify-between gap-3",
                           span { class: "font-medium text-slate-800 dark:text-slate-100 group-hover:text-[var(--color-primary)] transition-colors line-clamp-1", "{tpc.title}" }
@@ -412,7 +422,7 @@ pub fn EcosystemPage(id: String) -> Element {
                   for d in eco.domains.iter().filter(|d| enabled.iter().any(|e| e == d.module_id)) {
                       Link {
                           key: "{d.id}",
-                          to: d.route.clone(),
+                          to: d.route.to_string(),
                           class: "group flex items-center justify-between rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 px-4 py-3 hover:border-[var(--color-primary)] transition-colors",
                           span { class: "font-medium text-slate-800 dark:text-slate-100 group-hover:text-[var(--color-primary)] transition-colors", "{t(lang(), d.label_key)}" }
                           svg { class: "w-4 h-4 text-slate-300 dark:text-slate-600 group-hover:text-[var(--color-primary)] group-hover:translate-x-0.5 transition-all", fill: "none", stroke: "currentColor", view_box: "0 0 24 24", stroke_width: "2",
@@ -432,7 +442,7 @@ pub fn EcosystemPage(id: String) -> Element {
                       title: t(lang(), "home.featured.title"),
                       subtitle: t(lang(), "home.featured.subtitle"),
                       all_label: t(lang(), "home.featured.all"),
-                      to: Route::Cases {},
+                      to: "/case".to_string(),
                   }
                   SuspenseBoundary {
                       fallback: |_| loading_spinner(),
@@ -474,7 +484,7 @@ fn EcosystemAiPapersSection() -> Element {
                       "Daily curated arXiv paper digests from Hugging Face Daily Papers with cited key points",
                   ).to_string(),
                   all_label: lang().pick("查看全部论文", "All Papers").to_string(),
-                  to: Route::Papers {},
+                  to: "/papers".to_string(),
               }
               SuspenseBoundary {
                   fallback: |_| loading_spinner(),
@@ -519,7 +529,7 @@ fn EcosystemAiPapersInner() -> Element {
               for p in papers.into_iter() {
                   Link {
                       key: "{p.arxiv_id}",
-                      to: Route::PaperDetail { arxiv_id: p.arxiv_id.clone() },
+                      to: format!("/papers/{}", p.arxiv_id),
                       class: "group flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-900/50 p-5 hover:border-[var(--color-primary)] hover:shadow-md transition-all",
                       div { class: "flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 tabular-nums mb-2",
                           span { "{p.date}" }

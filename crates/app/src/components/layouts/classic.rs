@@ -8,7 +8,7 @@
 //! `get_active_layout` 切换。
 
 use dioxus::prelude::*;
-use dioxus::router::{Link, Outlet};
+use dioxus::router::Link;
 use dioxus_shadcn::{
   Button, ButtonSize, ButtonVariant, Sheet, SheetClose, SheetContent, SheetOverlay, SheetSide,
   SheetTitle,
@@ -16,19 +16,22 @@ use dioxus_shadcn::{
 
 use crate::components::ecosystem_menu::EcosystemMenu;
 use crate::components::lang_picker::LangPicker;
+use crate::components::layouts::{path_within, FooterBoardLink, NavEcosystem};
 use crate::components::module_gate::use_enabled_modules;
 use crate::components::theme_picker::ThemePicker;
 use crate::components::user_menu::UserMenu;
 use crate::components::view::Container;
 use crate::i18n::{t, use_i18n};
-use crate::routes::Route;
-use crate::taxonomy::ecosystems;
 use module_search::search::SearchButton;
 
-/// Classic shell：完整 Navbar+Footer。`Outlet::<Route>` 嵌于 main 中。
+/// Classic shell：完整 Navbar+Footer。`children` 嵌于 main 中。
 #[component]
-pub fn ClassicShell() -> Element {
-  let route = use_route::<Route>();
+pub fn ClassicShell(
+  current_path: String,
+  #[props(default)] ecosystems: Vec<NavEcosystem>,
+  #[props(default)] footer_boards: Vec<FooterBoardLink>,
+  children: Element,
+) -> Element {
   let lang = use_i18n();
   let mut is_dark = use_signal(|| false);
   let mut show_auth_modal = crate::use_auth_modal();
@@ -52,42 +55,13 @@ pub fn ClassicShell() -> Element {
   let on_forum = enabled.iter().any(|s| s == "forum");
   let on_docs = enabled.iter().any(|s| s == "docs");
   let on_about = enabled.iter().any(|s| s == "about");
-  // 页脚「专题」列：5 个内容板块（与 taxonomy 的领域入口一致，按开关显示）。
-  let boards: Vec<(Route, &'static str)> = [
-    ("embedded", Route::Embedded {}, "nav.embedded"),
-    ("ai", Route::Ai {}, "nav.ai.rust_ai"),
-    ("papers", Route::Papers {}, "nav.papers"),
-    ("web3", Route::Web3 {}, "nav.web3"),
-    ("wasm", Route::Wasm {}, "nav.wasm"),
-    ("cli", Route::Cli {}, "nav.cli"),
-  ]
-  .into_iter()
-  .filter(|(id, _, _)| enabled.iter().any(|s| s == id))
-  .map(|(_, route, key)| (route, key))
-  .collect();
+  // 页脚「专题」列：由宿主站点注入并按开关过滤。
+  let boards: Vec<FooterBoardLink> =
+    footer_boards.into_iter().filter(|b| enabled.iter().any(|s| s == b.module_id)).collect();
 
-  let link_class = move |target: Route| {
-    let is_active = match (&route, &target) {
-      (Route::Blog { .. }, Route::BlogIndex {}) => true,
-      (Route::TopicsByTag { .. }, Route::TopicsIndex {}) => true,
-      (Route::TopicDetail { .. }, Route::TopicsIndex {}) => true,
-      (Route::TopicsNew {}, Route::TopicsIndex {}) => true,
-      (Route::CaseDetail { .. }, Route::Cases {}) => true,
-      (Route::EmbeddedArticle { .. }, Route::Embedded {}) => true,
-      (Route::AiArticle { .. }, Route::Ai {}) => true,
-      (Route::AiVisualizer {}, Route::Ai {}) => true,
-      (Route::AiComponents {}, Route::Ai {}) => true,
-      (Route::AiComponentDetail { .. }, Route::Ai {}) => true,
-      (Route::AiMath {}, Route::Ai {}) => true,
-      (Route::AiMathDetail { .. }, Route::Ai {}) => true,
-      (Route::AiMl {}, Route::Ai {}) => true,
-      (Route::AiMlDetail { .. }, Route::Ai {}) => true,
-      (Route::ModelDetail { .. }, Route::Models {}) => true,
-      (Route::Web3Article { .. }, Route::Web3 {}) => true,
-      (Route::WasmArticle { .. }, Route::Wasm {}) => true,
-      (Route::CliArticle { .. }, Route::Cli {}) => true,
-      (current, target) => current == target,
-    };
+  let current_for_link = current_path.clone();
+  let link_class = move |section: &str| {
+    let is_active = path_within(&current_for_link, section);
 
     if is_active {
       "px-2 text-[var(--color-primary)] font-bold border-b-2 border-[var(--color-primary)] h-14 flex items-center"
@@ -118,35 +92,34 @@ pub fn ClassicShell() -> Element {
                   div { class: "h-14 flex items-center justify-between gap-4",
                       div { class: "flex items-center gap-3 min-w-0",
                           Link {
-                              to: Route::Home {},
+                              to: "/",
                               // 站名不截断（O8）：<sm 时主题 / 语言收进抽屉、登录只留图标，
                               // 右侧按钮组让出的宽度足够放下完整站名。
                               class: "font-extrabold tracking-tight text-flow whitespace-nowrap inline-flex items-center gap-2 shrink-0",
                               super::BrandMark {}
                           }
-                          // 双生态为主：Rust 生态▾ / AI 生态▾ mega 菜单 + 4 个内容类型入口。
-                          // 领域（嵌入式/Web3/… · 大模型/推理/…）收进 mega，不再平铺顶层。
+                          // 双生态为主：生态 mega 菜单 + 内容类型入口。
                           nav { class: "hidden lg:flex items-center gap-1 text-sm font-medium",
-                              for eco in ecosystems() {
-                                  EcosystemMenu { key: "{eco.id}", eco: eco.clone(), enabled: enabled.clone() }
+                              for eco in ecosystems.iter() {
+                                  EcosystemMenu { key: "{eco.id}", eco: eco.clone(), current_path: current_path.clone(), enabled: enabled.clone() }
                               }
                               if on_ai {
-                                  Link { to: Route::Models {}, class: link_class(Route::Models {}), "{t(lang(), \"nav.models\")}" }
+                                  Link { to: "/models", class: link_class("/models"), "{t(lang(), \"nav.models\")}" }
                               }
                               if on_cases {
-                                  Link { to: Route::Cases {}, class: link_class(Route::Cases {}), "{t(lang(), \"nav.cases\")}" }
+                                  Link { to: "/case", class: link_class("/case"), "{t(lang(), \"nav.cases\")}" }
                               }
                               if on_course {
-                                  Link { to: Route::Courses {}, class: link_class(Route::Courses {}), "{t(lang(), \"nav.course\")}" }
+                                  Link { to: "/course", class: link_class("/course"), "{t(lang(), \"nav.course\")}" }
                               }
                               if on_blog {
-                                  Link { to: Route::BlogIndex {}, class: link_class(Route::BlogIndex {}), "{t_blog}" }
+                                  Link { to: "/blog", class: link_class("/blog"), "{t_blog}" }
                               }
                               if on_podcast {
-                                  Link { to: Route::Podcast {}, class: link_class(Route::Podcast {}), "{t_podcast}" }
+                                  Link { to: "/podcast", class: link_class("/podcast"), "{t_podcast}" }
                               }
                               if on_forum {
-                                  Link { to: Route::TopicsIndex {}, class: link_class(Route::TopicsIndex {}), "{t_forum}" }
+                                  Link { to: "/topics", class: link_class("/topics"), "{t_forum}" }
                               }
                           }
                       }
@@ -216,7 +189,7 @@ pub fn ClassicShell() -> Element {
 
                           if on_docs {
                               Link {
-                                  to: Route::Docs {},
+                                  to: "/docs",
                                   class: "hidden sm:inline-flex items-center rounded-md btn-flow px-3 py-2 text-sm font-semibold whitespace-nowrap transition-all",
                                   "{t(lang(), \"nav.start\")}"
                               }
@@ -242,39 +215,41 @@ pub fn ClassicShell() -> Element {
                       span { class: "sr-only", "{t(lang(), \"auth.close\")}" }
                   }
                   nav { class: "flex flex-col text-sm font-medium",
-                      // 两个生态：标题 + 已启用领域链接
-                      for eco in ecosystems() {
+                      // 生态分组：标题 + 已启用领域链接
+                      for eco in ecosystems.iter() {
                           {
                               let domains: Vec<_> = eco.domains.iter().filter(|d| enabled.iter().any(|e| e == d.module_id)).cloned().collect();
                               rsx! {
                                   if !domains.is_empty() {
                                       p { key: "{eco.id}-h", class: "px-2 pt-2 pb-1 text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500", "{t(lang(), eco.label_key)}" }
                                       for d in domains.iter() {
-                                          Link { key: "{d.id}", to: d.route.clone(), class: "px-3 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), d.label_key)}" }
+                                          Link { key: "{d.id}", to: d.path, class: "px-3 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), d.label_key)}" }
                                       }
                                   }
                               }
                           }
                       }
-                      div { class: "my-2 border-t border-slate-200/70 dark:border-slate-800" }
+                      if !ecosystems.is_empty() {
+                          div { class: "my-2 border-t border-slate-200/70 dark:border-slate-800" }
+                      }
                       // 内容类型入口
                       if on_cases {
-                          Link { to: Route::Cases {}, class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.cases\")}" }
+                          Link { to: "/case", class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.cases\")}" }
                       }
                       if on_course {
-                          Link { to: Route::Courses {}, class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.course\")}" }
+                          Link { to: "/course", class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.course\")}" }
                       }
                       if on_blog {
-                          Link { to: Route::BlogIndex {}, class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t_blog}" }
+                          Link { to: "/blog", class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t_blog}" }
                       }
                       if on_podcast {
-                          Link { to: Route::Podcast {}, class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t_podcast}" }
+                          Link { to: "/podcast", class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t_podcast}" }
                       }
                       if on_forum {
-                          Link { to: Route::TopicsIndex {}, class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t_forum}" }
+                          Link { to: "/topics", class: "px-2 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors", onclick: move |_| show_mobile_menu.set(false), "{t_forum}" }
                       }
                       if on_docs {
-                          Link { to: Route::Docs {}, class: "px-2 py-2 mt-1 rounded-md btn-flow text-center font-semibold transition-all", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.start\")}" }
+                          Link { to: "/docs", class: "px-2 py-2 mt-1 rounded-md btn-flow text-center font-semibold transition-all", onclick: move |_| show_mobile_menu.set(false), "{t(lang(), \"nav.start\")}" }
                       }
                       // <sm 顶栏放不下的主题 / 语言切换
                       div { class: "sm:hidden mt-3 pt-3 border-t border-slate-200/70 dark:border-slate-800 flex items-center gap-2",
@@ -286,7 +261,7 @@ pub fn ClassicShell() -> Element {
           }
 
           main { class: "flex-1",
-              Outlet::<Route> {}
+              {children}
           }
 
           footer { class: "border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 shrink-0",
@@ -295,7 +270,7 @@ pub fn ClassicShell() -> Element {
                   div { class: "py-12 grid grid-cols-2 md:grid-cols-5 gap-8 text-sm",
                       div { class: "col-span-2 md:col-span-2",
                           Link {
-                              to: Route::Home {},
+                              to: "/",
                               class: "font-extrabold text-flow text-base inline-flex items-center gap-2",
                               super::BrandMark {}
                           }
@@ -307,22 +282,22 @@ pub fn ClassicShell() -> Element {
                           p { class: "text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3", "{t(lang(), \"footer.col.content\")}" }
                           div { class: "flex flex-col gap-2 text-slate-600 dark:text-slate-300",
                               if on_ai {
-                                  Link { to: Route::Models {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.models\")}" }
+                                  Link { to: "/models", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.models\")}" }
                               }
                               if on_cases {
-                                  Link { to: Route::Cases {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.cases\")}" }
+                                  Link { to: "/case", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.cases\")}" }
                               }
                               if on_course {
-                                  Link { to: Route::Courses {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.course\")}" }
+                                  Link { to: "/course", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"nav.course\")}" }
                               }
                               if on_docs {
-                                  Link { to: Route::Docs {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"mega.learn.docs\")}" }
+                                  Link { to: "/docs", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"mega.learn.docs\")}" }
                               }
                               if on_blog {
-                                  Link { to: Route::BlogIndex {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t_blog}" }
+                                  Link { to: "/blog", class: "hover:text-[var(--color-primary)] transition-colors", "{t_blog}" }
                               }
                               if on_podcast {
-                                  Link { to: Route::Podcast {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t_podcast}" }
+                                  Link { to: "/podcast", class: "hover:text-[var(--color-primary)] transition-colors", "{t_podcast}" }
                               }
                           }
                       }
@@ -330,8 +305,8 @@ pub fn ClassicShell() -> Element {
                           div {
                               p { class: "text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3", "{t(lang(), \"footer.col.topics\")}" }
                               div { class: "flex flex-col gap-2 text-slate-600 dark:text-slate-300",
-                                  for (route, key) in boards.iter() {
-                                      Link { key: "{key}", to: route.clone(), class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), key)}" }
+                                  for b in boards.iter() {
+                                      Link { key: "{b.label_key}", to: b.path, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), b.label_key)}" }
                                   }
                               }
                           }
@@ -340,12 +315,12 @@ pub fn ClassicShell() -> Element {
                           p { class: "text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3", "{t(lang(), \"footer.col.community\")}" }
                           div { class: "flex flex-col gap-2 text-slate-600 dark:text-slate-300",
                               if on_forum {
-                                  Link { to: Route::TopicsIndex {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t_forum}" }
+                                  Link { to: "/topics", class: "hover:text-[var(--color-primary)] transition-colors", "{t_forum}" }
                               }
                               // /feed.xml 是服务端路由，不走客户端 Router
                               a { href: "/feed.xml", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"footer.rss\")}" }
                               if on_about {
-                                  Link { to: Route::About {}, class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"footer.about\")}" }
+                                  Link { to: "/about", class: "hover:text-[var(--color-primary)] transition-colors", "{t(lang(), \"footer.about\")}" }
                               }
                               for item in app_core::settings::SiteConfig::active().footer.social.iter().filter(|s| !s.label.trim().is_empty() && !s.url.trim().is_empty()) {
                                   a {
