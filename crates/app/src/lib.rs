@@ -491,6 +491,7 @@ pub fn run_server(app: fn() -> Element, ext: ServerExtensions) {
       if let Some(mount_extra) = extra_router { mount_extra(router, &base_url) } else { router };
 
     let router = router.layer(axum::middleware::from_fn(crate::server::body_limit::body_limit_mw));
+    let router = router.layer(axum::middleware::from_fn(crate::server::csrf::csrf_protect_mw));
     let router = router.layer(axum::middleware::from_fn(crate::server::rate_limit::rate_limit_mw));
     let router = router.layer(axum::middleware::from_fn(crate::server::seo::trailing_slash_mw));
     let router = router

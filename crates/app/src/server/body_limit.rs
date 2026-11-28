@@ -3,11 +3,16 @@
 //! server fn 的请求体由 dioxus-fullstack 0.7.9 用 `Bytes::from_request(..).unwrap()`
 //! 读取，超过上限时直接 panic、回 500，而不是 413。`/api/upload` 允许 5 MB 图片，
 //! 经 base64 再包进 JSON 后远超 2 MiB，所以这条路径的上限要跟上传上限对齐。
-//! 上限之外的请求在中间件里按 `Content-Length` 先拦下，回 413。
+//!
+//! 本中间件同时防御两类超限请求：
+//! 1. 带 `Content-Length` 头且超限 → 立即返回 413，零内存分配；
+//! 2. 缺 `Content-Length`（如 `Transfer-Encoding: chunked`）→ 先用 `axum::body::to_bytes`
+//!    流式限长读入，超限返回 413，杜绝请求进入 dioxus-fullstack 触发 `.unwrap()` panic。
 
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::header::CONTENT_LENGTH;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use tower::{Layer, ServiceExt};
@@ -22,9 +27,6 @@ const UPLOAD_BODY_LIMIT: usize = 8 * 1024 * 1024;
 const DEFAULT_BODY_LIMIT: usize = 2 * 1024 * 1024;
 
 /// 请求体上限：`/api/upload` 放宽到 8 MiB，其余路径保持 axum 默认的 2 MiB。
-///
-/// 声明的 `Content-Length` 超限时直接回 413，不让请求走到 dioxus 读请求体那一步 panic。
-/// 没有 `Content-Length` 的分块请求仍由 `DefaultBodyLimit` 在读取时拦截。
 pub async fn body_limit_mw(req: Request, next: Next) -> Response {
   let is_upload = req.uri().path() == UPLOAD_PATH;
   let limit = if is_upload { UPLOAD_BODY_LIMIT } else { DEFAULT_BODY_LIMIT };
@@ -36,6 +38,26 @@ pub async fn body_limit_mw(req: Request, next: Next) -> Response {
   if declared.is_some_and(|len| len > limit) {
     return (StatusCode::PAYLOAD_TOO_LARGE, "请求体过大").into_response();
   }
+
+  // 对无 Content-Length 的写请求（如 Transfer-Encoding: chunked）执行流式限长校验，
+  // 防止绕过头检查后在 dioxus-fullstack 内部 `Bytes::from_request().unwrap()` panic。
+  let req = if declared.is_none()
+    && matches!(req.method(), &Method::POST | &Method::PUT | &Method::PATCH | &Method::DELETE)
+  {
+    let (mut parts, body) = req.into_parts();
+    match axum::body::to_bytes(body, limit).await {
+      Ok(bytes) => {
+        if let Ok(v) = HeaderValue::from_str(&bytes.len().to_string()) {
+          parts.headers.insert(CONTENT_LENGTH, v);
+        }
+        Request::from_parts(parts, Body::from(bytes))
+      }
+      Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "请求体过大").into_response(),
+    }
+  } else {
+    req
+  };
+
   if !is_upload {
     return next.run(req).await;
   }
@@ -96,5 +118,20 @@ mod tests {
       let status = app.clone().oneshot(req).await.unwrap().status();
       assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{path}");
     }
+  }
+
+  /// [M5] 缺少 Content-Length（chunked 传输）且超限的请求也必须在进入 handler 前回 413。
+  #[tokio::test]
+  async fn chunked_body_without_content_length_over_limit_returns_413_before_handler() {
+    let app = Router::new()
+      .route(
+        "/api/chunked",
+        post(|| async { panic!("handler must not run for oversized chunked body") }),
+      )
+      .layer(axum::middleware::from_fn(body_limit_mw));
+    let req =
+      Request::post("/api/chunked").body(Body::from(vec![b'x'; DEFAULT_BODY_LIMIT + 1])).unwrap();
+    let status = app.oneshot(req).await.unwrap().status();
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
   }
 }

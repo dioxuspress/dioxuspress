@@ -19,8 +19,10 @@
 //!   gateway 原先也按 IP 限流，但把静态资源算在内：一次冷加载约 57 个请求，
 //!   读配额 60/min 刷新一次就会 429，`/api/auth/me` 还被算进 10/min 的写配额
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pingora_core::apps::HttpServerOptions;
@@ -48,6 +50,12 @@ const HSTS_VALUE: &str = "max-age=31536000; includeSubDomains";
 
 /// 下游连接两个请求之间最多空闲多久（秒）：HTTP/1 keep-alive 与没有在途流的 h2 连接。
 const DOWNSTREAM_IDLE_SECS: u64 = 60;
+
+/// 上游超时保护：防慢速上游或半开连接拖垮网关 worker。
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(60);
+const UPSTREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// pingora 读完请求头后把 HTTP/1.1 keep-alive 设成无限（`Some(0)`），
 /// 下一个请求之前的那次读就没有超时；换回有限值。`None`（客户端要求 close）不动。
@@ -251,7 +259,75 @@ fn parse_host_upstreams(raw: &str) -> HashMap<String, String> {
   map
 }
 
-/// 归一化域名：去端口、去末尾 `.`、转小写 ASCII。
+/// 允许在 80 端口执行 HTTP→HTTPS 301 跳转的域名规则（防 Host 头开放重定向）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AllowedHost {
+  Exact(String),
+  Wildcard(String),
+}
+
+impl AllowedHost {
+  fn parse(raw: &str) -> Option<Self> {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("*.") {
+      let domain = normalize_host(rest)?;
+      Some(Self::Wildcard(domain))
+    } else {
+      let host = normalize_host(trimmed)?;
+      Some(Self::Exact(host))
+    }
+  }
+
+  fn matches(&self, host: &str) -> bool {
+    match self {
+      Self::Exact(h) => host == h,
+      Self::Wildcard(d) => host_matches_domain(host, d),
+    }
+  }
+}
+
+/// 从证书 SAN（DNS）或 Subject CN 提取合法域名，确保单域名最小部署也自动具备白名单。
+fn extract_cert_allowed_hosts(cert: &X509) -> Vec<AllowedHost> {
+  let mut out = Vec::new();
+  if let Some(sans) = cert.subject_alt_names() {
+    for san in sans {
+      if let Some(dns) = san.dnsname() {
+        if let Some(rule) = AllowedHost::parse(dns) {
+          if !out.contains(&rule) {
+            out.push(rule);
+          }
+        }
+      }
+    }
+  }
+  if out.is_empty() {
+    for entry in cert.subject_name().entries_by_nid(pingora_core::tls::nid::Nid::COMMONNAME) {
+      if let Ok(cn) = std::str::from_utf8(entry.data().as_slice()) {
+        if let Some(rule) = AllowedHost::parse(cn) {
+          if !out.contains(&rule) {
+            out.push(rule);
+          }
+        }
+      }
+    }
+  }
+  out
+}
+
+/// 解析逗号分隔的 `ALLOWED_HOSTS`（支持 `example.com,*.example.com`）。
+fn parse_allowed_hosts(raw: &str) -> Vec<AllowedHost> {
+  let mut out = Vec::new();
+  for item in raw.split(',') {
+    if let Some(rule) = AllowedHost::parse(item) {
+      if !out.contains(&rule) {
+        out.push(rule);
+      }
+    }
+  }
+  out
+}
+
+/// 校验并归一化域名：去端口、去末尾 `.`、转小写，拒绝含路径/userinfo/空白/控制字符的非法 Host。
 fn normalize_host(raw: &str) -> Option<String> {
   let trimmed = raw.trim();
   if trimmed.is_empty() {
@@ -264,11 +340,14 @@ fn normalize_host(raw: &str) -> Option<String> {
     trimmed.split(':').next().unwrap_or("")
   };
   let normalized = host_only.trim().trim_end_matches('.').to_ascii_lowercase();
-  if normalized.is_empty() {
-    None
-  } else {
-    Some(normalized)
+  if normalized.is_empty()
+    || !normalized
+      .bytes()
+      .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'[' | b']' | b':'))
+  {
+    return None;
   }
+  Some(normalized)
 }
 
 /// 提取请求域名：优先读 HTTP/2 `:authority`（`req.uri.host()`），回退 HTTP/1.1 `Host` 头。
@@ -282,18 +361,25 @@ fn extract_request_host(req: &RequestHeader) -> Option<String> {
   normalize_host(header_host)
 }
 
+struct GatewayCtx {
+  started_at: Instant,
+  upstream: String,
+}
+
 #[async_trait]
 impl ProxyHttp for AppGateway {
-  type CTX = ();
-  fn new_ctx(&self) -> Self::CTX {}
+  type CTX = GatewayCtx;
+  fn new_ctx(&self) -> Self::CTX {
+    GatewayCtx { started_at: Instant::now(), upstream: String::new() }
+  }
 
-  async fn early_request_filter(&self, session: &mut Session, _ctx: &mut ()) -> Result<()> {
+  async fn early_request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<()> {
     cap_keepalive(session);
     Ok(())
   }
 
   /// 域名级 301 重定向（如将旧演示二级域名或 `www.` 统一归并到主域名）。
-  async fn request_filter(&self, session: &mut Session, _ctx: &mut ()) -> Result<bool> {
+  async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool> {
     if let Some(location) = self.select_redirect_location(session.req_header()) {
       let mut resp = ResponseHeader::build(301, None)
         .map_err(|_| pingora_core::Error::new_str("failed to build 301 response header"))?;
@@ -308,9 +394,19 @@ impl ProxyHttp for AppGateway {
   }
 
   /// 选定上游：优先匹配 `HOST_UPSTREAMS` 子域名路由，否则走默认 `default_upstream`。
-  async fn upstream_peer(&self, session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>> {
+  async fn upstream_peer(
+    &self,
+    session: &mut Session,
+    ctx: &mut Self::CTX,
+  ) -> Result<Box<HttpPeer>> {
     let addr = self.select_upstream(session.req_header());
-    Ok(Box::new(HttpPeer::new(addr, false, UPSTREAM_SNI.into())))
+    ctx.upstream = addr.to_string();
+    let mut peer = HttpPeer::new(addr, false, UPSTREAM_SNI.into());
+    peer.options.connection_timeout = Some(UPSTREAM_CONNECT_TIMEOUT);
+    peer.options.read_timeout = Some(UPSTREAM_READ_TIMEOUT);
+    peer.options.write_timeout = Some(UPSTREAM_WRITE_TIMEOUT);
+    peer.options.idle_timeout = Some(UPSTREAM_IDLE_TIMEOUT);
+    Ok(Box::new(peer))
   }
 
   /// 上游请求改写：补 X-Forwarded-* 让 app 端 cookie/日志看到真实客户端 + scheme。
@@ -323,7 +419,7 @@ impl ProxyHttp for AppGateway {
     &self,
     session: &mut Session,
     req: &mut RequestHeader,
-    _ctx: &mut (),
+    _ctx: &mut Self::CTX,
   ) -> Result<()> {
     req.insert_header("X-Forwarded-Proto", "https").ok();
     if !req.headers.contains_key("host") {
@@ -352,10 +448,45 @@ impl ProxyHttp for AppGateway {
     &self,
     _session: &mut Session,
     upstream_response: &mut ResponseHeader,
-    _ctx: &mut (),
+    _ctx: &mut Self::CTX,
   ) -> Result<()> {
     apply_security_headers(upstream_response);
     Ok(())
+  }
+
+  async fn logging(
+    &self,
+    session: &mut Session,
+    e: Option<&pingora_core::Error>,
+    ctx: &mut Self::CTX,
+  ) {
+    let req = session.req_header();
+    let status = session.response_written().map(|r| r.status.as_u16()).unwrap_or(0);
+    let host = extract_request_host(req).unwrap_or_else(|| "-".to_string());
+    let elapsed_ms = ctx.started_at.elapsed().as_millis();
+    let upstream = if ctx.upstream.is_empty() { "-" } else { ctx.upstream.as_str() };
+    if let Some(err) = e {
+      log::warn!(
+        "access method={} host={} path={} status={} upstream={} elapsed_ms={} err={}",
+        req.method,
+        host,
+        req.uri.path(),
+        status,
+        upstream,
+        elapsed_ms,
+        err
+      );
+    } else {
+      log::info!(
+        "access method={} host={} path={} status={} upstream={} elapsed_ms={}",
+        req.method,
+        host,
+        req.uri.path(),
+        status,
+        upstream,
+        elapsed_ms
+      );
+    }
   }
 }
 
@@ -409,8 +540,34 @@ fn apply_security_headers(resp: &mut ResponseHeader) {
   }
 }
 
-/// 80 端口专用：所有请求 301 到同 host 的 https 版本。
-struct HttpToHttps;
+/// 80 端口专用：仅对白名单内的合法 Host 返回 301 到 https（防开放重定向 [H1]），
+/// 否则直接回 400/421，不拼接不可信 Host 头。
+struct HttpToHttps {
+  allowed_hosts: Vec<AllowedHost>,
+  host_redirects: HashMap<String, String>,
+}
+
+impl HttpToHttps {
+  /// 计算 80 端口响应动作：返回 `Ok(location)` 表示 301 跳转，`Err(status)` 表示拒绝（400/421）。
+  fn resolve_redirect(&self, req: &RequestHeader) -> std::result::Result<String, u16> {
+    let Some(host) = extract_request_host(req) else {
+      return Err(400);
+    };
+    let raw_path = req.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let path = if raw_path.starts_with('/') { raw_path } else { "/" };
+
+    // 已配置域名级 301 目标时一步跳至规范域名，减少跳转次数。
+    if let Some(target_base) = self.host_redirects.get(&host) {
+      return Ok(format!("{target_base}{path}"));
+    }
+
+    if !self.allowed_hosts.is_empty() && !self.allowed_hosts.iter().any(|rule| rule.matches(&host))
+    {
+      return Err(421);
+    }
+    Ok(format!("https://{host}{path}"))
+  }
+}
 
 #[async_trait]
 impl ProxyHttp for HttpToHttps {
@@ -419,16 +576,23 @@ impl ProxyHttp for HttpToHttps {
 
   async fn request_filter(&self, session: &mut Session, _ctx: &mut ()) -> Result<bool> {
     cap_keepalive(session);
-    let req = session.req_header();
-    let host = req.headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or("");
-    let path = req.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    let location = format!("https://{}{}", host, path);
-
-    let mut resp = ResponseHeader::build(301, None).unwrap();
-    resp.append_header("Location", location).ok();
-    resp.append_header("Content-Length", "0").ok();
-    // end_of_stream=true：301 无 body，回写头即结束
-    session.write_response_header_ref(&resp, true).await.ok();
+    match self.resolve_redirect(session.req_header()) {
+      Ok(location) => {
+        let mut resp = ResponseHeader::build(301, None)
+          .map_err(|_| pingora_core::Error::new_str("failed to build 301 response header"))?;
+        resp.append_header("Location", location).ok();
+        resp.append_header("Server", "rie-gateway").ok();
+        resp.append_header("Content-Length", "0").ok();
+        session.write_response_header_ref(&resp, true).await.ok();
+      }
+      Err(status) => {
+        let mut resp = ResponseHeader::build(status, None)
+          .map_err(|_| pingora_core::Error::new_str("failed to build error response header"))?;
+        resp.append_header("Server", "rie-gateway").ok();
+        resp.append_header("Content-Length", "0").ok();
+        session.write_response_header_ref(&resp, true).await.ok();
+      }
+    }
     Ok(true) // short-circuit；不再走 upstream_peer
   }
 
@@ -436,6 +600,36 @@ impl ProxyHttp for HttpToHttps {
     // 永远走不到这里：request_filter 已 Ok(true) 短路。
     Err(pingora_core::Error::new_str("unreachable: redirect short-circuit returned"))
   }
+}
+
+fn collect_allowed_hosts(
+  env_allowed: Option<&str>,
+  host_upstreams: &HashMap<String, String>,
+  host_redirects: &HashMap<String, String>,
+  sni_raw: &str,
+  default_cert: Option<&X509>,
+) -> Vec<AllowedHost> {
+  let mut allowed = env_allowed.map(parse_allowed_hosts).unwrap_or_default();
+  let mut push_unique = |rule: AllowedHost| {
+    if !allowed.contains(&rule) {
+      allowed.push(rule);
+    }
+  };
+  for host in host_upstreams.keys() {
+    push_unique(AllowedHost::Exact(host.clone()));
+  }
+  for host in host_redirects.keys() {
+    push_unique(AllowedHost::Exact(host.clone()));
+  }
+  for (domain, _, _) in parse_sni_cert_specs(sni_raw) {
+    push_unique(AllowedHost::Wildcard(domain));
+  }
+  if let Some(cert) = default_cert {
+    for rule in extract_cert_allowed_hosts(cert) {
+      push_unique(rule);
+    }
+  }
+  allowed
 }
 
 fn main() {
@@ -455,6 +649,8 @@ fn main() {
   let default_upstream_log = gateway.default_upstream.clone();
   let host_routes_log = gateway.host_upstreams.len();
   let host_redirects_log = gateway.host_redirects.len();
+  let redirect_map_for_http = gateway.host_redirects.clone();
+  let upstreams_for_allow = gateway.host_upstreams.clone();
   let mut proxy = http_proxy_service(&server.configuration, gateway);
   let Ok(cert) = std::env::var("TLS_CERT_PATH") else {
     eprintln!("rie-gateway: TLS_CERT_PATH 未配置（指向默认 fullchain.pem 路径）");
@@ -465,6 +661,15 @@ fn main() {
     std::process::exit(1);
   };
   let sni_raw = std::env::var("SNI_CERTS").unwrap_or_default();
+  let default_leaf_cert = CertBundle::load(&cert, &key).ok().map(|b| b.leaf);
+  let allowed_hosts = collect_allowed_hosts(
+    std::env::var("ALLOWED_HOSTS").ok().as_deref(),
+    &upstreams_for_allow,
+    &redirect_map_for_http,
+    &sni_raw,
+    default_leaf_cert.as_ref(),
+  );
+  let allowed_hosts_log = allowed_hosts.len();
   let sni_resolver = match SniCertResolver::load(&cert, &key, &sni_raw) {
     Ok(r) => r,
     Err(e) => {
@@ -494,17 +699,19 @@ fn main() {
   app.server_options = Some(opts);
   server.add_service(proxy);
 
-  // 80: HTTP→HTTPS 301
-  let mut redirect = http_proxy_service(&server.configuration, HttpToHttps);
+  // 80: HTTP→HTTPS 301（仅白名单 Host）
+  let http_redirect = HttpToHttps { allowed_hosts, host_redirects: redirect_map_for_http };
+  let mut redirect = http_proxy_service(&server.configuration, http_redirect);
   redirect.add_tcp(HTTP_BIND);
   server.add_service(redirect);
 
   log::info!(
-    "rie-gateway: HTTPS={} (default_tls={}, sni_certs={}), HTTP={} → 301 https; default_upstream={}, host_routes={}, host_redirects={}",
+    "rie-gateway: HTTPS={} (default_tls={}, sni_certs={}), HTTP={} → 301 https (allowed_hosts={}); default_upstream={}, host_routes={}, host_redirects={}",
     HTTPS_BIND,
     cert,
     sni_certs_log,
     HTTP_BIND,
+    allowed_hosts_log,
     default_upstream_log,
     host_routes_log,
     host_redirects_log
@@ -630,5 +837,43 @@ mod tests {
     // Suffix collision without dot boundary must NOT match
     assert!(!host_matches_domain("fakedioxuspress.dev", "dioxuspress.dev"));
     assert!(!host_matches_domain("rustineverything.app", "dioxuspress.dev"));
+  }
+
+  /// [H1] 80 端口 HTTP→HTTPS 重定向必须校验 Host 白名单，阻断开放重定向。
+  #[test]
+  fn http_to_https_enforces_host_allowlist_and_prevents_open_redirect() {
+    let svc = HttpToHttps {
+      allowed_hosts: vec![
+        AllowedHost::Exact("rustineverything.app".to_string()),
+        AllowedHost::Wildcard("dioxuspress.dev".to_string()),
+      ],
+      host_redirects: parse_host_redirects("www.dioxuspress.dev=https://dioxuspress.dev"),
+    };
+
+    // 合法主域
+    let mut ok_req = RequestHeader::build("GET", b"/docs?lang=en", None).unwrap();
+    ok_req.insert_header("Host", "rustineverything.app:80").unwrap();
+    assert_eq!(
+      svc.resolve_redirect(&ok_req),
+      Ok("https://rustineverything.app/docs?lang=en".to_string())
+    );
+
+    // host_redirects 一步直跳规范域名
+    let mut www_req = RequestHeader::build("GET", b"/guide", None).unwrap();
+    www_req.insert_header("Host", "www.dioxuspress.dev").unwrap();
+    assert_eq!(svc.resolve_redirect(&www_req), Ok("https://dioxuspress.dev/guide".to_string()));
+
+    // 伪造恶意 Host → 421
+    let mut evil = RequestHeader::build("GET", b"/phish", None).unwrap();
+    evil.insert_header("Host", "evil.example.com").unwrap();
+    assert_eq!(svc.resolve_redirect(&evil), Err(421));
+
+    // 缺失或非法 Host（含 @ / 路径）→ 400
+    let no_host = RequestHeader::build("GET", b"//evil.com", None).unwrap();
+    assert_eq!(svc.resolve_redirect(&no_host), Err(400));
+
+    let mut bad_host = RequestHeader::build("GET", b"/", None).unwrap();
+    bad_host.insert_header("Host", "rustineverything.app@evil.com").unwrap();
+    assert_eq!(svc.resolve_redirect(&bad_host), Err(400));
   }
 }
