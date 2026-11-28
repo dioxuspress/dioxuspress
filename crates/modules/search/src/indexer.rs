@@ -276,7 +276,9 @@ use crate::BOARD_KINDS as BOARD_IDS;
 fn collect_boards_versioned() -> Vec<VersionedDoc> {
   let mut out = Vec::new();
   for board in BOARD_IDS {
-    let dir = app_core::utils::get_asset_root().join("topics").join(board);
+    let dir = app_core::utils::content_dir("topics").join(board);
+    let dir =
+      if dir.exists() { dir } else { app_core::utils::get_asset_root().join("topics").join(board) };
     let entries = match std::fs::read_dir(&dir) {
       Ok(e) => e,
       Err(_) => continue,

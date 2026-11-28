@@ -38,6 +38,7 @@ board = { path = "../board", optional = true }
 # 将以下依赖设为可选，仅供后端使用
 tokio = { workspace = true, features = ["full"], optional = true }
 axum = { version = "0.8", optional = true }
+http-body = { version = "1", optional = true }
 dotenvy = { version = "0.15", optional = true }
 base64 = "0.22"
 tower-http = { version = "0.6", features = ["fs", "compression-gzip", "compression-br"], optional = true }
@@ -80,6 +81,7 @@ server = [
     "board/server",
     "dep:tokio",
     "dep:axum",
+    "dep:http-body",
     "dep:dotenvy",
     "dep:tower-http",
     "dep:tower",

@@ -1078,19 +1078,21 @@ pub fn validate_moderation_settings(
   Ok(())
 }
 
-/// 读取 site.json 中的 moderation 配置（admin 专属，用于面板初始填充）。
+/// 供宿主 `SIGHUP` 热刷新调用，同步重建审核流水线（无需 `app` 直接依赖 `module-moderation`）。
+#[cfg(feature = "server")]
+pub fn reload_moderation_pipeline() {
+  module_moderation::reload_pipeline();
+}
+
+/// 读取当前生效的 moderation 配置（优先读只读挂载覆盖文件，回退 `site.json`）。
 #[post("/api/admin/moderation/settings/get")]
 pub async fn admin_get_moderation_settings(
 ) -> Result<app_core::settings::ModerationSettings, ServerFnError> {
   #[cfg(feature = "server")]
   {
     use app_core::session::require_admin;
-    use app_core::settings::SiteConfig;
     let _ = require_admin().await?;
-    let path = app_core::utils::site_json_path();
-    let config = SiteConfig::from_file(path.to_str().unwrap_or("assets/site.json"))
-      .map_err(|e| ServerFnError::new(e.to_string()))?;
-    Ok(config.moderation)
+    Ok(module_moderation::hook::load_effective_moderation_settings())
   }
   #[cfg(not(feature = "server"))]
   {
@@ -1100,13 +1102,8 @@ pub async fn admin_get_moderation_settings(
 
 /// 写回 moderation 配置 + 触发审核流水线热重载。
 ///
-/// 流程：
-/// 1. require_admin
-/// 2. validate
-/// 3. read site.json 为 `serde_json::Value`，只替换 `moderation` 子树（保留所有
-///    其他字段，包括 SiteConfig struct 未声明的人工自定义字段）
-/// 4. 原子 tmp + rename 写回
-/// 5. `reload_pipeline()` 立即生效
+/// 若 `site.json` 位于只读挂载卷（如 Docker `/app/content:ro`），自动回退写入可写的
+/// `moderation.override.json`（或 `MODERATION_OVERRIDE_PATH`），并同步清空 `SiteConfig` / `ModuleEngine` 缓存。
 #[post("/api/admin/moderation/settings/set")]
 pub async fn admin_set_moderation_settings(
   settings: app_core::settings::ModerationSettings,
@@ -1118,10 +1115,41 @@ pub async fn admin_set_moderation_settings(
     validate_moderation_settings(&settings).map_err(ServerFnError::new)?;
 
     let path = app_core::utils::site_json_path();
-    write_moderation_settings_to_site_json(&path, &settings).map_err(ServerFnError::new)?;
+    let override_path = module_moderation::hook::moderation_override_path();
+    match write_moderation_settings_to_site_json(&path, &settings) {
+      Ok(()) => {
+        // 若成功写回 site.json，清理旧覆盖文件防止被旧覆盖遮蔽
+        if override_path.is_file() {
+          let _ = std::fs::remove_file(&override_path);
+        }
+      }
+      Err(primary_err) => {
+        // 只读挂载场景（EROFS / PermissionDenied）回退至可写覆盖文件
+        let pretty = serde_json::to_string_pretty(&settings)
+          .map_err(|e| ServerFnError::new(format!("序列化审核配置失败：{e}")))?;
+        if let Some(parent) = override_path.parent() {
+          let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = override_path.with_extension("json.tmp");
+        std::fs::write(&tmp, pretty).and_then(|_| std::fs::rename(&tmp, &override_path)).map_err(
+          |fallback_err| {
+            tracing::error!(
+              primary = %primary_err,
+              fallback = %fallback_err,
+              "admin: failed to persist moderation settings"
+            );
+            ServerFnError::new(format!("保存审核配置失败：{primary_err}"))
+          },
+        )?;
+        tracing::info!(
+          path = %override_path.display(),
+          "admin: site.json is read-only; persisted moderation settings to override file"
+        );
+      }
+    }
 
-    // 立即生效：审核 pipeline 重建（重读 site.json + LLM env）
-    // Phase 8.7：site.json 变了 → default_module_engine 的 OnceLock cache 也得清
+    // 立即生效：刷新 SiteConfig 缓存、ModuleEngine 缓存与审核 pipeline
+    app_core::settings::SiteConfig::invalidate_cache();
     app_core::engines::module::invalidate_default_module_engine();
     module_moderation::reload_pipeline();
     tracing::info!(

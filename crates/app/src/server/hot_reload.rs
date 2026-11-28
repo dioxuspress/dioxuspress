@@ -34,6 +34,8 @@ pub fn invalidate_all_in_memory_caches() -> u64 {
     cfg.default_language_enum() == Language::En,
   );
   app_core::engines::module::invalidate_default_module_engine();
+  #[cfg(feature = "accounts")]
+  module_admin::server::reload_moderation_pipeline();
   module_docs::server::invalidate_doc_caches();
   module_blog::server::invalidate_blog_cache();
   if let Some(cb) = EXTRA_HOT_RELOAD.get() {

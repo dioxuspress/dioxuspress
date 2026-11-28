@@ -43,10 +43,38 @@ use crate::pipeline::ModerationPipeline;
 /// 读多写极少（仅 admin reload 时写一次），`RwLock` 读锁开销可忽略。
 static SHARED: OnceLock<RwLock<Arc<ModerationPipeline>>> = OnceLock::new();
 
-/// 从 `site.json` + env 重新构造一条 pipeline。
+/// 可写的运行时审核覆盖文件路径（当 `CONTENT_DIR/site.json` 为 `:ro` 只读挂载时生效）。
+pub fn moderation_override_path() -> std::path::PathBuf {
+  if let Ok(p) = std::env::var("MODERATION_OVERRIDE_PATH") {
+    if !p.trim().is_empty() {
+      return std::path::PathBuf::from(p.trim());
+    }
+  }
+  app_core::utils::get_asset_root().join("moderation.override.json")
+}
+
+/// 读取当前生效的 [`app_core::settings::ModerationSettings`]：
+/// 若存在运行期覆盖文件（`moderation.override.json`）优先读取，否则回退 `site.json`。
+pub fn load_effective_moderation_settings() -> app_core::settings::ModerationSettings {
+  let override_path = moderation_override_path();
+  if override_path.is_file() {
+    if let Ok(raw) = std::fs::read_to_string(&override_path) {
+      if let Ok(parsed) = serde_json::from_str::<app_core::settings::ModerationSettings>(&raw) {
+        return parsed;
+      }
+    }
+  }
+  SiteConfig::from_file(app_core::utils::site_json_path().to_str().unwrap_or_default())
+    .map(|s| s.moderation)
+    .unwrap_or_default()
+}
+
+/// 从 `site.json`（含只读挂载覆盖文件）+ env 重新构造一条 pipeline。
 fn build_pipeline() -> ModerationPipeline {
-  let site = SiteConfig::from_file(app_core::utils::site_json_path().to_str().unwrap_or_default())
-    .unwrap_or_default();
+  let mut site =
+    SiteConfig::from_file(app_core::utils::site_json_path().to_str().unwrap_or_default())
+      .unwrap_or_default();
+  site.moderation = load_effective_moderation_settings();
 
   let llm: Option<Arc<dyn LlmClient>> = default_client_from_env().map(Arc::from);
 

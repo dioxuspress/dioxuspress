@@ -210,6 +210,30 @@ fn builtin_module_specs() -> Vec<ModuleSpec> {
   ]
 }
 
+/// 基于当前已水合/加载的 [`SiteConfig`] 同步判定某模块是否启用（编译进来且未被 `site.json` 关停）。
+/// 供 SSR 与 WASM 客户端的 `ModuleGate` / `SiteNavbar` 零 RPC 同步调用，彻底消除停用模块 SSR 泄漏与首屏冗余 POST。
+pub fn is_module_enabled_in_config(cfg: &SiteConfig, id: &str) -> bool {
+  let Some(spec) = default_module_specs().into_iter().find(|s| s.id == id) else {
+    return false;
+  };
+  match cfg.modules.get(id) {
+    Some(override_cfg) => override_cfg.enabled,
+    None => spec.enabled,
+  }
+}
+
+/// 基于当前 [`SiteConfig`] 同步列出所有已启用模块 id（与服务端 [`ModuleEngine::enabled_ids`] 口径严格一致）。
+pub fn enabled_module_ids_in_config(cfg: &SiteConfig) -> Vec<String> {
+  default_module_specs()
+    .into_iter()
+    .filter(|spec| match cfg.modules.get(&spec.id) {
+      Some(override_cfg) => override_cfg.enabled,
+      None => spec.enabled,
+    })
+    .map(|spec| spec.id)
+    .collect()
+}
+
 /// 全局共享的 default_module_engine 缓存 slot（Phase 8.7）。
 #[cfg(feature = "server")]
 fn module_engine_slot() -> &'static std::sync::RwLock<Option<std::sync::Arc<ModuleEngine>>> {
